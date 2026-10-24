@@ -490,14 +490,21 @@ fn check_installed(r: &mut Report, cfg: &Config) {
         return r.skip("installed", "installed.enabled = false");
     }
     match Installed::load(&cfg.installed) {
-        Ok(i) => r.ok(
-            "installed",
-            format!(
-                "{} packages (release: {})",
-                i.package_count(),
-                i.release.as_deref().unwrap_or("unknown")
-            ),
-        ),
+        Ok(i) => {
+            let kernel = match (i.kernel.as_deref(), i.kernel_version()) {
+                (Some(k), Some(v)) => format!("{k} {v}"),
+                (Some(k), None) => format!("{k}, not installed by dpkg"),
+                (None, _) => "unknown".into(),
+            };
+            r.ok(
+                "installed",
+                format!(
+                    "{} packages (release: {}, running kernel: {kernel})",
+                    i.package_count(),
+                    i.release.as_deref().unwrap_or("unknown")
+                ),
+            )
+        }
         Err(e) => r.fail(
             "installed",
             format!("{e:#}"),

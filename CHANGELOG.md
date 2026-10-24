@@ -7,6 +7,7 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 
 ### Fixed
 
+- A kernel USN whose fix is installed but not running yet (no reboot since `apt upgrade` / unattended-upgrades) is now urgent with `インストール済み・再起動待ち: 実行中 <running> → <fixed>`, instead of being reported as patched. The running kernel is read with `uname -r` and compared through its `linux-image-<release>` package; kernels unknown to dpkg keep the previous behaviour. If the fixed kernel image is not installed at all (only other packages of the USN are), it is urgent as `未適用` instead. HWE (`linux-image-generic-hwe-22.04`) and `virtual` metapackages are matched to `generic` kernels. `vuln-watch doctor` shows the running kernel.
 - A digest that fails part way no longer resends the messages already delivered: entries are removed from the queue as each message is sent.
 - A failed digest is retried by the next `run` (at least 5 minutes after the failure) instead of waiting for the next day's 08:00 timer. The resent digest is headed "📋 脆弱性ダイジェスト（再送）". A failed retry is logged and does not affect urgent delivery or the exit code of `run`.
 
