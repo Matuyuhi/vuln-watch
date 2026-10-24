@@ -49,6 +49,7 @@ systemctl daemon-reload
 
 if [[ -n "$previous" ]]; then
   echo "updated from ${previous#vuln-watch }; config in /etc/vuln-watch was kept"
+  echo "check the installation with: sudo vuln-watch doctor"
   exit 0
 fi
 
@@ -56,8 +57,9 @@ cat <<'EOF'
 
 Installed. Next steps:
   1. edit /etc/vuln-watch/config.toml and /etc/vuln-watch/env
-  2. sudo systemctl start vuln-watch@check-config.service && journalctl -u vuln-watch@check-config -n 40
+  2. sudo vuln-watch doctor   (the timers stay FAIL until step 4)
   3. sudo systemctl start vuln-watch@test-notify.service   (test DM)
   4. sudo systemctl enable --now vuln-watch-run.timer vuln-watch-digest.timer
+  5. sudo vuln-watch doctor   (again, to confirm the timers)
   logs: journalctl -u 'vuln-watch@*' -f
 EOF

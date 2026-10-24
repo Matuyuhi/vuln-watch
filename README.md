@@ -155,6 +155,7 @@ vuln-watch [--config PATH] [--state-dir DIR] <COMMAND>
   digest [--dry-run]                       send the queued digest
   test-notify                              send a test message
   check-config                             validate config and credentials
+  doctor [--offline]                       diagnose the installation (as root)
   upgrade [--check] [--version V] [--pre]  update to the latest release (as root)
 ```
 
@@ -170,6 +171,7 @@ Set `installed.enabled = false` on machines without dpkg.
 
 ## Operations
 
+- **Diagnose**: `sudo vuln-watch doctor` checks the installation and prints ok / warn / FAIL per item: a stale `vuln-watch` earlier on PATH, a newer release, a config that no longer parses, missing or example credentials in `/etc/vuln-watch/env` and its permissions, unit files and `daemon-reload`, whether the timers are enabled and the last run succeeded, sources failing repeatedly, undelivered urgent messages, and leftovers of an interrupted upgrade. It sends nothing to Discord and exits with 1 when something fails; `--offline` skips the release check. Run it after installing or upgrading.
 - **Update**: `sudo vuln-watch upgrade` installs the latest release the same way as `install.sh` (`--check` only reports, `--version 1.2.0` picks a version, `--pre` includes pre-releases). Config and state are kept; check [CHANGELOG.md](CHANGELOG.md) for changes to `config.example.toml`. From source: `git pull && sudo ./deploy/install.sh`.
 - **Sandbox**: the unit uses `DynamicUser`, `ProtectSystem=strict` and a syscall filter; the process can only make outbound connections and write its state directory.
 - **Uninstall**:

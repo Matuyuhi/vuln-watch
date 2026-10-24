@@ -2,6 +2,7 @@ mod app;
 mod config;
 mod db;
 mod discord;
+mod doctor;
 mod http;
 mod installed;
 mod model;
@@ -10,7 +11,7 @@ mod sources;
 mod text;
 mod upgrade;
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use anyhow::{Context, Result};
@@ -21,6 +22,8 @@ use crate::config::Config;
 use crate::db::Db;
 use crate::discord::Notifier;
 use crate::http::Http;
+
+const DEFAULT_STATE_DIR: &str = "./state";
 
 #[derive(Parser)]
 #[command(
@@ -38,7 +41,7 @@ struct Cli {
     config: PathBuf,
 
     /// Directory for state.db (systemd's StateDirectory sets $STATE_DIRECTORY)
-    #[arg(long, env = "STATE_DIRECTORY", default_value = "./state")]
+    #[arg(long, env = "STATE_DIRECTORY", default_value = DEFAULT_STATE_DIR)]
     state_dir: PathBuf,
 
     #[command(subcommand)]
@@ -69,6 +72,12 @@ enum Command {
     TestNotify,
     /// Validate the configuration and print a summary
     CheckConfig,
+    /// Diagnose this installation: binary, PATH, config, credentials, systemd and state
+    Doctor {
+        /// Skip the check for a newer release
+        #[arg(long)]
+        offline: bool,
+    },
     /// Update this installation to the latest GitHub release (run as root)
     Upgrade {
         /// Only report whether an update is available
@@ -135,6 +144,18 @@ fn real_main() -> Result<()> {
             force,
         };
         return upgrade::run(&http, token.as_deref(), &opts);
+    }
+    // Also needs no config: a broken config is one of the things it reports.
+    if let Command::Doctor { offline } = cli.command {
+        let http = Http::new(30)?;
+        // Outside systemd the default ./state is rarely what was meant.
+        let state_dir = (cli.state_dir != Path::new(DEFAULT_STATE_DIR)).then_some(cli.state_dir);
+        let opts = doctor::Options {
+            config: cli.config,
+            state_dir,
+            offline,
+        };
+        return doctor::run(&http, &opts);
     }
 
     let cfg = Config::load(&cli.config)?;
@@ -236,7 +257,7 @@ fn real_main() -> Result<()> {
             );
             target?;
         }
-        Command::Upgrade { .. } => unreachable!("handled above"),
+        Command::Upgrade { .. } | Command::Doctor { .. } => unreachable!("handled above"),
     }
     Ok(())
 }
