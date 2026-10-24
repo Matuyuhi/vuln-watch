@@ -60,7 +60,7 @@ Thresholds, exclusions and the watch list are set in [`config.example.toml`](con
 
 With `[installed] enabled = true`, USN entries are compared with `/var/lib/dpkg/status` using dpkg version ordering. The file is re-read on every run, so a package counts as patched as soon as `apt upgrade` has run. The release codename is read from `/etc/os-release`. A USN for a package that is not installed is ignored, even if it matches the watch list.
 
-A kernel fix only takes effect after a reboot. For a kernel USN whose packages are installed, the running kernel (`uname -r`, e.g. `6.8.0-145-generic`) is also compared: if its `linux-image-<release>` package is older than the fixed version for the same flavour, the notice is urgent with `再起動待ち` (reboot pending) instead of patched. A running kernel that dpkg does not know (custom kernel, container) is not compared. `vuln-watch doctor` shows the running kernel it detected.
+A kernel fix only takes effect after a reboot. For a kernel USN whose packages are installed, the running kernel (`uname -r`, e.g. `6.8.0-145-generic`) is also compared: if its `linux-image-<release>` package is older than the fixed version for the same flavour, the notice is urgent with `再起動待ち` (reboot pending) instead of patched; if no fixed kernel image is installed yet, it is urgent as not applied (`未適用`). HWE and `virtual` metapackages count for the `generic` flavour. A running kernel that dpkg does not know (custom kernel, container) is not compared. `vuln-watch doctor` shows the running kernel it detected.
 
 ## Reliability
 

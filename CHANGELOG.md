@@ -7,7 +7,7 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 
 ### Fixed
 
-- A kernel USN whose fix is installed but not running yet (no reboot since `apt upgrade` / unattended-upgrades) is now urgent with `インストール済み・再起動待ち: 実行中 <running> → <fixed>`, instead of being reported as patched. The running kernel is read with `uname -r` and compared through its `linux-image-<release>` package; kernels unknown to dpkg keep the previous behaviour. `vuln-watch doctor` shows the running kernel.
+- A kernel USN whose fix is installed but not running yet (no reboot since `apt upgrade` / unattended-upgrades) is now urgent with `インストール済み・再起動待ち: 実行中 <running> → <fixed>`, instead of being reported as patched. The running kernel is read with `uname -r` and compared through its `linux-image-<release>` package; kernels unknown to dpkg keep the previous behaviour. If the fixed kernel image is not installed at all (only other packages of the USN are), it is urgent as `未適用` instead. HWE (`linux-image-generic-hwe-22.04`) and `virtual` metapackages are matched to `generic` kernels. `vuln-watch doctor` shows the running kernel.
 
 ## [1.0.3] - 2026-10-24
 

@@ -98,11 +98,17 @@ pub struct InstalledMatch<'a> {
     pub already_fixed: AlreadyFixed,
 }
 
-/// Running kernel version and the fixed version for its flavour, when a USN fixes the
-/// kernel this machine is running but the fix is not running yet (no reboot since).
-/// None when the running kernel is not a dpkg-installed Ubuntu kernel, or the item
-/// has no `linux-image-*` entry for its flavour and upstream series.
-fn pending_kernel_reboot(item: &Item, installed: &Installed) -> Option<(String, String)> {
+/// Whether metapackage `linux-image-<meta>` installs kernels of `flavour`:
+/// `generic`, `generic-hwe-22.04`, and `virtual` / `virtual-hwe-22.04` for `generic`.
+fn meta_installs_flavour(meta: &str, flavour: &str) -> bool {
+    let base = meta.split_once("-hwe-").map_or(meta, |(b, _)| b);
+    base == flavour || (flavour == "generic" && base == "virtual")
+}
+
+/// A USN that fixes the running kernel's flavour and series while the running kernel
+/// is older than the fix. None when the running kernel is not a dpkg-installed Ubuntu
+/// kernel, the item has no `linux-image-*` entry for it, or the running kernel is fixed.
+fn running_kernel_decision(item: &Item, installed: &Installed) -> Option<Decision> {
     let (upstream, _, flavour) = split_kernel_release(installed.kernel.as_deref()?)?;
     let running = installed.kernel_version()?;
     let series = format!("{upstream}-");
@@ -112,19 +118,34 @@ fn pending_kernel_reboot(item: &Item, installed: &Installed) -> Option<(String, 
         .filter_map(|(pkg, ver)| {
             let rest = pkg.strip_prefix("linux-image-")?;
             let rest = rest.strip_prefix("unsigned-").unwrap_or(rest);
-            if rest == flavour && ver.starts_with(&series) {
+            if let Some((u, _, f)) = split_kernel_release(rest) {
+                (u == upstream && f == flavour && ver.starts_with(&series)).then(|| ver.clone())
+            } else if !meta_installs_flavour(rest, flavour) {
+                None
+            } else if ver.starts_with(&series) {
                 Some(ver.clone())
-            } else if rest == flavour {
+            } else {
                 // Metapackage: "6.8.0.147.147" stands for kernel "6.8.0-147.147".
                 let (abi, upload) = ver.strip_prefix(&format!("{upstream}."))?.split_once('.')?;
                 Some(format!("{upstream}-{abi}.{upload}"))
-            } else {
-                let (u, _, f) = split_kernel_release(rest)?;
-                (u == upstream && f == flavour && ver.starts_with(&series)).then(|| ver.clone())
             }
         })
         .max_by(|a, b| cmp_deb_version(a, b))?;
-    (cmp_deb_version(running, &fixed) == Ordering::Less).then(|| (running.to_string(), fixed))
+    if cmp_deb_version(running, &fixed) != Ordering::Less {
+        return None;
+    }
+    // Rebooting only helps when a fixed kernel image is installed.
+    let newest = installed.newest_kernel_image(upstream, flavour);
+    Some(match newest {
+        Some(v) if cmp_deb_version(v, &fixed) != Ordering::Less => Decision::new(
+            Level::Urgent,
+            format!("インストール済み・再起動待ち: 実行中 {running} → {fixed}"),
+        ),
+        _ => Decision::new(
+            Level::Urgent,
+            format!("インストール済み・未適用: カーネル {running} → {fixed}"),
+        ),
+    })
 }
 
 /// Decide based on installed packages for items that carry fixed versions (USN).
@@ -157,12 +178,9 @@ fn evaluate_installed(item: &Item, im: &InstalledMatch) -> Option<Decision> {
             format!("インストール済み・未適用: {}", list(&vulnerable)),
         )
     } else if !patched.is_empty() {
-        // A new kernel is installed but only takes effect after a reboot.
-        if let Some((running, fixed)) = pending_kernel_reboot(item, im.installed) {
-            return Some(Decision::new(
-                Level::Urgent,
-                format!("インストール済み・再起動待ち: 実行中 {running} → {fixed}"),
-            ));
+        // A kernel fix only takes effect after a reboot.
+        if let Some(d) = running_kernel_decision(item, im.installed) {
+            return Some(d);
         }
         match im.already_fixed {
             AlreadyFixed::Digest => Decision::new(
@@ -593,6 +611,66 @@ mod tests {
         let d = decide(&i, &inst, AlreadyFixed::Digest);
         assert_eq!(d.level, Level::Urgent);
         assert!(d.reason.contains("6.8.0-145.145 → 6.8.0-147.147"));
+    }
+
+    #[test]
+    fn kernel_fix_without_new_image_is_not_reboot_pending() {
+        // Only a non-image package of the USN is patched; the fixed image is missing.
+        let inst = Installed::from_pairs(
+            "noble",
+            &[
+                ("linux-libc-dev", "6.8.0-147.147"),
+                ("linux-image-6.8.0-145-generic", "6.8.0-145.145"),
+            ],
+        )
+        .with_kernel("6.8.0-145-generic");
+        let mut i = generic_kernel_usn();
+        i.fixed
+            .push(("linux-libc-dev".into(), "6.8.0-147.147".into()));
+        let d = decide(&i, &inst, AlreadyFixed::Ignore);
+        assert_eq!(d.level, Level::Urgent);
+        assert!(!d.reason.contains("再起動待ち"), "{}", d.reason);
+        assert!(d.reason.contains("未適用"), "{}", d.reason);
+        assert!(d.reason.contains("6.8.0-145.145 → 6.8.0-147.147"));
+    }
+
+    #[test]
+    fn kernel_hwe_and_virtual_metapackages() {
+        let host = |meta: &str| {
+            Installed::from_pairs(
+                "jammy",
+                &[
+                    (meta, "6.8.0.147.147~22.04.1"),
+                    ("linux-image-6.8.0-145-generic", "6.8.0-145.145~22.04.1"),
+                    ("linux-image-6.8.0-147-generic", "6.8.0-147.147~22.04.1"),
+                ],
+            )
+            .with_kernel("6.8.0-145-generic")
+        };
+        for meta in [
+            "linux-image-generic-hwe-22.04",
+            "linux-image-virtual-hwe-22.04",
+            "linux-image-virtual",
+        ] {
+            let mut i = generic_kernel_usn();
+            i.fixed = vec![(meta.into(), "6.8.0.147.147~22.04.1".into())];
+            let d = decide(&i, &host(meta), AlreadyFixed::Digest);
+            assert_eq!(d.level, Level::Urgent, "{meta}: {}", d.reason);
+            assert!(d.reason.contains("再起動待ち"), "{meta}: {}", d.reason);
+            assert!(d.reason.contains("→ 6.8.0-147.147~22.04.1"), "{}", d.reason);
+        }
+        // A different flavour's HWE metapackage is not the running kernel's.
+        let mut i = generic_kernel_usn();
+        i.fixed = vec![(
+            "linux-image-lowlatency-hwe-22.04".into(),
+            "6.8.0.147.147~22.04.1".into(),
+        )];
+        let d = decide(
+            &i,
+            &host("linux-image-lowlatency-hwe-22.04"),
+            AlreadyFixed::Digest,
+        );
+        assert_eq!(d.level, Level::Digest, "{}", d.reason);
     }
 
     #[test]

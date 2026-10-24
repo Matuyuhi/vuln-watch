@@ -81,6 +81,21 @@ impl Installed {
             .iter()
             .find_map(|prefix| self.version(&format!("{prefix}{k}")))
     }
+
+    /// Highest installed version of the kernel images for an upstream series and flavour
+    /// (`linux-image-6.8.0-*-generic`).
+    pub fn newest_kernel_image(&self, upstream: &str, flavour: &str) -> Option<&str> {
+        self.packages
+            .iter()
+            .filter(|(name, _)| {
+                name.strip_prefix("linux-image-")
+                    .map(|r| r.strip_prefix("unsigned-").unwrap_or(r))
+                    .and_then(split_kernel_release)
+                    .is_some_and(|(u, _, f)| u == upstream && f == flavour)
+            })
+            .map(|(_, v)| v.as_str())
+            .max_by(|a, b| cmp_deb_version(a, b))
+    }
 }
 
 /// Running kernel release via `uname -r`. /proc/sys/kernel/osrelease is hidden by
@@ -278,6 +293,15 @@ mod tests {
         assert_eq!(i.kernel_version(), Some("6.8.0-145.145"));
         let i = base.clone().with_kernel("6.8.0-150-lowlatency");
         assert_eq!(i.kernel_version(), Some("6.8.0-150.150"));
+        assert_eq!(
+            base.newest_kernel_image("6.8.0", "generic"),
+            Some("6.8.0-147.147")
+        );
+        assert_eq!(
+            base.newest_kernel_image("6.8.0", "lowlatency"),
+            Some("6.8.0-150.150")
+        );
+        assert_eq!(base.newest_kernel_image("6.8.0", "aws"), None);
         let i = base.with_kernel("6.9.3-custom");
         assert_eq!(i.kernel_version(), None);
     }
