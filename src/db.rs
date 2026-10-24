@@ -115,6 +115,11 @@ impl Db {
         Ok(Self { conn })
     }
 
+    #[cfg(test)]
+    pub fn execute_batch(&self, sql: &str) -> Result<()> {
+        Ok(self.conn.execute_batch(sql)?)
+    }
+
     pub fn is_seen(&self, source: &str, id: &str) -> Result<bool> {
         let found: Option<i64> = self
             .conn

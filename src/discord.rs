@@ -38,6 +38,37 @@ pub enum Target {
     },
     /// Print to stdout instead of sending.
     Stdout,
+    /// Keep sent messages in memory; tests make chosen sends fail.
+    #[cfg(test)]
+    Recorder(std::cell::RefCell<Recorder>),
+}
+
+#[cfg(test)]
+#[derive(Default)]
+pub struct Recorder {
+    pub sent: Vec<Message>,
+    /// Send attempts (0-based, failed ones included) that fail, and how.
+    pub fail: Vec<(usize, Fail)>,
+    attempts: usize,
+}
+
+#[cfg(test)]
+impl Recorder {
+    pub fn failing(fail: Vec<(usize, Fail)>) -> Self {
+        Self {
+            fail,
+            ..Default::default()
+        }
+    }
+}
+
+#[cfg(test)]
+#[derive(Debug, Clone, Copy)]
+pub enum Fail {
+    /// Network error or Discord 5xx: worth retrying later.
+    Transient,
+    /// Discord refused the content (HTTP 400).
+    Rejected,
 }
 
 pub struct Notifier<'a> {
@@ -86,13 +117,48 @@ impl<'a> Notifier<'a> {
                 }
                 unreachable!()
             }
+            #[cfg(test)]
+            Target::Recorder(r) => {
+                let mut r = r.borrow_mut();
+                let n = r.attempts;
+                r.attempts += 1;
+                match r.fail.iter().find(|(i, _)| *i == n).map(|(_, f)| *f) {
+                    Some(Fail::Transient) => bail!("connection reset (test)"),
+                    Some(Fail::Rejected) => bail!(DiscordError {
+                        status: 400,
+                        body: "Invalid Form Body (test)".into(),
+                    }),
+                    None => {
+                        r.sent.push(msg.clone());
+                        Ok(())
+                    }
+                }
+            }
+        }
+    }
+
+    /// Pause between consecutive messages to stay clear of Discord rate limits.
+    pub fn pace(&self) {
+        match self.target {
+            Target::Stdout => {}
+            #[cfg(test)]
+            Target::Recorder(_) => {}
+            _ => sleep(Duration::from_millis(600)),
+        }
+    }
+
+    #[cfg(test)]
+    pub fn sent(&self) -> Vec<Message> {
+        match &self.target {
+            Target::Recorder(r) => r.borrow().sent.clone(),
+            _ => Vec::new(),
         }
     }
 
     pub fn send_all(&self, db: &Db, msgs: &[Message]) -> Result<()> {
         for (i, m) in msgs.iter().enumerate() {
-            if i > 0 && !matches!(self.target, Target::Stdout) {
-                sleep(Duration::from_millis(600));
+            if i > 0 {
+                self.pace();
             }
             self.send(db, m)?;
         }
