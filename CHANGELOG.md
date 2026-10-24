@@ -5,6 +5,8 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 
 ## [Unreleased]
 
+## [1.1.0-rc.1] - 2026-10-24
+
 ### Fixed
 
 - A kernel USN whose fix is installed but not running yet (no reboot since `apt upgrade` / unattended-upgrades) is now urgent with `インストール済み・再起動待ち: 実行中 <running> → <fixed>`, instead of being reported as patched. The running kernel is read with `uname -r` and compared through its `linux-image-<release>` package; kernels unknown to dpkg keep the previous behaviour. If the fixed kernel image is not installed at all (only other packages of the USN are), it is urgent as `未適用` instead. HWE (`linux-image-generic-hwe-22.04`) and `virtual` metapackages are matched to `generic` kernels. `vuln-watch doctor` shows the running kernel.
@@ -69,7 +71,8 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 - systemd units (`vuln-watch@.service`, run and digest timers) and `deploy/install.sh`.
 - Release archives for x86_64 and aarch64 Linux with SHA256 checksums and build provenance attestations.
 
-[Unreleased]: https://github.com/Matuyuhi/vuln-watch/compare/v1.0.3...HEAD
+[Unreleased]: https://github.com/Matuyuhi/vuln-watch/compare/v1.1.0-rc.1...HEAD
+[1.1.0-rc.1]: https://github.com/Matuyuhi/vuln-watch/compare/v1.0.3...v1.1.0-rc.1
 [1.0.3]: https://github.com/Matuyuhi/vuln-watch/compare/v1.0.2...v1.0.3
 [1.0.2]: https://github.com/Matuyuhi/vuln-watch/compare/v1.0.1...v1.0.2
 [1.0.1]: https://github.com/Matuyuhi/vuln-watch/compare/v1.0.0...v1.0.1
