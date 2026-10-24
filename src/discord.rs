@@ -127,7 +127,11 @@ impl<'a> Notifier<'a> {
             if let Some(a) = auth {
                 req = req.header("Authorization", a);
             }
-            let resp = req.send().context("sending request to Discord")?;
+            let resp = req
+                .send()
+                // The webhook URL embeds its token; reqwest errors would print it.
+                .map_err(|e| e.without_url())
+                .context("sending request to Discord")?;
             let status = resp.status().as_u16();
             let text = resp.text().unwrap_or_default();
             if status == 429 {
