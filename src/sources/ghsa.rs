@@ -1,15 +1,21 @@
 //! GitHub Advisory Database (global advisories REST API).
 
 use anyhow::{Context, Result};
+use chrono::{DateTime, Utc};
 use serde::Deserialize;
 
 use super::{severity_to_score, Ctx, Fetched};
-use crate::http::Validators;
+use crate::http::{next_link, Validators};
 use crate::model::Item;
 use crate::text::{collapse_ws, truncate};
 
+/// Sorted by `updated`, not `published`: advisories imported from NVD keep their original
+/// `published_at` when GitHub reviews them later, so a published-sorted list would never
+/// show them on the first page.
 pub const DEFAULT_URL: &str =
-    "https://api.github.com/advisories?type=reviewed&sort=published&direction=desc&per_page=100";
+    "https://api.github.com/advisories?type=reviewed&sort=updated&direction=desc&per_page=100";
+/// Upper bound of pages walked back to the previous position (100 advisories per page).
+const MAX_PAGES: usize = 20;
 
 #[derive(Deserialize)]
 struct Advisory {
@@ -25,6 +31,8 @@ struct Advisory {
     severity: Option<String>,
     #[serde(default)]
     published_at: Option<String>,
+    #[serde(default)]
+    updated_at: Option<String>,
     #[serde(default)]
     withdrawn_at: Option<String>,
     #[serde(default)]
@@ -70,8 +78,18 @@ struct Epss {
     percentage: Option<f64>,
 }
 
+fn cursor_key(name: &str) -> String {
+    format!("ghsa:{name}:updated_cursor")
+}
+
+fn parse_time(s: &str) -> Option<DateTime<Utc>> {
+    DateTime::parse_from_rfc3339(s)
+        .ok()
+        .map(|d| d.with_timezone(&Utc))
+}
+
 pub fn fetch(name: &str, url: Option<&str>, ctx: &Ctx) -> Result<Fetched> {
-    let url = url.unwrap_or(DEFAULT_URL);
+    let first_url = url.unwrap_or(DEFAULT_URL);
     let mut headers = vec![
         ("Accept", "application/vnd.github+json".to_string()),
         ("X-GitHub-Api-Version", "2022-11-28".to_string()),
@@ -79,13 +97,57 @@ pub fn fetch(name: &str, url: Option<&str>, ctx: &Ctx) -> Result<Fetched> {
     if let Some(token) = &ctx.github_token {
         headers.push(("Authorization", format!("Bearer {token}")));
     }
-    let validators = Validators::load(ctx.db, url)?;
-    let resp = ctx.http.get(url, &headers, Some(&validators))?;
-    let commit = Validators::commit_pairs(url, &resp);
+    let cursor = ctx
+        .db
+        .get_kv(&cursor_key(name))?
+        .as_deref()
+        .and_then(parse_time);
+
+    let validators = Validators::load(ctx.db, first_url)?;
+    let mut resp = ctx.http.get(first_url, &headers, Some(&validators))?;
     if resp.not_modified() {
         return Ok(Fetched::empty());
     }
-    let items = parse(name, &resp.body)?;
+    let mut commit = Validators::commit_pairs(first_url, &resp);
+
+    let mut items = Vec::new();
+    let mut newest = cursor;
+    let mut page = 1;
+    loop {
+        let parsed = parse_page(name, &resp.body)?;
+        let reached_cursor = parsed
+            .iter()
+            .any(|(_, t)| matches!((t, cursor), (Some(t), Some(c)) if *t <= c));
+        for (item, t) in parsed {
+            if let Some(t) = t {
+                newest = Some(newest.map_or(t, |n| n.max(t)));
+            }
+            if let Some(item) = item {
+                items.push(item);
+            }
+        }
+        // Without a cursor (first run / dry-run) one page is enough.
+        if cursor.is_none() || ctx.bootstrap || ctx.limit.is_some() || reached_cursor {
+            break;
+        }
+        let Some(next) = resp.link.as_deref().and_then(next_link) else {
+            break;
+        };
+        if page >= MAX_PAGES {
+            tracing::warn!(
+                "{name}: stopped after {MAX_PAGES} pages without reaching the previous position"
+            );
+            break;
+        }
+        page += 1;
+        resp = ctx.http.get(&next, &headers, None)?;
+    }
+    if page > 1 {
+        tracing::info!("{name}: walked {page} pages to catch up");
+    }
+    if let Some(n) = newest {
+        commit.push((cursor_key(name), n.to_rfc3339()));
+    }
     Ok(Fetched { items, commit })
 }
 
@@ -99,63 +161,81 @@ fn max_score(scores: impl IntoIterator<Item = Option<f32>>) -> Option<f32> {
         })
 }
 
+#[cfg(test)]
 pub fn parse(source: &str, body: &str) -> Result<Vec<Item>> {
+    Ok(parse_page(source, body)?
+        .into_iter()
+        .filter_map(|(i, _)| i)
+        .collect())
+}
+
+/// Each advisory with its `updated_at`; withdrawn advisories yield `None` for the item.
+#[allow(clippy::type_complexity)]
+fn parse_page(source: &str, body: &str) -> Result<Vec<(Option<Item>, Option<DateTime<Utc>>)>> {
     let advisories: Vec<Advisory> =
         serde_json::from_str(body).context("parsing GitHub advisories")?;
     Ok(advisories
         .into_iter()
-        .filter(|a| a.withdrawn_at.is_none())
         .map(|a| {
-            let mut item = Item::new(source, a.ghsa_id.clone());
-            item.cve = a.cve_id.filter(|c| !c.is_empty());
-            item.title = a.summary;
-            item.summary = truncate(&collapse_ws(a.description.as_deref().unwrap_or("")), 600);
-            item.url = if a.html_url.is_empty() {
-                format!("https://github.com/advisories/{}", a.ghsa_id)
+            let updated = a.updated_at.as_deref().and_then(parse_time);
+            if a.withdrawn_at.is_some() {
+                (None, updated)
             } else {
-                a.html_url
-            };
-            let sev = a.cvss_severities.as_ref();
-            item.cvss = max_score([
-                a.cvss.as_ref().and_then(|c| c.score),
-                sev.and_then(|s| s.cvss_v3.as_ref()).and_then(|c| c.score),
-                sev.and_then(|s| s.cvss_v4.as_ref()).and_then(|c| c.score),
-            ])
-            .or_else(|| a.severity.as_deref().and_then(severity_to_score));
-            item.severity = a.severity;
-            item.published = a.published_at;
-
-            let mut patched = Vec::new();
-            for v in a.vulnerabilities.unwrap_or_default() {
-                if let Some(p) = v.package {
-                    if p.name.is_empty() {
-                        continue;
-                    }
-                    let label = format!("{}:{}", p.ecosystem, p.name);
-                    if !item.products.contains(&label) {
-                        item.products.push(label);
-                    }
-                    if !item.packages.contains(&p.name) {
-                        item.packages.push(p.name.clone());
-                    }
-                    let range = v.vulnerable_version_range.unwrap_or_default();
-                    match v.first_patched_version.filter(|s| !s.is_empty()) {
-                        Some(fix) => patched.push(format!("{} {} → {}", p.name, range, fix)),
-                        None => patched.push(format!("{} {} → 修正版なし", p.name, range)),
-                    }
-                }
+                (Some(to_item(source, a)), updated)
             }
-            if !patched.is_empty() {
-                item.extra
-                    .push(("修正バージョン".into(), truncate(&patched.join("\n"), 1000)));
-            }
-            if let Some(p) = a.epss.and_then(|e| e.percentage) {
-                item.extra
-                    .push(("EPSS".into(), format!("{:.2}%", p * 100.0)));
-            }
-            item
         })
         .collect())
+}
+
+fn to_item(source: &str, a: Advisory) -> Item {
+    let mut item = Item::new(source, a.ghsa_id.clone());
+    item.cve = a.cve_id.filter(|c| !c.is_empty());
+    item.title = a.summary;
+    item.summary = truncate(&collapse_ws(a.description.as_deref().unwrap_or("")), 600);
+    item.url = if a.html_url.is_empty() {
+        format!("https://github.com/advisories/{}", a.ghsa_id)
+    } else {
+        a.html_url
+    };
+    let sev = a.cvss_severities.as_ref();
+    item.cvss = max_score([
+        a.cvss.as_ref().and_then(|c| c.score),
+        sev.and_then(|s| s.cvss_v3.as_ref()).and_then(|c| c.score),
+        sev.and_then(|s| s.cvss_v4.as_ref()).and_then(|c| c.score),
+    ])
+    .or_else(|| a.severity.as_deref().and_then(severity_to_score));
+    item.severity = a.severity;
+    item.published = a.published_at;
+
+    let mut patched = Vec::new();
+    for v in a.vulnerabilities.unwrap_or_default() {
+        if let Some(p) = v.package {
+            if p.name.is_empty() {
+                continue;
+            }
+            let label = format!("{}:{}", p.ecosystem, p.name);
+            if !item.products.contains(&label) {
+                item.products.push(label);
+            }
+            if !item.packages.contains(&p.name) {
+                item.packages.push(p.name.clone());
+            }
+            let range = v.vulnerable_version_range.unwrap_or_default();
+            match v.first_patched_version.filter(|s| !s.is_empty()) {
+                Some(fix) => patched.push(format!("{} {} → {}", p.name, range, fix)),
+                None => patched.push(format!("{} {} → 修正版なし", p.name, range)),
+            }
+        }
+    }
+    if !patched.is_empty() {
+        item.extra
+            .push(("修正バージョン".into(), truncate(&patched.join("\n"), 1000)));
+    }
+    if let Some(p) = a.epss.and_then(|e| e.percentage) {
+        item.extra
+            .push(("EPSS".into(), format!("{:.2}%", p * 100.0)));
+    }
+    item
 }
 
 #[cfg(test)]
@@ -215,6 +295,20 @@ mod tests {
         "withdrawn_at": "2026-10-22T00:00:00Z"
       }
     ]"#;
+
+    #[test]
+    fn page_keeps_updated_at_of_withdrawn() {
+        let body = r#"[
+          {"ghsa_id": "GHSA-a", "summary": "a", "updated_at": "2026-10-24T06:00:00Z"},
+          {"ghsa_id": "GHSA-b", "summary": "b", "updated_at": "2026-10-24T05:00:00Z",
+           "withdrawn_at": "2026-10-24T05:00:00Z"}
+        ]"#;
+        let page = parse_page("ghsa", body).unwrap();
+        assert_eq!(page.len(), 2);
+        assert!(page[0].0.is_some());
+        assert!(page[1].0.is_none());
+        assert_eq!(page[1].1, parse_time("2026-10-24T05:00:00Z"));
+    }
 
     #[test]
     fn parses_advisories() {

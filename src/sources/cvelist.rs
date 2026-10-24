@@ -1,8 +1,10 @@
 //! CVEProject/cvelistV5 — the official CVE List, updated every few minutes.
 //!
-//! Each run reads `cves/delta.json` (changes from the latest sync). When the previous
-//! successful run is too old to be sure no delta was missed, `cves/deltaLog.json`
-//! (~30 days of deltas) is read instead to catch up.
+//! Each run reads `cves/delta.json` (changes from the latest sync). When a sync may have
+//! been missed — the previous run is too old, or the commit history shows more than one
+//! sync since our cursor — `cves/deltaLog.json` (~30 days of deltas) is read instead.
+//! New CVE ids are queued in the `pending` table before the cursor advances, so a backlog
+//! larger than `cvelist_max_records` or a failed record download is retried, not dropped.
 
 use anyhow::{bail, Context, Result};
 use chrono::{DateTime, Duration, Utc};
@@ -19,8 +21,11 @@ const BASE: &str = "https://raw.githubusercontent.com/CVEProject/cvelistV5/main/
 const API_BASE: &str = "https://api.github.com/repos/CVEProject/cvelistV5/contents/cves";
 const KEY_CURSOR: &str = "cvelist:last_fetch_time";
 const KEY_LAST_OK: &str = "cvelist:last_ok_at";
+const COMMITS_URL: &str = "https://api.github.com/repos/CVEProject/cvelistV5/commits";
 /// delta.json is regenerated roughly every 7 minutes; older gaps need deltaLog.json.
 const MAX_GAP_MINUTES: i64 = 10;
+/// A record that keeps failing to download is dropped after this many runs.
+const MAX_RECORD_ATTEMPTS: i64 = 10;
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -103,35 +108,77 @@ fn delta_request<'a>(
     }
 }
 
+/// Read one of the delta files. Returns None on 304 Not Modified.
+fn read_deltas(
+    ctx: &Ctx,
+    base_override: Option<&str>,
+    file: &str,
+    commit: &mut Vec<(String, String)>,
+) -> Result<Option<Vec<Delta>>> {
+    let (url, headers) = delta_request(base_override, ctx.github_token.as_deref(), file);
+    let validators = Validators::load(ctx.db, &url)?;
+    let resp = ctx.http.get(&url, &headers, Some(&validators))?;
+    if resp.not_modified() {
+        return Ok(None);
+    }
+    commit.extend(Validators::commit_pairs(&url, &resp));
+    Ok(Some(parse_deltas(&resp.body)?))
+}
+
+/// Number of cvelistV5 commits since `since` (capped at 5).
+fn commits_since(ctx: &Ctx, token: &str, since: DateTime<Utc>) -> Result<usize> {
+    let url = format!(
+        "{COMMITS_URL}?since={}&per_page=5",
+        since.format("%Y-%m-%dT%H:%M:%SZ")
+    );
+    let headers = [
+        ("Accept", "application/vnd.github+json".to_string()),
+        ("X-GitHub-Api-Version", "2022-11-28".to_string()),
+        ("Authorization", format!("Bearer {token}")),
+    ];
+    let resp = ctx.http.get(&url, &headers, None)?;
+    let commits: Vec<Value> = serde_json::from_str(&resp.body).context("parsing commits")?;
+    Ok(commits.len())
+}
+
 pub fn fetch(name: &str, base_override: Option<&str>, ctx: &Ctx) -> Result<Fetched> {
     let base = base_override.unwrap_or(BASE).trim_end_matches('/');
     let now = Utc::now();
     let cursor = ctx.db.get_kv(KEY_CURSOR)?.as_deref().and_then(parse_time);
     let last_ok = ctx.db.get_kv(KEY_LAST_OK)?.as_deref().and_then(parse_time);
-
-    let catch_up =
-        cursor.is_some() && last_ok.is_none_or(|t| now - t > Duration::minutes(MAX_GAP_MINUTES));
-    let file = if catch_up {
-        tracing::info!("{name}: last run is old, catching up via deltaLog.json");
-        "deltaLog.json"
-    } else {
-        "delta.json"
-    };
-    let (url, headers) = delta_request(base_override, ctx.github_token.as_deref(), file);
-
     let mut commit = vec![(KEY_LAST_OK.to_string(), now.to_rfc3339())];
-    let validators = Validators::load(ctx.db, &url)?;
-    let resp = ctx.http.get(&url, &headers, Some(&validators))?;
-    if resp.not_modified() {
-        return Ok(Fetched {
-            items: Vec::new(),
-            commit,
-        });
-    }
-    commit.extend(Validators::commit_pairs(&url, &resp));
-    let deltas = parse_deltas(&resp.body)?;
-    let (mut entries, newest) = select_new(deltas, cursor);
 
+    let stale =
+        cursor.is_some() && last_ok.is_none_or(|t| now - t > Duration::minutes(MAX_GAP_MINUTES));
+    let deltas = if stale {
+        tracing::info!("{name}: previous run is old, catching up via deltaLog.json");
+        read_deltas(ctx, base_override, "deltaLog.json", &mut commit)?
+    } else {
+        let latest = read_deltas(ctx, base_override, "delta.json", &mut commit)?;
+        // delta.json only holds the latest sync. If more than one sync happened since our
+        // cursor (commit of the delta we processed + the current one = 2), one was missed.
+        let has_new = latest.as_ref().is_some_and(|ds| {
+            ds.iter()
+                .filter_map(|d| parse_time(&d.fetch_time))
+                .any(|t| cursor.is_none_or(|c| t > c))
+        });
+        match (has_new, cursor, ctx.github_token.as_deref(), base_override) {
+            (true, Some(c), Some(token), None) => match commits_since(ctx, token, c) {
+                Ok(n) if n >= 3 => {
+                    tracing::info!("{name}: {n} syncs since last delta, reading deltaLog.json");
+                    read_deltas(ctx, base_override, "deltaLog.json", &mut commit)?
+                }
+                Ok(_) => latest,
+                Err(e) => {
+                    tracing::warn!("{name}: commit check failed ({e:#}), reading deltaLog.json");
+                    read_deltas(ctx, base_override, "deltaLog.json", &mut commit)?
+                }
+            },
+            _ => latest,
+        }
+    };
+
+    let (entries, newest) = select_new(deltas.unwrap_or_default(), cursor);
     if let Some(n) = newest {
         commit.push((KEY_CURSOR.to_string(), n));
     }
@@ -142,32 +189,45 @@ pub fn fetch(name: &str, base_override: Option<&str>, ctx: &Ctx) -> Result<Fetch
         });
     }
 
-    let mut max = ctx.cfg.runtime.cvelist_max_records;
-    if let Some(limit) = ctx.limit {
-        max = max.min(limit);
-    }
-    if entries.len() > max {
-        tracing::warn!(
-            "{name}: {} new CVEs, only fetching the latest {max}",
-            entries.len()
-        );
-        entries = entries.split_off(entries.len() - max);
-    }
-
-    let mut items = Vec::with_capacity(entries.len());
-    for e in entries {
+    // Queue new ids durably before the cursor moves, then work through the backlog.
+    for e in &entries {
         let link = e
             .github_link
             .clone()
             .unwrap_or_else(|| record_url(base, &e.cve_id));
-        let resp = ctx
-            .http
-            .get(&link, &[], None)
-            .with_context(|| format!("fetching {}", e.cve_id))?;
-        let record: Value = serde_json::from_str(&resp.body)
-            .with_context(|| format!("parsing record {}", e.cve_id))?;
-        if let Some(item) = parse_record(name, &record) {
-            items.push(item);
+        ctx.db.add_pending(name, &e.cve_id, &link)?;
+    }
+    ctx.db.prune_pending_seen(name)?;
+
+    let mut max = ctx.cfg.runtime.cvelist_max_records;
+    if let Some(limit) = ctx.limit {
+        max = max.min(limit);
+    }
+    let backlog = ctx.db.pending_count(name)?;
+    if backlog as usize > max {
+        tracing::info!("{name}: {backlog} CVE records queued, processing {max} this run");
+    }
+
+    let mut items = Vec::new();
+    for row in ctx.db.pending(name, max)? {
+        let result = ctx.http.get(&row.data, &[], None).and_then(|resp| {
+            serde_json::from_str::<Value>(&resp.body).context("parsing CVE record")
+        });
+        match result {
+            Ok(record) => match parse_record(name, &record) {
+                Some(item) => items.push(item),
+                // Rejected record: nothing to report.
+                None => ctx.db.mark_seen(name, &row.id)?,
+            },
+            Err(e) => {
+                tracing::warn!("{name}: fetching {} failed: {e:#}", row.id);
+                if row.attempts + 1 >= MAX_RECORD_ATTEMPTS {
+                    tracing::warn!("{name}: giving up on {}", row.id);
+                    ctx.db.remove_pending(name, &row.id)?;
+                } else {
+                    ctx.db.bump_pending_attempt(name, &row.id)?;
+                }
+            }
         }
     }
     Ok(Fetched { items, commit })

@@ -2,7 +2,7 @@ use std::time::Duration;
 
 use anyhow::{bail, Context, Result};
 use reqwest::blocking::{Client, RequestBuilder};
-use reqwest::header::{ETAG, IF_MODIFIED_SINCE, IF_NONE_MATCH, LAST_MODIFIED};
+use reqwest::header::{ETAG, IF_MODIFIED_SINCE, IF_NONE_MATCH, LAST_MODIFIED, LINK};
 
 use crate::db::Db;
 
@@ -21,6 +21,8 @@ pub struct Resp {
     pub body: String,
     pub etag: Option<String>,
     pub last_modified: Option<String>,
+    /// RFC 8288 Link header (pagination).
+    pub link: Option<String>,
 }
 
 impl Resp {
@@ -110,12 +112,14 @@ impl Http {
         };
         let etag = header(ETAG);
         let last_modified = header(LAST_MODIFIED);
+        let link = header(LINK);
         if status == 304 {
             return Ok(Resp {
                 status,
                 body: String::new(),
                 etag,
                 last_modified,
+                link,
             });
         }
         let body = resp
@@ -132,6 +136,36 @@ impl Http {
             body,
             etag,
             last_modified,
+            link,
         })
+    }
+}
+
+/// Extract the `rel="next"` URL from a Link header.
+pub fn next_link(link: &str) -> Option<String> {
+    link.split(',').find_map(|part| {
+        let mut pieces = part.split(';');
+        let url = pieces.next()?.trim();
+        let is_next = pieces.any(|p| {
+            let p = p.trim();
+            p == "rel=\"next\"" || p == "rel=next"
+        });
+        (is_next && url.starts_with('<') && url.ends_with('>'))
+            .then(|| url[1..url.len() - 1].to_string())
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parses_next_link() {
+        let h = r#"<https://api.github.com/advisories?after=abc&per_page=100>; rel="next", <https://api.github.com/advisories?before=xyz>; rel="prev""#;
+        assert_eq!(
+            next_link(h).as_deref(),
+            Some("https://api.github.com/advisories?after=abc&per_page=100")
+        );
+        assert_eq!(next_link(r#"<https://x>; rel="prev""#), None);
     }
 }

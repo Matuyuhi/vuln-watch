@@ -38,7 +38,48 @@ CREATE TABLE IF NOT EXISTS digest_queue (
     reason    TEXT NOT NULL,
     queued_at TEXT NOT NULL
 );
+-- Urgent notifications waiting to be sent. Persisted before cursors/ETags are
+-- committed so a Discord outage never loses an item.
+CREATE TABLE IF NOT EXISTS outbox (
+    key       TEXT PRIMARY KEY,
+    item      TEXT NOT NULL,
+    reason    TEXT NOT NULL,
+    queued_at TEXT NOT NULL
+);
+-- Work discovered but not yet processed (e.g. CVE ids whose records are still to fetch).
+CREATE TABLE IF NOT EXISTS pending (
+    source    TEXT NOT NULL,
+    id        TEXT NOT NULL,
+    data      TEXT NOT NULL,
+    attempts  INTEGER NOT NULL DEFAULT 0,
+    queued_at TEXT NOT NULL,
+    PRIMARY KEY (source, id)
+);
 "#;
+
+/// Persistent queues of items.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Queue {
+    /// Sent once a day.
+    Digest,
+    /// Urgent, sent at the end of each run.
+    Outbox,
+}
+
+impl Queue {
+    fn table(self) -> &'static str {
+        match self {
+            Queue::Digest => "digest_queue",
+            Queue::Outbox => "outbox",
+        }
+    }
+}
+
+pub struct PendingRow {
+    pub id: String,
+    pub data: String,
+    pub attempts: i64,
+}
 
 fn now() -> String {
     chrono::Utc::now().to_rfc3339()
@@ -151,20 +192,25 @@ impl Db {
         Ok(())
     }
 
-    pub fn enqueue_digest(&self, key: &str, item: &Item, reason: &str) -> Result<()> {
+    /// Add an item to a queue. Returns false if the key was already queued.
+    pub fn enqueue(&self, q: Queue, key: &str, item: &Item, reason: &str) -> Result<bool> {
         let json = serde_json::to_string(item)?;
-        self.conn.execute(
-            "INSERT INTO digest_queue (key, item, reason, queued_at) VALUES (?1, ?2, ?3, ?4)
-             ON CONFLICT(key) DO NOTHING",
+        let n = self.conn.execute(
+            &format!(
+                "INSERT INTO {} (key, item, reason, queued_at) VALUES (?1, ?2, ?3, ?4)
+                 ON CONFLICT(key) DO NOTHING",
+                q.table()
+            ),
             params![key, json, reason, now()],
         )?;
-        Ok(())
+        Ok(n > 0)
     }
 
-    pub fn digest_entries(&self) -> Result<Vec<DigestEntry>> {
-        let mut stmt = self
-            .conn
-            .prepare("SELECT key, item, reason FROM digest_queue ORDER BY queued_at, key")?;
+    pub fn queue_entries(&self, q: Queue) -> Result<Vec<DigestEntry>> {
+        let mut stmt = self.conn.prepare(&format!(
+            "SELECT key, item, reason FROM {} ORDER BY queued_at, rowid",
+            q.table()
+        ))?;
         let rows = stmt.query_map([], |r| {
             Ok((
                 r.get::<_, String>(0)?,
@@ -177,16 +223,75 @@ impl Db {
             let (key, json, reason) = row?;
             match serde_json::from_str::<Item>(&json) {
                 Ok(item) => out.push(DigestEntry { key, item, reason }),
-                Err(e) => tracing::warn!("dropping unreadable digest entry {key}: {e}"),
+                Err(e) => tracing::warn!("dropping unreadable {:?} entry {key}: {e}", q),
             }
         }
         Ok(out)
     }
 
-    pub fn remove_digest(&self, key: &str) -> Result<()> {
-        self.conn
-            .execute("DELETE FROM digest_queue WHERE key = ?1", params![key])?;
+    pub fn dequeue(&self, q: Queue, key: &str) -> Result<()> {
+        self.conn.execute(
+            &format!("DELETE FROM {} WHERE key = ?1", q.table()),
+            params![key],
+        )?;
         Ok(())
+    }
+
+    pub fn add_pending(&self, source: &str, id: &str, data: &str) -> Result<()> {
+        self.conn.execute(
+            "INSERT OR IGNORE INTO pending (source, id, data, queued_at) VALUES (?1, ?2, ?3, ?4)",
+            params![source, id, data, now()],
+        )?;
+        Ok(())
+    }
+
+    /// Oldest pending rows first.
+    pub fn pending(&self, source: &str, limit: usize) -> Result<Vec<PendingRow>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, data, attempts FROM pending WHERE source = ?1
+             ORDER BY queued_at, rowid LIMIT ?2",
+        )?;
+        let rows = stmt.query_map(params![source, limit as i64], |r| {
+            Ok(PendingRow {
+                id: r.get(0)?,
+                data: r.get(1)?,
+                attempts: r.get(2)?,
+            })
+        })?;
+        Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+    }
+
+    pub fn pending_count(&self, source: &str) -> Result<i64> {
+        Ok(self.conn.query_row(
+            "SELECT COUNT(*) FROM pending WHERE source = ?1",
+            params![source],
+            |r| r.get(0),
+        )?)
+    }
+
+    pub fn bump_pending_attempt(&self, source: &str, id: &str) -> Result<()> {
+        self.conn.execute(
+            "UPDATE pending SET attempts = attempts + 1 WHERE source = ?1 AND id = ?2",
+            params![source, id],
+        )?;
+        Ok(())
+    }
+
+    pub fn remove_pending(&self, source: &str, id: &str) -> Result<()> {
+        self.conn.execute(
+            "DELETE FROM pending WHERE source = ?1 AND id = ?2",
+            params![source, id],
+        )?;
+        Ok(())
+    }
+
+    /// Drop pending rows that have already been handled (marked seen).
+    pub fn prune_pending_seen(&self, source: &str) -> Result<usize> {
+        Ok(self.conn.execute(
+            "DELETE FROM pending WHERE source = ?1
+             AND id IN (SELECT id FROM seen WHERE source = ?1)",
+            params![source],
+        )?)
     }
 }
 
@@ -219,17 +324,38 @@ mod tests {
     }
 
     #[test]
-    fn digest_queue() {
+    fn queues() {
         let db = Db::open_in_memory().unwrap();
         let mut item = Item::new("ghsa", "GHSA-1");
         item.title = "t".into();
-        db.enqueue_digest("k1", &item, "r").unwrap();
-        db.enqueue_digest("k1", &item, "r2").unwrap();
-        let entries = db.digest_entries().unwrap();
+        assert!(db.enqueue(Queue::Digest, "k1", &item, "r").unwrap());
+        assert!(!db.enqueue(Queue::Digest, "k1", &item, "r2").unwrap());
+        assert!(db.enqueue(Queue::Outbox, "k1", &item, "u").unwrap());
+        let entries = db.queue_entries(Queue::Digest).unwrap();
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].item, item);
         assert_eq!(entries[0].reason, "r");
-        db.remove_digest("k1").unwrap();
-        assert!(db.digest_entries().unwrap().is_empty());
+        db.dequeue(Queue::Digest, "k1").unwrap();
+        assert!(db.queue_entries(Queue::Digest).unwrap().is_empty());
+        assert_eq!(db.queue_entries(Queue::Outbox).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn pending_rows() {
+        let db = Db::open_in_memory().unwrap();
+        db.add_pending("cvelist", "CVE-1", "l1").unwrap();
+        db.add_pending("cvelist", "CVE-2", "l2").unwrap();
+        db.add_pending("cvelist", "CVE-1", "dup").unwrap();
+        assert_eq!(db.pending_count("cvelist").unwrap(), 2);
+        let rows = db.pending("cvelist", 1).unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].id, "CVE-1");
+        assert_eq!(rows[0].data, "l1");
+        db.bump_pending_attempt("cvelist", "CVE-1").unwrap();
+        assert_eq!(db.pending("cvelist", 5).unwrap()[0].attempts, 1);
+        db.mark_seen("cvelist", "CVE-1").unwrap();
+        assert_eq!(db.prune_pending_seen("cvelist").unwrap(), 1);
+        db.remove_pending("cvelist", "CVE-2").unwrap();
+        assert_eq!(db.pending_count("cvelist").unwrap(), 0);
     }
 }

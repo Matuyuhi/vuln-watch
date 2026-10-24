@@ -1,7 +1,7 @@
 use anyhow::{Context, Result};
 
 use crate::config::{Config, DeliveryMode, SourceConfig};
-use crate::db::Db;
+use crate::db::{Db, Queue};
 use crate::discord::{self, Message, Notifier, Target};
 use crate::http::Http;
 use crate::model::{Decision, Item, Level};
@@ -71,11 +71,6 @@ pub struct RunSummary {
     pub failed_sources: Vec<String>,
 }
 
-struct Candidate {
-    item: Item,
-    decision: Decision,
-}
-
 pub fn run(
     cfg: &Config,
     db: &mut Db,
@@ -85,11 +80,10 @@ pub fn run(
     opts: &RunOptions,
 ) -> Result<RunSummary> {
     let mut summary = RunSummary::default();
-    let mut urgent: Vec<Candidate> = Vec::new();
 
     for src in cfg.sources.iter().filter(|s| s.enabled) {
         let name = src.name();
-        match process_source(cfg, db, http, secrets, opts, src, &mut summary, &mut urgent) {
+        match process_source(cfg, db, http, secrets, opts, src, &mut summary) {
             Ok(()) => source_succeeded(db, notifier, &name, opts.dry_run)?,
             Err(e) => {
                 tracing::warn!("source {name} failed: {e:#}");
@@ -99,44 +93,7 @@ pub fn run(
         }
     }
 
-    // Send urgent notifications (bounded), overflow goes to the digest.
-    let max = cfg.runtime.max_urgent_per_run;
-    let overflow = urgent.len().saturating_sub(max);
-    for (i, c) in urgent.into_iter().enumerate() {
-        let key = c.item.dedupe_key();
-        if i < max {
-            notifier
-                .send(db, &discord::urgent_message(&c.item, &c.decision))
-                .with_context(|| format!("sending notification for {}", c.item.display_id()))?;
-            if i + 1 < max {
-                std::thread::sleep(std::time::Duration::from_millis(if opts.dry_run {
-                    0
-                } else {
-                    600
-                }));
-            }
-            db.set_alerted(&key, Level::Urgent)?;
-            db.remove_digest(&key)?;
-            summary.urgent += 1;
-        } else {
-            db.enqueue_digest(
-                &key,
-                &c.item,
-                &format!("{}（即時通知の上限超過）", c.decision.reason),
-            )?;
-            db.set_alerted(&key, Level::Digest)?;
-            summary.digested += 1;
-        }
-        db.mark_seen(&c.item.source, &c.item.id)?;
-    }
-    if overflow > 0 {
-        notifier.send(
-            db,
-            &Message::text(format!(
-                "⚠️ 即時通知が上限（{max}件/回）を超えたため、残り{overflow}件はダイジェストに回しました。"
-            )),
-        )?;
-    }
+    flush_outbox(cfg, db, notifier, opts, &mut summary)?;
 
     if !opts.dry_run {
         let hb = secrets
@@ -164,6 +121,56 @@ pub fn run(
     Ok(summary)
 }
 
+/// Send queued urgent notifications (oldest first). Anything that fails to send stays
+/// in the outbox and is retried on the next run; the overflow beyond the per-run cap
+/// goes to the digest so a burst can't flood the DM.
+fn flush_outbox(
+    cfg: &Config,
+    db: &Db,
+    notifier: &Notifier,
+    opts: &RunOptions,
+    summary: &mut RunSummary,
+) -> Result<()> {
+    let entries = db.queue_entries(Queue::Outbox)?;
+    let max = cfg.runtime.max_urgent_per_run;
+    let overflow = entries.len().saturating_sub(max);
+    for (i, e) in entries.into_iter().enumerate() {
+        if i < max {
+            if i > 0 && !opts.dry_run {
+                std::thread::sleep(std::time::Duration::from_millis(600));
+            }
+            let decision = Decision::new(Level::Urgent, e.reason.clone());
+            notifier
+                .send(db, &discord::urgent_message(&e.item, &decision))
+                .with_context(|| format!("sending notification for {}", e.item.display_id()))?;
+            db.set_alerted(&e.key, Level::Urgent)?;
+            // It may have been queued for the digest earlier at a lower level.
+            db.dequeue(Queue::Digest, &e.key)?;
+            db.dequeue(Queue::Digest, &e.item.dedupe_key())?;
+            summary.urgent += 1;
+        } else {
+            db.enqueue(
+                Queue::Digest,
+                &e.key,
+                &e.item,
+                &format!("{}（即時通知の上限超過）", e.reason),
+            )?;
+            db.set_alerted(&e.key, Level::Digest)?;
+            summary.digested += 1;
+        }
+        db.dequeue(Queue::Outbox, &e.key)?;
+    }
+    if overflow > 0 {
+        notifier.send(
+            db,
+            &Message::text(format!(
+                "⚠️ 即時通知が上限（{max}件/回）を超えたため、残り{overflow}件はダイジェストに回しました。"
+            )),
+        )?;
+    }
+    Ok(())
+}
+
 #[allow(clippy::too_many_arguments)]
 fn process_source(
     cfg: &Config,
@@ -173,7 +180,6 @@ fn process_source(
     opts: &RunOptions,
     src: &SourceConfig,
     summary: &mut RunSummary,
-    urgent: &mut Vec<Candidate>,
 ) -> Result<()> {
     let name = src.name();
     let init_key = format!("init:{name}");
@@ -219,7 +225,7 @@ fn process_source(
                 decision.reason
             );
         }
-        let key = item.dedupe_key();
+        let key = item.alert_key();
         let already = db.alerted_level(&key)?;
         match decision.level {
             Level::Ignore => {
@@ -231,18 +237,15 @@ fn process_source(
                 db.mark_seen(&name, &item.id)?;
             }
             Level::Digest => {
-                db.enqueue_digest(&key, &item, &decision.reason)?;
+                db.enqueue(Queue::Digest, &key, &item, &decision.reason)?;
                 db.set_alerted(&key, Level::Digest)?;
                 db.mark_seen(&name, &item.id)?;
                 summary.digested += 1;
             }
             Level::Urgent => {
-                // Marked seen after it has actually been sent.
-                if !urgent.iter().any(|c| c.item.dedupe_key() == key) {
-                    urgent.push(Candidate { item, decision });
-                } else {
-                    db.mark_seen(&name, &item.id)?;
-                }
+                // Persist before cursors/ETags are committed; sent by flush_outbox.
+                db.enqueue(Queue::Outbox, &key, &item, &decision.reason)?;
+                db.mark_seen(&name, &item.id)?;
             }
         }
     }
@@ -299,7 +302,7 @@ fn source_failed(
 }
 
 pub fn digest(cfg: &Config, db: &Db, notifier: &Notifier) -> Result<usize> {
-    let entries = db.digest_entries()?;
+    let entries = db.queue_entries(Queue::Digest)?;
     if entries.is_empty() {
         if cfg.runtime.digest_send_empty {
             notifier.send(
@@ -313,7 +316,7 @@ pub fn digest(cfg: &Config, db: &Db, notifier: &Notifier) -> Result<usize> {
     let msgs = discord::digest_messages(&entries);
     notifier.send_all(db, &msgs)?;
     for e in &entries {
-        db.remove_digest(&e.key)?;
+        db.dequeue(Queue::Digest, &e.key)?;
     }
     tracing::info!(
         "digest: sent {} items in {} messages",

@@ -90,6 +90,18 @@ name = "Samsung Mobile"
 keywords = ["samsung mobile"]
 urgent = false
 
+# iOS アプリ開発向け。Apple は月例で数十件出るのでダイジェスト（悪用確認済みは KEV で即時）
+[[watch]]
+name = "Apple iOS"
+keywords = ["ios and ipados", "apple ios", "xcode"]
+urgent = false
+
+# Android アプリ内の WebView は Chromium ベース
+[[watch]]
+name = "Chrome / WebView"
+keywords = ["google chrome", "android webview", "chromium"]
+urgent = false
+
 [[watch]]
 name = "OkHttp"
 keywords = ["okhttp"]
@@ -147,6 +159,12 @@ kind = "feed"
 name = "oss-security"
 url = "https://seclists.org/rss/oss-sec.rss"
 ignore_title_prefixes = ["Re:"]
+
+# GitHub Advisory のマルウェア（悪意あるパッケージ）。ウォッチ対象パッケージに一致したときだけ通知
+# [[source]]
+# kind = "ghsa"
+# name = "ghsa-malware"
+# url = "https://api.github.com/advisories?type=malware&sort=updated&direction=desc&per_page=100"
 
 # nginx のリリース（セキュリティ修正版の公開をいち早く検知）
 [[source]]

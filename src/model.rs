@@ -44,6 +44,16 @@ impl Item {
         }
     }
 
+    /// Key for notification de-duplication. A KEV listing is tracked separately so that
+    /// "now exploited in the wild" is still reported for a CVE that was already notified.
+    pub fn alert_key(&self) -> String {
+        if self.kev {
+            format!("{}#kev", self.dedupe_key())
+        } else {
+            self.dedupe_key()
+        }
+    }
+
     /// Id shown to the user: the CVE id, or a short form of URL-like feed ids
     /// (e.g. ".../notices/USN-8954-1" -> "USN-8954-1").
     pub fn display_id(&self) -> &str {
@@ -152,6 +162,9 @@ mod tests {
         item.cve = Some("cve-2026-1111".into());
         assert_eq!(item.dedupe_key(), "CVE-2026-1111");
         assert_eq!(item.display_id(), "cve-2026-1111");
+        assert_eq!(item.alert_key(), "CVE-2026-1111");
+        item.kev = true;
+        assert_eq!(item.alert_key(), "CVE-2026-1111#kev");
     }
 
     #[test]

@@ -127,7 +127,7 @@ fn real_main() -> Result<()> {
             let db = Db::open(&db_path)?;
             let notifier = Notifier::new(&http, app::build_target(&cfg, &secrets, dry_run)?);
             if dry_run {
-                let entries = db.digest_entries()?;
+                let entries = db.queue_entries(db::Queue::Digest)?;
                 for m in discord::digest_messages(&entries) {
                     notifier.send(&db, &m)?;
                 }
