@@ -5,6 +5,10 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 
 ## [Unreleased]
 
+### Added
+
+- `vuln-watch watch list | add | edit | remove` shows and edits the watch list in config.toml, keeping comments and formatting. The result is validated before it is written, the previous file is kept as `config.toml.bak`, and `--dry-run` prints the change without writing.
+
 ## [1.0.1] - 2026-10-24
 
 ### Changed

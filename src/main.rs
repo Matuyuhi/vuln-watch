@@ -11,6 +11,7 @@ mod rules;
 mod sources;
 mod text;
 mod upgrade;
+mod watch;
 
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
@@ -97,6 +98,11 @@ enum Command {
         #[arg(long)]
         force: bool,
     },
+    /// List or edit the watch list in config.toml (editing needs write access, i.e. sudo)
+    Watch {
+        #[command(subcommand)]
+        command: watch::WatchCommand,
+    },
 }
 
 fn init_logging() {
@@ -150,7 +156,9 @@ impl Command {
                 .collect(),
             Command::TestNotify => vec!["test-notify".to_string()],
             Command::CheckConfig => vec!["check-config".to_string()],
-            Command::Doctor { .. } | Command::Upgrade { .. } => return None,
+            Command::Doctor { .. } | Command::Upgrade { .. } | Command::Watch { .. } => {
+                return None
+            }
         })
     }
 }
@@ -189,6 +197,12 @@ fn real_main() -> Result<ExitCode> {
             offline,
         };
         doctor::run(&http, &opts)?;
+        return Ok(ExitCode::SUCCESS);
+    }
+
+    // Edits config.toml only: no credentials or state, so it runs here (as root to write).
+    if let Command::Watch { command } = cli.command {
+        watch::run(&cli.config, command)?;
         return Ok(ExitCode::SUCCESS);
     }
 
@@ -306,7 +320,9 @@ fn real_main() -> Result<ExitCode> {
             );
             target?;
         }
-        Command::Upgrade { .. } | Command::Doctor { .. } => unreachable!("handled above"),
+        Command::Upgrade { .. } | Command::Doctor { .. } | Command::Watch { .. } => {
+            unreachable!("handled above")
+        }
     }
     Ok(ExitCode::SUCCESS)
 }
