@@ -1,0 +1,31 @@
+# 依存関係の更新 PR を週 1 回まとめて作る。
+# 脆弱性修正（Dependabot security updates）はリポジトリ設定で有効にすると随時作られる。
+version: 2
+updates:
+  - package-ecosystem: cargo
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+      time: "06:00"
+      timezone: Asia/Tokyo
+    open-pull-requests-limit: 5
+    groups:
+      # semver 互換の更新は 1 つの PR にまとめる（メジャー更新は個別 PR）
+      cargo-minor:
+        update-types: [minor, patch]
+    commit-message:
+      prefix: "deps"
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+      time: "06:00"
+      timezone: Asia/Tokyo
+    groups:
+      actions:
+        patterns: ["*"]
+    commit-message:
+      prefix: "ci"

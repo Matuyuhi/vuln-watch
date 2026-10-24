@@ -126,6 +126,7 @@ vuln-watch [--config PATH] [--state-dir DIR] <COMMAND>
 - **ハードニング**：`DynamicUser`、`ProtectSystem=strict`、syscall フィルタなどで、外向き HTTPS と状態ディレクトリ以外には触れないように制限しています
 - **更新**：`git pull && sudo ./deploy/install.sh` で更新できます。設定ファイルは上書きしません
 - **フォーマット変更の検知**：週 1 回、GitHub Actions が実データに対して dry-run を実行し（[Live smoke test](.github/workflows/smoke.yml)）、上流 API の仕様変更に気づけるようにしています
+- **依存関係スキャン**：[cargo-deny](deny.toml) で RustSec の脆弱性・ライセンス・禁止クレート（OpenSSL 系）・取得元を、PR と毎日の定期実行でチェックしています（[Dependencies](.github/workflows/deps.yml)）。ローカルでは `cargo deny check` で実行できます。依存の更新 PR は Dependabot が週 1 回作ります
 - **アンインストール**
 
   ```bash
