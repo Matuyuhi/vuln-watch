@@ -5,6 +5,15 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 
 ## [Unreleased]
 
+### Added
+
+- `install.sh` for one-line installs: `curl -fsSL https://raw.githubusercontent.com/Matuyuhi/vuln-watch/main/install.sh | sudo bash`.
+- `vuln-watch upgrade` updates to the latest GitHub release (`--check`, `--version`, `--pre`, `--force`).
+
+### Changed
+
+- `deploy/install.sh` prints a short summary instead of the setup steps when updating an existing install.
+
 ## [1.0.0-rc.1] - 2026-10-24
 
 ### Added

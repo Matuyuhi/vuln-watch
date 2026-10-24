@@ -8,6 +8,7 @@ mod model;
 mod rules;
 mod sources;
 mod text;
+mod upgrade;
 
 use std::path::PathBuf;
 use std::process::ExitCode;
@@ -68,6 +69,21 @@ enum Command {
     TestNotify,
     /// Validate the configuration and print a summary
     CheckConfig,
+    /// Update this installation to the latest GitHub release (run as root)
+    Upgrade {
+        /// Only report whether an update is available
+        #[arg(long)]
+        check: bool,
+        /// Install this version instead of the latest (e.g. 1.2.0; may downgrade)
+        #[arg(long, value_name = "VERSION")]
+        version: Option<String>,
+        /// Include pre-releases (implied when running a pre-release)
+        #[arg(long)]
+        pre: bool,
+        /// Reinstall even if already up to date
+        #[arg(long)]
+        force: bool,
+    },
 }
 
 fn init_logging() {
@@ -100,6 +116,27 @@ fn main() -> ExitCode {
 
 fn real_main() -> Result<()> {
     let cli = Cli::parse();
+    // Needs no config, so it also works when the config is broken.
+    if let Command::Upgrade {
+        check,
+        version,
+        pre,
+        force,
+    } = cli.command
+    {
+        let http = Http::new(300)?;
+        let token = std::env::var("GITHUB_TOKEN")
+            .ok()
+            .filter(|t| !t.trim().is_empty());
+        let opts = upgrade::Options {
+            check,
+            version,
+            pre,
+            force,
+        };
+        return upgrade::run(&http, token.as_deref(), &opts);
+    }
+
     let cfg = Config::load(&cli.config)?;
     let secrets = Secrets::from_env();
     let http = Http::new(cfg.runtime.http_timeout_secs)?;
@@ -199,6 +236,7 @@ fn real_main() -> Result<()> {
             );
             target?;
         }
+        Command::Upgrade { .. } => unreachable!("handled above"),
     }
     Ok(())
 }
