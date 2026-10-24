@@ -5,6 +5,11 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 
 ## [Unreleased]
 
+### Fixed
+
+- A digest that fails part way no longer resends the messages already delivered: entries are removed from the queue as each message is sent.
+- A failed digest is retried by the next `run` (at least 5 minutes after the failure) instead of waiting for the next day's 08:00 timer. The resent digest is headed "📋 脆弱性ダイジェスト（再送）". A failed retry is logged and does not affect urgent delivery or the exit code of `run`.
+
 ## [1.0.3] - 2026-10-24
 
 ### Fixed

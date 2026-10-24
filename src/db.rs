@@ -173,6 +173,20 @@ impl Db {
         Ok(())
     }
 
+    /// Take a lease stored under `key` for `ttl`, unless another process holds one that
+    /// has not expired. Atomic across processes sharing the database.
+    pub fn try_lease(&self, key: &str, ttl: chrono::Duration) -> Result<bool> {
+        let fmt =
+            |t: chrono::DateTime<chrono::Utc>| t.to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
+        let now = chrono::Utc::now();
+        let n = self.conn.execute(
+            "INSERT INTO kv (key, value) VALUES (?1, ?2)
+             ON CONFLICT(key) DO UPDATE SET value = excluded.value WHERE kv.value < ?3",
+            params![key, fmt(now + ttl), fmt(now)],
+        )?;
+        Ok(n > 0)
+    }
+
     pub fn kv_with_prefix(&self, prefix: &str) -> Result<Vec<(String, String)>> {
         let mut stmt = self.conn.prepare(
             "SELECT key, value FROM kv WHERE substr(key, 1, length(?1)) = ?1 ORDER BY key",
@@ -350,6 +364,18 @@ mod tests {
         assert_eq!(db.get_kv("a").unwrap().as_deref(), Some("2"));
         db.del_kv("a").unwrap();
         assert_eq!(db.get_kv("a").unwrap(), None);
+    }
+
+    #[test]
+    fn lease_is_exclusive_until_expired() {
+        let db = Db::open_in_memory().unwrap();
+        let ttl = chrono::Duration::minutes(10);
+        assert!(db.try_lease("lock", ttl).unwrap());
+        assert!(!db.try_lease("lock", ttl).unwrap());
+        db.set_kv("lock", "2000-01-01T00:00:00Z").unwrap();
+        assert!(db.try_lease("lock", ttl).unwrap());
+        db.del_kv("lock").unwrap();
+        assert!(db.try_lease("lock", ttl).unwrap());
     }
 
     #[test]
