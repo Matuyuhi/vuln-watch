@@ -270,7 +270,7 @@ pub fn urgent_fallback_message(item: &Item, decision: &Decision) -> Message {
     let icon = if item.kev { "🔥" } else { "🚨" };
     let mut text = format!(
         "{icon} {} — {}\n{}",
-        item.display_id(),
+        escape_md(&truncate(item.display_id(), 200)),
         escape_md(&truncate(&item.title, 300)),
         escape_md(&truncate(&decision.reason, 300)),
     );
@@ -416,5 +416,12 @@ mod tests {
         assert!(m.content.contains("CISA KEV"));
         assert!(m.content.ends_with("<https://example.com/1>"));
         assert!(m.content.chars().count() <= 2000);
+
+        // An unbounded feed GUID must not crowd out the reason and link.
+        let mut it = Item::new("rel", "g".repeat(5000));
+        it.url = "https://example.com/x".into();
+        let m = urgent_fallback_message(&it, &Decision::new(Level::Urgent, "watch: nginx"));
+        assert!(m.content.contains("watch: nginx"));
+        assert!(m.content.ends_with("<https://example.com/x>"));
     }
 }
