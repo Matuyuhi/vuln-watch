@@ -137,7 +137,7 @@ sudo ./deploy/install.sh
 ```bash
 sudo vuln-watch doctor
 
-sudo systemctl start vuln-watch@test-notify.service
+sudo vuln-watch test-notify
 
 sudo systemctl enable --now vuln-watch-run.timer vuln-watch-digest.timer
 sudo journalctl -u 'vuln-watch@*' -f
@@ -160,7 +160,7 @@ vuln-watch [--config PATH] [--state-dir DIR] <COMMAND>
 
 `--state-dir` の既定値は `$STATE_DIRECTORY` です（systemd では `/var/lib/vuln-watch`）。
 
-インストール済みのホストでは `/etc/vuln-watch/env` を読み込み、共有の state を使うのは systemd の unit だけです。そのためシェルから `run`・`digest`・`test-notify` を実行すると、案内を出して止まります。代わりに `sudo systemctl start vuln-watch@digest.service` を使い、出力は `sudo journalctl -u vuln-watch@digest` で確認してください。`--dry-run` や `--state-dir` を明示した場合はこれまでどおり動きます。
+インストール済みのホストでは、シェルから実行した `run`・`digest`・`test-notify`・`check-config` は systemd のサービスとして動きます。`sudo` を付けると、vuln-watch が `vuln-watch@.service` と同じ設定で `systemd-run` 経由で自分自身を実行し直します。そのため `/etc/vuln-watch/env` の認証情報を使い、タイマーと同じ state を共有しつつ、出力と終了コードはそのまま端末に返ります（`sudo vuln-watch digest`、`sudo vuln-watch run --strict` など）。`sudo` なしでは案内を出して止まります。ただし認証情報も state も使わない `run --dry-run` はそのまま動きます。別の state ディレクトリでローカルに実行したい場合は `--state-dir` を指定してください。
 
 `--dry-run` は送信せずに判定結果を表示し、状態も保存しません:
 

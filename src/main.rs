@@ -1,6 +1,7 @@
 mod app;
 mod config;
 mod db;
+mod delegate;
 mod discord;
 mod doctor;
 mod http;
@@ -14,7 +15,7 @@ mod upgrade;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 
 use crate::app::{RunOptions, Secrets};
@@ -24,7 +25,8 @@ use crate::discord::Notifier;
 use crate::http::Http;
 
 const DEFAULT_STATE_DIR: &str = "./state";
-/// Present on hosts installed with deploy/install.sh; loaded only by the systemd unit.
+/// Present on hosts installed with deploy/install.sh; loaded only by the systemd unit,
+/// so shell invocations there are re-run under systemd (see `delegate`).
 const INSTALLED_ENV_FILE: &str = "/etc/vuln-watch/env";
 
 #[derive(Parser)]
@@ -117,7 +119,7 @@ fn init_logging() {
 fn main() -> ExitCode {
     init_logging();
     match real_main() {
-        Ok(()) => ExitCode::SUCCESS,
+        Ok(code) => code,
         Err(e) => {
             tracing::error!("{e:#}");
             ExitCode::FAILURE
@@ -125,7 +127,35 @@ fn main() -> ExitCode {
     }
 }
 
-fn real_main() -> Result<()> {
+impl Command {
+    /// The subcommand and flags, to re-run it under systemd. None: runs here.
+    fn delegated_args(&self) -> Option<Vec<String>> {
+        let flag = |on: bool, name: &str| on.then(|| name.to_string());
+        Some(match self {
+            Command::Run {
+                dry_run,
+                limit,
+                strict,
+            } => {
+                let mut a = vec!["run".to_string()];
+                if *dry_run {
+                    a.extend(["--dry-run".to_string(), format!("--limit={limit}")]);
+                }
+                a.extend(flag(*strict, "--strict"));
+                a
+            }
+            Command::Digest { dry_run } => ["digest".to_string()]
+                .into_iter()
+                .chain(flag(*dry_run, "--dry-run"))
+                .collect(),
+            Command::TestNotify => vec!["test-notify".to_string()],
+            Command::CheckConfig => vec!["check-config".to_string()],
+            Command::Doctor { .. } | Command::Upgrade { .. } => return None,
+        })
+    }
+}
+
+fn real_main() -> Result<ExitCode> {
     let cli = Cli::parse();
     // Needs no config, so it also works when the config is broken.
     if let Command::Upgrade {
@@ -145,7 +175,8 @@ fn real_main() -> Result<()> {
             pre,
             force,
         };
-        return upgrade::run(&http, token.as_deref(), &opts);
+        upgrade::run(&http, token.as_deref(), &opts)?;
+        return Ok(ExitCode::SUCCESS);
     }
     // Also needs no config: a broken config is one of the things it reports.
     if let Command::Doctor { offline } = cli.command {
@@ -157,24 +188,22 @@ fn real_main() -> Result<()> {
             state_dir,
             offline,
         };
-        return doctor::run(&http, &opts);
+        doctor::run(&http, &opts)?;
+        return Ok(ExitCode::SUCCESS);
     }
 
-    // On an installed host the credentials and state belong to the systemd unit.
-    let unit = match cli.command {
-        Command::Run { dry_run: false, .. } => Some("run"),
-        Command::Digest { dry_run: false } => Some("digest"),
-        Command::TestNotify => Some("test-notify"),
-        _ => None,
-    };
-    if let Some(unit) = unit {
-        if cli.state_dir == Path::new(DEFAULT_STATE_DIR) && Path::new(INSTALLED_ENV_FILE).exists() {
-            bail!(
-                "outside systemd, {INSTALLED_ENV_FILE} is not loaded and state is not shared with the timers; \
-                 run `sudo systemctl start vuln-watch@{unit}.service` \
-                 (output: sudo journalctl -u vuln-watch@{unit} -n 40), \
-                 or pass --state-dir to run against a separate state directory"
-            );
+    // On an installed host the credentials and state belong to the systemd unit:
+    // run there, with the output on this terminal. Inside the unit
+    // $STATE_DIRECTORY is set, so this does not recurse.
+    if cli.state_dir == Path::new(DEFAULT_STATE_DIR)
+        && Path::new(INSTALLED_ENV_FILE).exists()
+        && Path::new("/run/systemd/system").is_dir()
+    {
+        // A dry run needs no credentials or state, so it still works without sudo.
+        let local_dry_run =
+            matches!(cli.command, Command::Run { dry_run: true, .. }) && !doctor::is_root();
+        if let Some(args) = cli.command.delegated_args().filter(|_| !local_dry_run) {
+            return delegate::run(&cli.config, &args);
         }
     }
 
@@ -279,5 +308,5 @@ fn real_main() -> Result<()> {
         }
         Command::Upgrade { .. } | Command::Doctor { .. } => unreachable!("handled above"),
     }
-    Ok(())
+    Ok(ExitCode::SUCCESS)
 }

@@ -58,7 +58,7 @@ cat <<'EOF'
 Installed. Next steps:
   1. edit /etc/vuln-watch/config.toml and /etc/vuln-watch/env
   2. sudo vuln-watch doctor   (the timers stay FAIL until step 4)
-  3. sudo systemctl start vuln-watch@test-notify.service   (test DM)
+  3. sudo vuln-watch test-notify   (test DM)
   4. sudo systemctl enable --now vuln-watch-run.timer vuln-watch-digest.timer
   5. sudo vuln-watch doctor   (again, to confirm the timers)
   logs: sudo journalctl -u 'vuln-watch@*' -f

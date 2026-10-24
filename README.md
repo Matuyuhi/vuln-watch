@@ -137,7 +137,7 @@ sudo ./deploy/install.sh
 ```bash
 sudo vuln-watch doctor
 
-sudo systemctl start vuln-watch@test-notify.service
+sudo vuln-watch test-notify
 
 sudo systemctl enable --now vuln-watch-run.timer vuln-watch-digest.timer
 sudo journalctl -u 'vuln-watch@*' -f
@@ -160,7 +160,7 @@ vuln-watch [--config PATH] [--state-dir DIR] <COMMAND>
 
 `--state-dir` defaults to `$STATE_DIRECTORY` (`/var/lib/vuln-watch` under systemd).
 
-On an installed host, only the systemd unit loads `/etc/vuln-watch/env` and uses the shared state, so `run`, `digest` and `test-notify` refuse to run from a shell; use `sudo systemctl start vuln-watch@digest.service` (and `sudo journalctl -u vuln-watch@digest` for the output) instead. `--dry-run` and an explicit `--state-dir` still work.
+On an installed host, `run`, `digest`, `test-notify` and `check-config` started from a shell run as the systemd service: with `sudo`, vuln-watch re-runs itself through `systemd-run` with the settings of `vuln-watch@.service`, so it gets the credentials from `/etc/vuln-watch/env` and shares state with the timers, while the output and exit code stay in your terminal (`sudo vuln-watch digest`, `sudo vuln-watch run --strict`). Without `sudo` they stop with a hint, except `run --dry-run`, which needs neither. Pass `--state-dir` to run locally against a separate state directory instead.
 
 `--dry-run` prints decisions instead of sending and keeps no state:
 

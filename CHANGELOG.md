@@ -5,6 +5,10 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 
 ## [Unreleased]
 
+### Changed
+
+- On an installed host, `sudo vuln-watch run`, `digest`, `test-notify` and `check-config` from a shell now run as the systemd service via `systemd-run` (same sandbox, `/etc/vuln-watch/env` and state as the timers), with output and exit code in the terminal, instead of stopping with a pointer to `systemctl start`. Without root they ask for `sudo`; `run --dry-run` still runs locally.
+
 ## [1.0.0] - 2026-10-24
 
 ### Added
