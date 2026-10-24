@@ -209,6 +209,7 @@ CI ワークフロー:
 - [CI](.github/workflows/ci.yml): fmt、clippy、テスト。
 - [Live smoke test](.github/workflows/smoke.yml): 週 1 回、実際の情報源に対して dry-run を実行し、上流のフォーマット変更を検知します。
 - [Dependencies](.github/workflows/deps.yml): [cargo-deny](deny.toml) を毎日実行します（RustSec、ライセンス、禁止クレート、取得元）。依存の更新 PR は Dependabot が週 1 回作成します。
+- [CodeQL](.github/workflows/codeql.yml): Rust コードとワークフローの静的解析。push・PR ごとと週 1 回実行し、結果は *Security → Code scanning* に表示されます。
 - [Release](.github/workflows/release.yml): リリースを作成・公開します（下記）。
 
 ### リリース手順
