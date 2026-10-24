@@ -117,6 +117,10 @@ pub fn run(
     flush_outbox(cfg, db, notifier, opts, &mut summary)?;
 
     if !opts.dry_run {
+        retry_digest(cfg, db, notifier);
+    }
+
+    if !opts.dry_run {
         let hb = secrets
             .heartbeat_url
             .clone()
@@ -338,7 +342,47 @@ fn source_failed(
     Ok(())
 }
 
+/// Set when a digest fails to send (value: time of the failed attempt); `run` then retries it.
+const DIGEST_RETRY_KEY: &str = "digest:retry";
+const DIGEST_RETRY_INTERVAL_MINUTES: i64 = 5;
+/// Held while a digest is being sent, so the scheduled digest and a retry from `run`
+/// (separate service instances) never send the same queue entries twice.
+const DIGEST_LOCK_KEY: &str = "digest:lock";
+/// Longer than the unit's TimeoutStartSec, so a killed process does not block digests for long.
+const DIGEST_LOCK_MINUTES: i64 = 10;
+
+/// Send the queued digest. Each message's entries are dequeued once it is sent, so a
+/// failure part way leaves only the unsent entries queued, and `run` resends them.
 pub fn digest(cfg: &Config, db: &Db, notifier: &Notifier) -> Result<usize> {
+    if !db.try_lease(
+        DIGEST_LOCK_KEY,
+        chrono::Duration::minutes(DIGEST_LOCK_MINUTES),
+    )? {
+        tracing::info!("digest: another digest is being sent, skipping");
+        return Ok(0);
+    }
+    let result = locked_digest(cfg, db, notifier);
+    if let Err(e) = db.del_kv(DIGEST_LOCK_KEY) {
+        tracing::warn!("could not release {DIGEST_LOCK_KEY}: {e:#}");
+    }
+    result
+}
+
+fn locked_digest(cfg: &Config, db: &Db, notifier: &Notifier) -> Result<usize> {
+    let resumed = db.get_kv(DIGEST_RETRY_KEY)?.is_some();
+    let result = send_digest(cfg, db, notifier, resumed);
+    match &result {
+        Ok(_) => db.del_kv(DIGEST_RETRY_KEY)?,
+        Err(_) => {
+            if let Err(e) = db.set_kv(DIGEST_RETRY_KEY, &chrono::Utc::now().to_rfc3339()) {
+                tracing::warn!("could not record the failed digest for retry: {e:#}");
+            }
+        }
+    }
+    result
+}
+
+fn send_digest(cfg: &Config, db: &Db, notifier: &Notifier, resumed: bool) -> Result<usize> {
     let entries = db.queue_entries(Queue::Digest)?;
     if entries.is_empty() {
         if cfg.runtime.digest_send_empty {
@@ -350,10 +394,17 @@ pub fn digest(cfg: &Config, db: &Db, notifier: &Notifier) -> Result<usize> {
         tracing::info!("digest: nothing to send");
         return Ok(0);
     }
-    let msgs = discord::digest_messages(&entries);
-    notifier.send_all(db, &msgs)?;
-    for e in &entries {
-        db.dequeue(Queue::Digest, &e.key)?;
+    let msgs = discord::digest_messages(&entries, resumed);
+    for (i, (msg, keys)) in msgs.iter().enumerate() {
+        if i > 0 {
+            notifier.pace();
+        }
+        notifier
+            .send(db, msg)
+            .with_context(|| format!("sending digest message {}/{}", i + 1, msgs.len()))?;
+        for key in keys {
+            db.dequeue(Queue::Digest, key)?;
+        }
     }
     tracing::info!(
         "digest: sent {} items in {} messages",
@@ -361,6 +412,30 @@ pub fn digest(cfg: &Config, db: &Db, notifier: &Notifier) -> Result<usize> {
         msgs.len()
     );
     Ok(entries.len())
+}
+
+/// Resend a digest that failed, at most every few minutes. Failures are only logged so
+/// they never hold up urgent delivery or change the exit code of `run`.
+fn retry_digest(cfg: &Config, db: &Db, notifier: &Notifier) {
+    let last = match db.get_kv(DIGEST_RETRY_KEY) {
+        Ok(Some(v)) => v,
+        Ok(None) => return,
+        Err(e) => {
+            tracing::warn!("reading {DIGEST_RETRY_KEY} failed: {e:#}");
+            return;
+        }
+    };
+    let due = chrono::DateTime::parse_from_rfc3339(&last).map_or(true, |t| {
+        chrono::Utc::now().signed_duration_since(t)
+            >= chrono::Duration::minutes(DIGEST_RETRY_INTERVAL_MINUTES)
+    });
+    if !due {
+        return;
+    }
+    tracing::info!("retrying the digest that failed at {last}");
+    if let Err(e) = digest(cfg, db, notifier) {
+        tracing::warn!("digest retry failed: {e:#}");
+    }
 }
 
 pub fn test_message() -> Message {
@@ -372,4 +447,155 @@ pub fn test_message() -> Message {
     item.severity = Some("critical".into());
     item.products = vec!["example product".into()];
     discord::urgent_message(&item, &Decision::new(Level::Urgent, "テスト"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn config() -> Config {
+        let mut cfg = Config::parse("").unwrap();
+        cfg.sources.clear();
+        cfg.installed.enabled = false;
+        cfg
+    }
+
+    fn recorder(http: &Http, fail_on: Option<usize>) -> Notifier<'_> {
+        Notifier::new(
+            http,
+            Target::Recorder {
+                sent: Default::default(),
+                attempts: Default::default(),
+                fail_on,
+            },
+        )
+    }
+
+    fn secrets() -> Secrets {
+        Secrets {
+            bot_token: None,
+            webhook_url: None,
+            user_id: None,
+            github_token: None,
+            heartbeat_url: None,
+        }
+    }
+
+    /// Queue enough entries for three digest messages; returns the keys per message.
+    fn fill_digest(db: &Db) -> Vec<Vec<String>> {
+        for i in 0..60 {
+            let mut item = Item::new("ghsa", format!("GHSA-{i:04}"));
+            item.title = "x".repeat(90);
+            item.url = format!("https://example.com/{i}");
+            db.enqueue(Queue::Digest, &format!("k{i:03}"), &item, "CVSS 9.1 ≥ 9.0")
+                .unwrap();
+        }
+        let msgs = discord::digest_messages(&db.queue_entries(Queue::Digest).unwrap(), false);
+        assert_eq!(msgs.len(), 3);
+        msgs.into_iter().map(|(_, keys)| keys).collect()
+    }
+
+    fn queued(db: &Db) -> Vec<String> {
+        let entries = db.queue_entries(Queue::Digest).unwrap();
+        entries.into_iter().map(|e| e.key).collect()
+    }
+
+    fn make_retry_due(db: &Db) {
+        let t = chrono::Utc::now() - chrono::Duration::minutes(DIGEST_RETRY_INTERVAL_MINUTES);
+        db.set_kv(DIGEST_RETRY_KEY, &t.to_rfc3339()).unwrap();
+    }
+
+    #[test]
+    fn partial_digest_failure_keeps_only_unsent_entries() {
+        let (cfg, http) = (config(), Http::new(5).unwrap());
+        let mut db = Db::open_in_memory().unwrap();
+        let keys = fill_digest(&db);
+
+        let notifier = recorder(&http, Some(2));
+        assert!(digest(&cfg, &db, &notifier).is_err());
+        assert_eq!(notifier.sent().len(), 1);
+        let rest: Vec<String> = keys[1..].concat();
+        assert_eq!(queued(&db), rest);
+        assert!(db.get_kv(DIGEST_RETRY_KEY).unwrap().is_some());
+
+        // Not retried right after the failure.
+        let notifier = recorder(&http, None);
+        retry_digest(&cfg, &db, &notifier);
+        assert!(notifier.sent().is_empty());
+
+        make_retry_due(&db);
+        let opts = RunOptions {
+            dry_run: false,
+            limit: None,
+            strict: true,
+        };
+        run(&cfg, &mut db, &http, &notifier, &secrets(), &opts).unwrap();
+        let sent = notifier.sent();
+        assert_eq!(sent.len(), 2);
+        assert!(sent[0]
+            .content
+            .starts_with(&format!("📋 脆弱性ダイジェスト（再送）: {}件", rest.len())));
+        assert!(queued(&db).is_empty());
+        assert!(db.get_kv(DIGEST_RETRY_KEY).unwrap().is_none());
+    }
+
+    #[test]
+    fn successful_digest_leaves_no_retry_key() {
+        let (cfg, db, http) = (
+            config(),
+            Db::open_in_memory().unwrap(),
+            Http::new(5).unwrap(),
+        );
+        fill_digest(&db);
+        let notifier = recorder(&http, None);
+        assert_eq!(digest(&cfg, &db, &notifier).unwrap(), 60);
+        assert_eq!(notifier.sent().len(), 3);
+        assert!(notifier.sent()[0]
+            .content
+            .starts_with("📋 脆弱性ダイジェスト: 60件"));
+        assert!(queued(&db).is_empty());
+        assert!(db.get_kv(DIGEST_RETRY_KEY).unwrap().is_none());
+    }
+
+    #[test]
+    fn digest_skips_while_another_is_sending() {
+        let (cfg, db, http) = (
+            config(),
+            Db::open_in_memory().unwrap(),
+            Http::new(5).unwrap(),
+        );
+        fill_digest(&db);
+        assert!(db
+            .try_lease(DIGEST_LOCK_KEY, chrono::Duration::minutes(1))
+            .unwrap());
+        let notifier = recorder(&http, None);
+        assert_eq!(digest(&cfg, &db, &notifier).unwrap(), 0);
+        assert!(notifier.sent().is_empty());
+        assert_eq!(queued(&db).len(), 60);
+    }
+
+    #[test]
+    fn digest_retry_failure_does_not_fail_run() {
+        let (cfg, http) = (config(), Http::new(5).unwrap());
+        let mut db = Db::open_in_memory().unwrap();
+        fill_digest(&db);
+        make_retry_due(&db);
+        let mut item = Item::new("kev", "CVE-2026-0001");
+        item.cve = Some("CVE-2026-0001".into());
+        db.enqueue(Queue::Outbox, &item.alert_key(), &item, "CISA KEV")
+            .unwrap();
+
+        // The urgent message goes out first; the digest retry then fails.
+        let notifier = recorder(&http, Some(2));
+        let opts = RunOptions {
+            dry_run: false,
+            limit: None,
+            strict: true,
+        };
+        let summary = run(&cfg, &mut db, &http, &notifier, &secrets(), &opts).unwrap();
+        assert_eq!(summary.urgent, 1);
+        assert_eq!(db.queue_len(Queue::Outbox).unwrap(), 0);
+        assert_eq!(queued(&db).len(), 60);
+        assert!(db.get_kv(DIGEST_RETRY_KEY).unwrap().is_some());
+    }
 }
