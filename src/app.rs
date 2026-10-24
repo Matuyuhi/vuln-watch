@@ -345,10 +345,30 @@ fn source_failed(
 /// Set when a digest fails to send (value: time of the failed attempt); `run` then retries it.
 const DIGEST_RETRY_KEY: &str = "digest:retry";
 const DIGEST_RETRY_INTERVAL_MINUTES: i64 = 5;
+/// Held while a digest is being sent, so the scheduled digest and a retry from `run`
+/// (separate service instances) never send the same queue entries twice.
+const DIGEST_LOCK_KEY: &str = "digest:lock";
+/// Longer than the unit's TimeoutStartSec, so a killed process does not block digests for long.
+const DIGEST_LOCK_MINUTES: i64 = 10;
 
 /// Send the queued digest. Each message's entries are dequeued once it is sent, so a
 /// failure part way leaves only the unsent entries queued, and `run` resends them.
 pub fn digest(cfg: &Config, db: &Db, notifier: &Notifier) -> Result<usize> {
+    if !db.try_lease(
+        DIGEST_LOCK_KEY,
+        chrono::Duration::minutes(DIGEST_LOCK_MINUTES),
+    )? {
+        tracing::info!("digest: another digest is being sent, skipping");
+        return Ok(0);
+    }
+    let result = locked_digest(cfg, db, notifier);
+    if let Err(e) = db.del_kv(DIGEST_LOCK_KEY) {
+        tracing::warn!("could not release {DIGEST_LOCK_KEY}: {e:#}");
+    }
+    result
+}
+
+fn locked_digest(cfg: &Config, db: &Db, notifier: &Notifier) -> Result<usize> {
     let resumed = db.get_kv(DIGEST_RETRY_KEY)?.is_some();
     let result = send_digest(cfg, db, notifier, resumed);
     match &result {
@@ -535,6 +555,23 @@ mod tests {
             .starts_with("📋 脆弱性ダイジェスト: 60件"));
         assert!(queued(&db).is_empty());
         assert!(db.get_kv(DIGEST_RETRY_KEY).unwrap().is_none());
+    }
+
+    #[test]
+    fn digest_skips_while_another_is_sending() {
+        let (cfg, db, http) = (
+            config(),
+            Db::open_in_memory().unwrap(),
+            Http::new(5).unwrap(),
+        );
+        fill_digest(&db);
+        assert!(db
+            .try_lease(DIGEST_LOCK_KEY, chrono::Duration::minutes(1))
+            .unwrap());
+        let notifier = recorder(&http, None);
+        assert_eq!(digest(&cfg, &db, &notifier).unwrap(), 0);
+        assert!(notifier.sent().is_empty());
+        assert_eq!(queued(&db).len(), 60);
     }
 
     #[test]
