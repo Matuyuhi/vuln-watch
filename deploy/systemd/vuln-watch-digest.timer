@@ -1,0 +1,10 @@
+[Unit]
+Description=Send the vulnerability digest every morning
+
+[Timer]
+Unit=vuln-watch@digest.service
+OnCalendar=*-*-* 08:00:00 Asia/Tokyo
+Persistent=true
+
+[Install]
+WantedBy=timers.target

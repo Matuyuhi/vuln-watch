@@ -1,0 +1,22 @@
+# Fetch every source from the real internet with --dry-run, to catch upstream
+# format changes early. Nothing is sent to Discord.
+name: Live smoke test
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "17 21 * * 0" # weekly, Monday 06:17 JST
+
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo build --release
+      - name: Dry run against live sources
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RUST_LOG: info
+        run: ./target/release/vuln-watch --config config.example.toml run --dry-run --limit 5 --strict

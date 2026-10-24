@@ -1,0 +1,49 @@
+#!/usr/bin/env bash
+# Install or update vuln-watch on a systemd host.
+#   sudo ./deploy/install.sh [path/to/vuln-watch-binary]
+# Without an argument the binary is built with `cargo build --release`.
+set -euo pipefail
+
+cd "$(dirname "$0")/.."
+
+if [[ $EUID -ne 0 ]]; then
+  echo "run as root (sudo)" >&2
+  exit 1
+fi
+
+BIN="${1:-}"
+if [[ -z "$BIN" ]]; then
+  if [[ -n "${SUDO_USER:-}" ]]; then
+    sudo -u "$SUDO_USER" -H bash -lc "cd '$PWD' && cargo build --release --locked"
+  else
+    cargo build --release --locked
+  fi
+  BIN=target/release/vuln-watch
+fi
+
+install -Dm755 "$BIN" /usr/local/bin/vuln-watch
+
+install -d -m755 /etc/vuln-watch
+if [[ ! -f /etc/vuln-watch/config.toml ]]; then
+  install -m644 config.example.toml /etc/vuln-watch/config.toml
+  echo "created /etc/vuln-watch/config.toml (edit discord.user_id and the watch list)"
+fi
+if [[ ! -f /etc/vuln-watch/env ]]; then
+  install -m600 deploy/env.example /etc/vuln-watch/env
+  echo "created /etc/vuln-watch/env (set DISCORD_BOT_TOKEN etc.)"
+fi
+
+install -m644 deploy/systemd/vuln-watch@.service /etc/systemd/system/
+install -m644 deploy/systemd/vuln-watch-run.timer /etc/systemd/system/
+install -m644 deploy/systemd/vuln-watch-digest.timer /etc/systemd/system/
+systemctl daemon-reload
+
+cat <<'EOF'
+
+Installed. Next steps:
+  1. edit /etc/vuln-watch/config.toml and /etc/vuln-watch/env
+  2. sudo systemctl start vuln-watch@check-config.service && journalctl -u vuln-watch@check-config -n 40
+  3. sudo systemctl start vuln-watch@test-notify.service   (test DM)
+  4. sudo systemctl enable --now vuln-watch-run.timer vuln-watch-digest.timer
+  logs: journalctl -u 'vuln-watch@*' -f
+EOF

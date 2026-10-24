@@ -1,0 +1,156 @@
+# vuln-watch 設定例
+# 本番では /etc/vuln-watch/config.toml に置く。秘密情報（トークン等）はここに書かず
+# /etc/vuln-watch/env（EnvironmentFile）に書くこと。
+
+[discord]
+# "dm"      : Bot から自分宛ての DM（DISCORD_BOT_TOKEN が必要）
+# "webhook" : チャンネルの Webhook（DISCORD_WEBHOOK_URL が必要）
+mode = "dm"
+# DM の送り先ユーザー ID（開発者モードでユーザーを右クリック → ID をコピー）
+# 環境変数 DISCORD_USER_ID でも指定可
+user_id = "000000000000000000"
+
+[rules]
+# CISA KEV（実際に悪用が確認された脆弱性）は常に即時通知
+kev_urgent = true
+# ウォッチ対象に強く一致（パッケージ名・製品名・タイトル）したとき、
+# CVSS がこの値以上、またはスコア未付与なら即時通知。未満ならダイジェスト。
+# 本文だけに名前が出る弱い一致は、誤検知防止のため常にダイジェスト。
+watch_urgent_cvss = 7.0
+# ウォッチ対象外でも、CVSS がこの値以上なら即時通知（0 で無効）
+urgent_cvss = 0
+# ウォッチ対象外で CVSS がこの値以上ならダイジェスト（0 で無効）
+digest_cvss = 9.0
+# ウォッチ対象外の通知から除外する語（KEV とウォッチ一致は除外されない）
+exclude_keywords = ["wordpress", "plugin for wordpress", "sourcecodester", "code-projects"]
+
+[runtime]
+# 1 回の実行で送る即時通知の上限（超過分はダイジェストへ）
+max_urgent_per_run = 10
+# 同じソースがこの回数連続で失敗したら警告を送る（2分間隔なら約10分）
+alert_after_failures = 5
+http_timeout_secs = 30
+# 実行成功ごとに GET する死活監視 URL（healthchecks.io 等）。環境変数 HEARTBEAT_URL でも可
+# heartbeat_url = "https://hc-ping.com/xxxxxxxx"
+# 新着ゼロでもダイジェストを送る（毎朝の生存確認を兼ねる）
+digest_send_empty = true
+# 1 回の実行で取得する CVE レコードの上限
+cvelist_max_records = 300
+
+# ───────── 監視対象（ウォッチリスト） ─────────
+# keywords: タイトル/製品名/本文に単語単位で一致（大文字小文字を無視）
+# packages: GitHub Advisory 等のパッケージ名に完全一致（Maven は group:artifact）
+# keywords と packages を両方省略すると name がキーワードになる
+# sources: このソースにだけ適用（省略で全ソース）。CVE が大量に出る対象のノイズ対策に使う
+# urgent = false: 一致してもダイジェストのみ（件数が多い対象向け）
+
+# --- サーバー (Ubuntu VPS) ---
+[[watch]]
+name = "nginx"
+
+# カーネルは CVE が 1 日に数十件出るため、パッチ公開（USN）と oss-security に限定する
+# （悪用が確認されたものは KEV 経由で必ず即時通知される）
+[[watch]]
+name = "Linux kernel"
+keywords = ["linux kernel"]
+sources = ["ubuntu-usn", "oss-security"]
+
+[[watch]]
+name = "OpenSSH"
+keywords = ["openssh"]
+
+[[watch]]
+name = "OpenSSL"
+keywords = ["openssl"]
+
+[[watch]]
+name = "sudo"
+keywords = ["sudo"]
+
+[[watch]]
+name = "glibc"
+keywords = ["glibc", "gnu c library"]
+
+[[watch]]
+name = "systemd"
+
+[[watch]]
+name = "fail2ban"
+
+# --- Android / Kotlin ---
+# Android / Samsung は月例パッチで数十件まとめて出るのでダイジェストに回す
+# （悪用確認済みのものは KEV 経由で即時通知される）
+[[watch]]
+name = "Android"
+keywords = ["google android", "android os"]
+urgent = false
+
+[[watch]]
+name = "Samsung Mobile"
+keywords = ["samsung mobile"]
+urgent = false
+
+[[watch]]
+name = "OkHttp"
+keywords = ["okhttp"]
+packages = ["com.squareup.okhttp3:okhttp", "com.squareup.okhttp:okhttp"]
+
+[[watch]]
+name = "Ktor"
+keywords = ["ktor"]
+packages = ["io.ktor:ktor-server-core", "io.ktor:ktor-client-core", "io.ktor:ktor-http"]
+
+[[watch]]
+name = "Kotlin"
+packages = ["org.jetbrains.kotlin:kotlin-stdlib", "org.jetbrains.kotlin:kotlin-compiler"]
+
+[[watch]]
+name = "Gradle / AGP"
+keywords = ["gradle"]
+packages = ["com.android.tools.build:gradle"]
+
+# --- Rust ---
+[[watch]]
+name = "tokio"
+packages = ["tokio"]
+
+[[watch]]
+name = "rustls"
+packages = ["rustls"]
+
+# ───────── 情報源 ─────────
+# kind: kev / ghsa / cvelist / feed（RSS・Atom）
+# mode: filter（ルールで判定・既定）/ urgent（新着は全部即時）/ digest（全部ダイジェスト）
+# [[source]] を 1 つも書かないと kev・ghsa・cvelist の 3 つが有効になる
+
+# CISA Known Exploited Vulnerabilities（悪用確認済み）
+[[source]]
+kind = "kev"
+
+# GitHub Advisory Database（パッケージ単位。GITHUB_TOKEN 推奨）
+[[source]]
+kind = "ghsa"
+
+# CVE List（CVE 公開そのもの。数分おきに更新）
+[[source]]
+kind = "cvelist"
+
+# Ubuntu Security Notices（サーバーのパッチ公開）
+[[source]]
+kind = "feed"
+name = "ubuntu-usn"
+url = "https://ubuntu.com/security/notices/rss.xml"
+
+# oss-security メーリングリスト（CVE 採番前の一次情報が最初に出やすい）
+[[source]]
+kind = "feed"
+name = "oss-security"
+url = "https://seclists.org/rss/oss-sec.rss"
+ignore_title_prefixes = ["Re:"]
+
+# nginx のリリース（セキュリティ修正版の公開をいち早く検知）
+[[source]]
+kind = "feed"
+name = "nginx-releases"
+url = "https://github.com/nginx/nginx/releases.atom"
+mode = "digest"
