@@ -4,8 +4,9 @@ use crate::config::{Config, DeliveryMode, SourceConfig};
 use crate::db::{Db, Queue};
 use crate::discord::{self, Message, Notifier, Target};
 use crate::http::Http;
+use crate::installed::Installed;
 use crate::model::{Decision, Item, Level};
-use crate::rules;
+use crate::rules::{self, InstalledMatch};
 use crate::sources::{self, Ctx};
 use crate::text::truncate;
 
@@ -81,9 +82,29 @@ pub fn run(
 ) -> Result<RunSummary> {
     let mut summary = RunSummary::default();
 
+    // Read on every run so upgrades done by apt / unattended-upgrades are reflected.
+    let installed = if cfg.installed.enabled {
+        Some(Installed::load(&cfg.installed)?)
+    } else {
+        None
+    };
+    let installed_match = installed.as_ref().map(|i| InstalledMatch {
+        installed: i,
+        already_fixed: cfg.installed.already_fixed,
+    });
+
     for src in cfg.sources.iter().filter(|s| s.enabled) {
         let name = src.name();
-        match process_source(cfg, db, http, secrets, opts, src, &mut summary) {
+        match process_source(
+            cfg,
+            db,
+            http,
+            secrets,
+            opts,
+            src,
+            installed_match.as_ref(),
+            &mut summary,
+        ) {
             Ok(()) => source_succeeded(db, notifier, &name, opts.dry_run)?,
             Err(e) => {
                 tracing::warn!("source {name} failed: {e:#}");
@@ -179,6 +200,7 @@ fn process_source(
     secrets: &Secrets,
     opts: &RunOptions,
     src: &SourceConfig,
+    installed: Option<&InstalledMatch>,
     summary: &mut RunSummary,
 ) -> Result<()> {
     let name = src.name();
@@ -193,6 +215,7 @@ fn process_source(
             github_token: secrets.github_token.clone(),
             bootstrap,
             limit: opts.limit,
+            release: installed.and_then(|i| i.installed.release.clone()),
         };
         sources::fetch(src, &ctx)?
     };
@@ -215,7 +238,7 @@ fn process_source(
             continue;
         }
         new += 1;
-        let decision = rules::evaluate(&item, src.mode, &cfg.rules, &cfg.watches);
+        let decision = rules::evaluate_with(&item, src.mode, &cfg.rules, &cfg.watches, installed);
         if opts.dry_run {
             println!(
                 "[{name}] {:<7} {} — {} ({})",

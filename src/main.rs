@@ -3,6 +3,7 @@ mod config;
 mod db;
 mod discord;
 mod http;
+mod installed;
 mod model;
 mod rules;
 mod sources;
@@ -167,6 +168,18 @@ fn real_main() -> Result<()> {
                     w.effective_keywords(),
                     w.packages
                 );
+            }
+            if cfg.installed.enabled {
+                match installed::Installed::load(&cfg.installed) {
+                    Ok(i) => println!(
+                        "installed packages: {} (release: {})",
+                        i.package_count(),
+                        i.release.as_deref().unwrap_or("unknown")
+                    ),
+                    Err(e) => println!("installed packages: error ({e:#})"),
+                }
+            } else {
+                println!("installed packages: disabled");
             }
             let target = app::build_target(&cfg, &secrets, false);
             println!(

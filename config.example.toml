@@ -37,6 +37,19 @@ digest_send_empty = true
 # 1 回の実行で取得する CVE レコードの上限
 cvelist_max_records = 300
 
+# ───────── このサーバーのパッケージとの照合 ─────────
+# Ubuntu Security Notices（kind = "usn"）を、実際にインストールされているパッケージと照合する。
+#   未適用（インストール版 < 修正版） → 即時
+#   適用済み                          → already_fixed に従う（digest / ignore）
+#   未インストール                    → 通知しない（ウォッチリストより優先）
+# 毎回 dpkg の状態を読み直すので、apt upgrade 後は自動的に「適用済み」扱いになる。
+# dpkg のない環境（macOS 等）でローカル実行する場合は enabled = false に。
+[installed]
+enabled = true
+# dpkg_status = "/var/lib/dpkg/status"
+# release = "noble"        # 省略時は /etc/os-release から自動取得
+already_fixed = "digest"
+
 # ───────── 監視対象（ウォッチリスト） ─────────
 # keywords: タイトル/製品名/本文に単語単位で一致（大文字小文字を無視）
 # packages: GitHub Advisory 等のパッケージ名に完全一致（Maven は group:artifact）
@@ -48,12 +61,13 @@ cvelist_max_records = 300
 [[watch]]
 name = "nginx"
 
-# カーネルは CVE が 1 日に数十件出るため、パッチ公開（USN）と oss-security に限定する
-# （悪用が確認されたものは KEV 経由で必ず即時通知される）
+# カーネルは CVE が 1 日に数十件出るため oss-security に限定する。
+# パッチ公開は [installed] の照合で（実際に入っているカーネルだけ）即時通知され、
+# 悪用が確認されたものは KEV 経由で必ず即時通知される。
 [[watch]]
 name = "Linux kernel"
 keywords = ["linux kernel"]
-sources = ["ubuntu-usn", "oss-security"]
+sources = ["oss-security"]
 
 [[watch]]
 name = "OpenSSH"
@@ -147,11 +161,11 @@ kind = "ghsa"
 [[source]]
 kind = "cvelist"
 
-# Ubuntu Security Notices（サーバーのパッチ公開）
+# Ubuntu Security Notices（パッチ公開）。JSON API でページを遡れるので停止中の分も取りこぼさない。
+# release は [installed] から自動。単独で使う場合は release = "noble" のように指定
 [[source]]
-kind = "feed"
+kind = "usn"
 name = "ubuntu-usn"
-url = "https://ubuntu.com/security/notices/rss.xml"
 
 # oss-security メーリングリスト（CVE 採番前の一次情報が最初に出やすい）
 [[source]]

@@ -25,6 +25,10 @@ pub struct Item {
     pub published: Option<String>,
     /// Additional key/value pairs shown in the notification.
     pub extra: Vec<(String, String)>,
+    /// Distro packages and the version that fixes them, for the configured release
+    /// (Ubuntu Security Notices). Compared against installed packages.
+    #[serde(default)]
+    pub fixed: Vec<(String, String)>,
 }
 
 impl Item {

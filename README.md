@@ -8,7 +8,8 @@ systemd timer (2分) ──▶ vuln-watch run
                           ├─ CISA KEV        （悪用確認済み）
                           ├─ GitHub Advisory （パッケージ単位）
                           ├─ CVE List        （CVE 公開そのもの・数分遅延）
-                          └─ RSS/Atom        （Ubuntu USN, oss-security, リリース…）
+                          ├─ Ubuntu USN      （パッチ公開 × インストール済みパッケージ照合）
+                          └─ RSS/Atom        （oss-security, リリース…）
                                │
                      新着だけ抽出（SQLite で既読管理・ETag で差分取得）
                                │
@@ -35,6 +36,18 @@ systemd timer (2分) ──▶ vuln-watch run
 - あるソースの取得が連続して失敗すると ⚠️ 警告を送り、復旧すると ✅ を送ります
 - 1 回の実行で送る即時通知には上限があり（既定 10 件）、超えた分はダイジェストに回します
 
+### サーバーのパッケージとの照合（`[installed]`）
+
+`installed.enabled = true` にすると、Ubuntu Security Notices を VPS に**実際に入っているパッケージ**（`/var/lib/dpkg/status`）と照合します。照合結果は次のように扱います。
+
+| 照合結果 | 判定 |
+|---|---|
+| インストール済みで、バージョンが修正版より古い | **即時**（例：`zlib1g 1:1.3…2.2 → 1:1.3…2.3`） |
+| インストール済みで、修正版が適用済み | ダイジェスト（`already_fixed = "ignore"` で通知なし） |
+| このサーバーには入っていない | 通知しない |
+
+バージョンは dpkg と同じ規則で比較します。dpkg の状態は毎回読み直すので、`apt upgrade` の後は自動的に「適用済み」として扱われます。リリース名（noble など）は `/etc/os-release` から自動で取得します。
+
 しきい値・除外語・ウォッチリストは `config.toml` で変更できます（[config.example.toml](config.example.toml) を参照）。
 
 ### 取りこぼし対策
@@ -43,7 +56,8 @@ systemd timer (2分) ──▶ vuln-watch run
 - **GitHub Advisory**：`updated` 順に取得し、前回の位置までページを遡ります（停止中に 100 件を超えても、後から reviewed になった勧告も拾います）
 - **CVE List**：新しい CVE ID はまずキューに積み、1 回あたり `cvelist_max_records` 件ずつ処理します（上限を超えても捨てません）。同期の取りこぼしは、前回実行からの経過時間と、GitHub のコミット数（トークン設定時）で検知し、`deltaLog.json`（約 30 日分）から補完します。個別レコードの取得失敗は次回に再試行します
 - **KEV の格上げ**：すでに即時通知した CVE でも、後から KEV（悪用確認）に載ったら改めて通知します
-- **既知の限界**：RSS フィードは直近の数十件しか配信されないため、VPS が長時間止まっていた間の分は取りこぼす可能性があります
+- **Ubuntu USN**：RSS ではなく JSON API を使い、前回の位置までページを遡ります
+- **既知の限界**：oss-security やリリースフィードなどの RSS は直近の数十件しか配信されないため、VPS が長時間止まっていた間の分は取りこぼす可能性があります（KEV・GitHub Advisory・CVE List・USN は遡って補完します）
 
 ### 速さについて
 

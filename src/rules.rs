@@ -1,4 +1,7 @@
-use crate::config::{Rules, SourceMode, Watch};
+use std::cmp::Ordering;
+
+use crate::config::{AlreadyFixed, Rules, SourceMode, Watch};
+use crate::installed::{cmp_deb_version, Installed};
 use crate::model::{Decision, Item, Level};
 use crate::text::contains_word;
 
@@ -89,7 +92,66 @@ fn contains_any(item: &Item, words: &[String]) -> bool {
     words.iter().any(|k| contains_word(&hay, &k.to_lowercase()))
 }
 
+/// Packages installed on this machine and the policy for already-patched ones.
+pub struct InstalledMatch<'a> {
+    pub installed: &'a Installed,
+    pub already_fixed: AlreadyFixed,
+}
+
+/// Decide based on installed packages for items that carry fixed versions (USN).
+/// Returns None when the item has no distro package information.
+fn evaluate_installed(item: &Item, im: &InstalledMatch) -> Option<Decision> {
+    if item.fixed.is_empty() {
+        return None;
+    }
+    let mut vulnerable = Vec::new();
+    let mut patched = Vec::new();
+    for (pkg, fixed) in &item.fixed {
+        if let Some(v) = im.installed.version(pkg) {
+            if cmp_deb_version(v, fixed) == Ordering::Less {
+                vulnerable.push(format!("{pkg} {v} → {fixed}"));
+            } else {
+                patched.push(format!("{pkg} {v}"));
+            }
+        }
+    }
+    let list = |v: &[String]| {
+        let mut s = v.iter().take(3).cloned().collect::<Vec<_>>().join(", ");
+        if v.len() > 3 {
+            s.push_str(&format!(" 他{}件", v.len() - 3));
+        }
+        s
+    };
+    Some(if !vulnerable.is_empty() {
+        Decision::new(
+            Level::Urgent,
+            format!("インストール済み・未適用: {}", list(&vulnerable)),
+        )
+    } else if !patched.is_empty() {
+        match im.already_fixed {
+            AlreadyFixed::Digest => Decision::new(
+                Level::Digest,
+                format!("インストール済み・適用済み: {}", list(&patched)),
+            ),
+            AlreadyFixed::Ignore => Decision::new(Level::Ignore, "適用済み"),
+        }
+    } else {
+        Decision::new(Level::Ignore, "このサーバーには未インストール")
+    })
+}
+
+#[cfg(test)]
 pub fn evaluate(item: &Item, mode: SourceMode, rules: &Rules, watches: &[Watch]) -> Decision {
+    evaluate_with(item, mode, rules, watches, None)
+}
+
+pub fn evaluate_with(
+    item: &Item,
+    mode: SourceMode,
+    rules: &Rules,
+    watches: &[Watch],
+    installed: Option<&InstalledMatch>,
+) -> Decision {
     let m = match_watch(item, watches);
     let watch_note = m
         .as_ref()
@@ -114,6 +176,11 @@ pub fn evaluate(item: &Item, mode: SourceMode, rules: &Rules, watches: &[Watch])
             Level::Urgent,
             format!("CISA KEV（悪用確認済み）{watch_note}"),
         );
+    }
+
+    // Distro notices are about patches for this machine: decided by what is installed.
+    if let Some(d) = installed.and_then(|im| evaluate_installed(item, im)) {
+        return d;
     }
 
     if let Some(m) = &m {
@@ -351,6 +418,84 @@ mod tests {
         assert_eq!(
             evaluate(&i, SourceMode::Filter, &Rules::default(), &w).level,
             Level::Ignore
+        );
+    }
+
+    fn usn_item() -> Item {
+        let mut i = item("USN-8954-1: zlib vulnerability", None);
+        i.source = "ubuntu-usn".into();
+        i.fixed = vec![
+            ("zlib1g".into(), "1:1.3.dfsg-3.1ubuntu2.3".into()),
+            ("zlib1g-dev".into(), "1:1.3.dfsg-3.1ubuntu2.3".into()),
+        ];
+        i
+    }
+
+    #[test]
+    fn installed_and_outdated_is_urgent() {
+        let inst = Installed::from_pairs("noble", &[("zlib1g", "1:1.3.dfsg-3.1ubuntu2.2")]);
+        let im = InstalledMatch {
+            installed: &inst,
+            already_fixed: AlreadyFixed::Digest,
+        };
+        let d = evaluate_with(
+            &usn_item(),
+            SourceMode::Filter,
+            &Rules::default(),
+            &[],
+            Some(&im),
+        );
+        assert_eq!(d.level, Level::Urgent);
+        assert!(d
+            .reason
+            .contains("zlib1g 1:1.3.dfsg-3.1ubuntu2.2 → 1:1.3.dfsg-3.1ubuntu2.3"));
+    }
+
+    #[test]
+    fn installed_and_patched_follows_policy() {
+        let inst = Installed::from_pairs("noble", &[("zlib1g", "1:1.3.dfsg-3.1ubuntu2.3")]);
+        let mut im = InstalledMatch {
+            installed: &inst,
+            already_fixed: AlreadyFixed::Digest,
+        };
+        let r = Rules::default();
+        assert_eq!(
+            evaluate_with(&usn_item(), SourceMode::Filter, &r, &[], Some(&im)).level,
+            Level::Digest
+        );
+        im.already_fixed = AlreadyFixed::Ignore;
+        assert_eq!(
+            evaluate_with(&usn_item(), SourceMode::Filter, &r, &[], Some(&im)).level,
+            Level::Ignore
+        );
+    }
+
+    #[test]
+    fn not_installed_is_ignored_even_if_watched() {
+        let inst = Installed::from_pairs("noble", &[("nginx", "1.24.0-2ubuntu7.5")]);
+        let im = InstalledMatch {
+            installed: &inst,
+            already_fixed: AlreadyFixed::Digest,
+        };
+        let w = vec![Watch {
+            name: "zlib".into(),
+            keywords: vec![],
+            packages: vec![],
+            sources: vec![],
+            urgent: true,
+        }];
+        let d = evaluate_with(
+            &usn_item(),
+            SourceMode::Filter,
+            &Rules::default(),
+            &w,
+            Some(&im),
+        );
+        assert_eq!(d.level, Level::Ignore);
+        // Without installed matching the watch list decides.
+        assert_eq!(
+            evaluate(&usn_item(), SourceMode::Filter, &Rules::default(), &w).level,
+            Level::Urgent
         );
     }
 

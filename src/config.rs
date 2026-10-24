@@ -13,6 +13,8 @@ pub struct Config {
     pub rules: Rules,
     #[serde(default)]
     pub runtime: Runtime,
+    #[serde(default)]
+    pub installed: InstalledConfig,
     #[serde(default, rename = "watch")]
     pub watches: Vec<Watch>,
     #[serde(default, rename = "source")]
@@ -109,6 +111,51 @@ impl Default for Runtime {
     }
 }
 
+/// What to do with a notice whose packages are installed but already at the fixed version.
+#[derive(Debug, Clone, Copy, Default, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum AlreadyFixed {
+    #[default]
+    Digest,
+    Ignore,
+}
+
+/// Match Ubuntu Security Notices against the packages installed on this machine.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct InstalledConfig {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default = "default_dpkg_status")]
+    pub dpkg_status: String,
+    #[serde(default = "default_os_release")]
+    pub os_release: String,
+    /// Ubuntu codename such as "noble". Default: read from os_release.
+    #[serde(default)]
+    pub release: Option<String>,
+    #[serde(default)]
+    pub already_fixed: AlreadyFixed,
+}
+
+impl Default for InstalledConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            dpkg_status: default_dpkg_status(),
+            os_release: default_os_release(),
+            release: None,
+            already_fixed: AlreadyFixed::Digest,
+        }
+    }
+}
+
+fn default_dpkg_status() -> String {
+    "/var/lib/dpkg/status".into()
+}
+fn default_os_release() -> String {
+    "/etc/os-release".into()
+}
+
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Watch {
@@ -149,6 +196,8 @@ pub enum SourceKind {
     Ghsa,
     Cvelist,
     Feed,
+    /// Ubuntu Security Notices (JSON API, with per-release package versions).
+    Usn,
 }
 
 impl SourceKind {
@@ -158,6 +207,7 @@ impl SourceKind {
             SourceKind::Ghsa => "ghsa",
             SourceKind::Cvelist => "cvelist",
             SourceKind::Feed => "feed",
+            SourceKind::Usn => "usn",
         }
     }
 }
@@ -189,6 +239,9 @@ pub struct SourceConfig {
     /// Drop entries whose title starts with any of these (case-insensitive), e.g. ["Re:"].
     #[serde(default)]
     pub ignore_title_prefixes: Vec<String>,
+    /// `usn` only: Ubuntu codename to query. Default: installed.release / os-release.
+    #[serde(default)]
+    pub release: Option<String>,
 }
 
 impl SourceConfig {
@@ -272,6 +325,7 @@ pub fn default_sources() -> Vec<SourceConfig> {
             mode: SourceMode::Filter,
             enabled: true,
             ignore_title_prefixes: Vec::new(),
+            release: None,
         })
         .collect()
 }

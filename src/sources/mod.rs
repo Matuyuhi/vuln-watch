@@ -2,6 +2,7 @@ pub mod cvelist;
 pub mod feed;
 pub mod ghsa;
 pub mod kev;
+pub mod usn;
 
 use anyhow::Result;
 
@@ -19,6 +20,8 @@ pub struct Ctx<'a> {
     pub bootstrap: bool,
     /// Dry-run: cap the number of items returned.
     pub limit: Option<usize>,
+    /// Ubuntu release of this machine (from `[installed]`), used by `usn` sources.
+    pub release: Option<String>,
 }
 
 #[derive(Default)]
@@ -41,6 +44,12 @@ pub fn fetch(src: &SourceConfig, ctx: &Ctx) -> Result<Fetched> {
         SourceKind::Ghsa => ghsa::fetch(&name, src.url.as_deref(), ctx),
         SourceKind::Cvelist => cvelist::fetch(&name, src.url.as_deref(), ctx),
         SourceKind::Feed => feed::fetch(&name, src.url.as_deref().unwrap_or_default(), ctx),
+        SourceKind::Usn => usn::fetch(
+            &name,
+            src.url.as_deref(),
+            src.release.as_deref().or(ctx.release.as_deref()),
+            ctx,
+        ),
     }?;
     if !src.ignore_title_prefixes.is_empty() {
         let prefixes: Vec<String> = src
