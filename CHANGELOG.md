@@ -5,13 +5,13 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 
 ## [Unreleased]
 
+## [1.1.0] - 2026-10-24
+
 ### Changed
 
 - Digest lines and urgent messages name the affected product when the title does not (CVE titles from CNAs often omit it), e.g. `` `Acme Forum` Path traversal in post media ``.
 - The digest lists items that match a watch entry or an installed package first, under "関係あり". Items picked up only by their CVSS score follow under "その他の高 CVSS" without the repeated "CVSS x ≥ y" reason.
 - The "vuln-watch" footer is no longer added to Discord embeds.
-
-## [1.1.0-rc.1] - 2026-10-24
 
 ### Fixed
 
@@ -77,8 +77,8 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 - systemd units (`vuln-watch@.service`, run and digest timers) and `deploy/install.sh`.
 - Release archives for x86_64 and aarch64 Linux with SHA256 checksums and build provenance attestations.
 
-[Unreleased]: https://github.com/Matuyuhi/vuln-watch/compare/v1.1.0-rc.1...HEAD
-[1.1.0-rc.1]: https://github.com/Matuyuhi/vuln-watch/compare/v1.0.3...v1.1.0-rc.1
+[Unreleased]: https://github.com/Matuyuhi/vuln-watch/compare/v1.1.0...HEAD
+[1.1.0]: https://github.com/Matuyuhi/vuln-watch/compare/v1.0.3...v1.1.0
 [1.0.3]: https://github.com/Matuyuhi/vuln-watch/compare/v1.0.2...v1.0.3
 [1.0.2]: https://github.com/Matuyuhi/vuln-watch/compare/v1.0.1...v1.0.2
 [1.0.1]: https://github.com/Matuyuhi/vuln-watch/compare/v1.0.0...v1.0.1
