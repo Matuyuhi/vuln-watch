@@ -9,6 +9,11 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 
 - An urgent message that Discord refuses (HTTP 400/413, e.g. a feed link it does not accept as an embed URL) is resent as plain text instead of failing every run and holding up the urgent messages queued after it.
 
+### Security
+
+- Network errors for the Discord webhook and the heartbeat URL no longer include the URL (it embeds a secret token) in logs or journal output.
+- HTTP response bodies are capped at 64 MiB so a hostile or broken feed cannot exhaust memory.
+
 ## [1.0.2] - 2026-10-24
 
 ### Added

@@ -122,7 +122,7 @@ pub fn run(
             .clone()
             .or_else(|| cfg.runtime.heartbeat_url.clone());
         if let Some(url) = hb {
-            if let Err(e) = http.get(&url, &[], None) {
+            if let Err(e) = http.ping(&url) {
                 tracing::warn!("heartbeat ping failed: {e:#}");
             }
         }

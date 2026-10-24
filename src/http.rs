@@ -12,6 +12,9 @@ pub const USER_AGENT: &str = concat!(
     " (+https://github.com/Matuyuhi/vuln-watch)"
 );
 
+/// Upper bound for a response body; a hostile or broken feed must not exhaust memory.
+const MAX_BODY_BYTES: u64 = 64 * 1024 * 1024;
+
 pub struct Http {
     client: Client,
 }
@@ -82,6 +85,22 @@ impl Http {
         &self.client
     }
 
+    /// GET a URL that is itself a secret (heartbeat check-in URLs embed a token): errors never
+    /// carry the URL, so they are safe to log.
+    pub fn ping(&self, url: &str) -> Result<()> {
+        let resp = self
+            .client
+            .get(url)
+            .send()
+            .map_err(|e| e.without_url())
+            .context("heartbeat request failed")?;
+        let status = resp.status();
+        if !status.is_success() {
+            bail!("heartbeat endpoint returned HTTP {}", status.as_u16());
+        }
+        Ok(())
+    }
+
     /// GET with optional extra headers and conditional validators.
     /// Returns an error for anything except 2xx and 304.
     pub fn get(
@@ -122,9 +141,7 @@ impl Http {
                 link,
             });
         }
-        let body = resp
-            .text()
-            .with_context(|| format!("reading body of {url}"))?;
+        let body = read_capped(resp).with_context(|| format!("reading body of {url}"))?;
         if !(200..300).contains(&status) {
             bail!(
                 "GET {url} returned HTTP {status}: {}",
@@ -139,6 +156,26 @@ impl Http {
             link,
         })
     }
+}
+
+/// Read a body as text, failing instead of buffering more than `MAX_BODY_BYTES`.
+fn read_capped(resp: reqwest::blocking::Response) -> Result<String> {
+    if resp.content_length().is_some_and(|n| n > MAX_BODY_BYTES) {
+        bail!("response body larger than {MAX_BODY_BYTES} bytes");
+    }
+    read_text_capped(resp, MAX_BODY_BYTES)
+}
+
+/// Bounded read applied to the decoded stream, so it also covers chunked and gzip responses.
+/// Invalid UTF-8 is rejected rather than lossily expanded (which could triple memory use).
+fn read_text_capped(reader: impl std::io::Read, limit: u64) -> Result<String> {
+    use std::io::Read;
+    let mut buf = Vec::new();
+    reader.take(limit + 1).read_to_end(&mut buf)?;
+    if buf.len() as u64 > limit {
+        bail!("response body larger than {limit} bytes");
+    }
+    String::from_utf8(buf).map_err(|_| anyhow::anyhow!("response body is not valid UTF-8"))
 }
 
 /// Extract the `rel="next"` URL from a Link header.
@@ -167,5 +204,16 @@ mod tests {
             Some("https://api.github.com/advisories?after=abc&per_page=100")
         );
         assert_eq!(next_link(r#"<https://x>; rel="prev""#), None);
+    }
+
+    #[test]
+    fn body_cap_accepts_limit_and_rejects_above() {
+        assert_eq!(read_text_capped(&b"abcd"[..], 4).unwrap(), "abcd");
+        assert!(read_text_capped(&b"abcde"[..], 4).is_err());
+    }
+
+    #[test]
+    fn body_cap_rejects_invalid_utf8() {
+        assert!(read_text_capped(&[0xffu8; 4][..], 8).is_err());
     }
 }
