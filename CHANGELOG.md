@@ -5,6 +5,8 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 
 ## [Unreleased]
 
+## [1.0.0-rc.1] - 2026-10-24
+
 ### Added
 
 - Poll CISA KEV, GitHub Security Advisories, the CVE List, Ubuntu Security Notices and RSS/Atom feeds, and notify Discord by DM or webhook.
@@ -14,4 +16,5 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 - systemd units (`vuln-watch@.service`, run and digest timers) and `deploy/install.sh`.
 - Release archives for x86_64 and aarch64 Linux with SHA256 checksums and build provenance attestations.
 
-[Unreleased]: https://github.com/Matuyuhi/vuln-watch/commits/main
+[Unreleased]: https://github.com/Matuyuhi/vuln-watch/compare/v1.0.0-rc.1...HEAD
+[1.0.0-rc.1]: https://github.com/Matuyuhi/vuln-watch/releases/tag/v1.0.0-rc.1
