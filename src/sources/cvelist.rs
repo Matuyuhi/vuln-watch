@@ -50,13 +50,16 @@ fn parse_time(s: &str) -> Option<DateTime<Utc>> {
 }
 
 /// Parse either delta.json (object) or deltaLog.json (array of objects).
+/// Deserializes straight into `Delta` (no `serde_json::Value`): deltaLog.json is ~30 MB and
+/// mostly `updated` entries, which are skipped without being allocated.
 pub fn parse_deltas(body: &str) -> Result<Vec<Delta>> {
-    let v: Value = serde_json::from_str(body).context("parsing CVE delta")?;
-    Ok(match v {
-        Value::Array(_) => serde_json::from_value(v).context("parsing deltaLog.json")?,
-        Value::Object(_) => vec![serde_json::from_value(v).context("parsing delta.json")?],
+    match body.trim_start().as_bytes().first() {
+        Some(b'[') => serde_json::from_str(body).context("parsing deltaLog.json"),
+        Some(b'{') => Ok(vec![
+            serde_json::from_str(body).context("parsing delta.json")?
+        ]),
         _ => bail!("unexpected delta JSON shape"),
-    })
+    }
 }
 
 /// New CVE entries strictly after `cursor`, oldest first, plus the newest fetchTime seen.
@@ -121,8 +124,31 @@ fn read_deltas(
     if resp.not_modified() {
         return Ok(None);
     }
+    let deltas = parse_deltas(&resp.body)?;
+    // Only remember the validators of a body we could use; otherwise a 304 would hide it.
     commit.extend(Validators::commit_pairs(&url, &resp));
-    Ok(Some(parse_deltas(&resp.body)?))
+    Ok(Some(deltas))
+}
+
+/// Read deltaLog.json. On failure (too large, timeout, bad JSON) returns None so the caller
+/// falls back to delta.json and the source keeps moving instead of retrying the catch-up
+/// every run; CVEs only listed in the missed syncs may then be skipped.
+fn read_log(
+    name: &str,
+    ctx: &Ctx,
+    base_override: Option<&str>,
+    commit: &mut Vec<(String, String)>,
+) -> Option<Option<Vec<Delta>>> {
+    match read_deltas(ctx, base_override, "deltaLog.json", commit) {
+        Ok(deltas) => Some(deltas),
+        Err(e) => {
+            tracing::warn!(
+                "{name}: reading deltaLog.json failed ({e:#}); falling back to delta.json, \
+                 CVEs from missed syncs may be skipped"
+            );
+            None
+        }
+    }
 }
 
 /// Number of cvelistV5 commits since `since` (capped at 5).
@@ -152,7 +178,10 @@ pub fn fetch(name: &str, base_override: Option<&str>, ctx: &Ctx) -> Result<Fetch
         cursor.is_some() && last_ok.is_none_or(|t| now - t > Duration::minutes(MAX_GAP_MINUTES));
     let deltas = if stale {
         tracing::info!("{name}: previous run is old, catching up via deltaLog.json");
-        read_deltas(ctx, base_override, "deltaLog.json", &mut commit)?
+        match read_log(name, ctx, base_override, &mut commit) {
+            Some(deltas) => deltas,
+            None => read_deltas(ctx, base_override, "delta.json", &mut commit)?,
+        }
     } else {
         let latest = read_deltas(ctx, base_override, "delta.json", &mut commit)?;
         // delta.json only holds the latest sync. If more than one sync happened since our
@@ -166,12 +195,12 @@ pub fn fetch(name: &str, base_override: Option<&str>, ctx: &Ctx) -> Result<Fetch
             (true, Some(c), Some(token), None) => match commits_since(ctx, token, c) {
                 Ok(n) if n >= 3 => {
                     tracing::info!("{name}: {n} syncs since last delta, reading deltaLog.json");
-                    read_deltas(ctx, base_override, "deltaLog.json", &mut commit)?
+                    read_log(name, ctx, base_override, &mut commit).unwrap_or(latest)
                 }
                 Ok(_) => latest,
                 Err(e) => {
                     tracing::warn!("{name}: commit check failed ({e:#}), reading deltaLog.json");
-                    read_deltas(ctx, base_override, "deltaLog.json", &mut commit)?
+                    read_log(name, ctx, base_override, &mut commit).unwrap_or(latest)
                 }
             },
             _ => latest,
@@ -378,6 +407,7 @@ pub fn parse_record(source: &str, v: &Value) -> Option<Item> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::db::Db;
 
     #[test]
     fn parses_delta_and_log() {
@@ -410,6 +440,86 @@ mod tests {
         );
         assert!(entries.is_empty());
         assert!(newest.is_none());
+    }
+
+    #[test]
+    fn rejects_other_delta_shapes() {
+        for body in ["", "  ", "42", "\"x\"", "null", "true"] {
+            assert!(parse_deltas(body).is_err(), "accepted {body:?}");
+        }
+        assert!(parse_deltas("[{\"fetchTime\": 1}]").is_err());
+        assert_eq!(parse_deltas(" \n[]").unwrap().len(), 0);
+    }
+
+    /// Serve `routes` (path suffix, status, body) over plain HTTP on localhost.
+    fn serve(routes: Vec<(&'static str, u16, String)>) -> String {
+        use std::io::{BufRead, BufReader, Write};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        std::thread::spawn(move || {
+            for stream in listener.incoming() {
+                let mut stream = stream.unwrap();
+                let mut reader = BufReader::new(stream.try_clone().unwrap());
+                let mut request_line = String::new();
+                reader.read_line(&mut request_line).unwrap();
+                let mut line = String::new();
+                while reader.read_line(&mut line).unwrap() > 2 {
+                    line.clear();
+                }
+                let path = request_line.split(' ').nth(1).unwrap_or("");
+                let (status, body) = routes
+                    .iter()
+                    .find(|(suffix, _, _)| path.ends_with(suffix))
+                    .map(|(_, s, b)| (*s, b.as_str()))
+                    .unwrap_or((404, "not found"));
+                let _ = write!(
+                    stream,
+                    "HTTP/1.1 {status} X\r\nETag: \"e\"\r\nContent-Length: {}\r\n\
+                     Connection: close\r\n\r\n{body}",
+                    body.len()
+                );
+            }
+        });
+        format!("http://{addr}/cves")
+    }
+
+    #[test]
+    fn falls_back_to_delta_json_when_delta_log_fails() {
+        let delta = r#"{"fetchTime": "2026-10-24T06:00:00.000Z",
+            "new": [{"cveId": "CVE-2026-7"}], "updated": [], "error": []}"#;
+        let record = r#"{"cveMetadata": {"cveId": "CVE-2026-7", "state": "PUBLISHED"},
+            "containers": {"cna": {"title": "t", "descriptions": []}}}"#;
+        let base = serve(vec![
+            ("/deltaLog.json", 200, "[{\"fetchTime\": ".to_string()),
+            ("/delta.json", 200, delta.to_string()),
+            ("/CVE-2026-7.json", 200, record.to_string()),
+        ]);
+        let db = Db::open_in_memory().unwrap();
+        db.set_kv(KEY_CURSOR, "2026-10-01T00:00:00.000Z").unwrap();
+        let cfg = crate::config::Config::parse("").unwrap();
+        let http = crate::http::Http::new(5).unwrap();
+        let ctx = Ctx {
+            http: &http,
+            db: &db,
+            cfg: &cfg,
+            github_token: None,
+            bootstrap: false,
+            limit: None,
+            release: None,
+        };
+
+        let fetched = fetch("cvelist", Some(&base), &ctx).unwrap();
+        let ids: Vec<_> = fetched.items.iter().map(|i| i.id.as_str()).collect();
+        assert_eq!(ids, vec!["CVE-2026-7"]);
+        let commit: std::collections::HashMap<_, _> = fetched.commit.into_iter().collect();
+        assert!(commit.contains_key(KEY_LAST_OK));
+        assert_eq!(
+            commit.get(KEY_CURSOR).map(String::as_str),
+            Some("2026-10-24T06:00:00.000Z")
+        );
+        assert!(commit.contains_key(&format!("etag:{base}/delta.json")));
+        // The unusable deltaLog.json body must not be cached behind a 304.
+        assert!(!commit.contains_key(&format!("etag:{base}/deltaLog.json")));
     }
 
     #[test]
