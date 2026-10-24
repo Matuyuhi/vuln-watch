@@ -14,7 +14,7 @@ mod upgrade;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
-use anyhow::{Context, Result};
+use anyhow::{bail, Context, Result};
 use clap::{Parser, Subcommand};
 
 use crate::app::{RunOptions, Secrets};
@@ -24,6 +24,8 @@ use crate::discord::Notifier;
 use crate::http::Http;
 
 const DEFAULT_STATE_DIR: &str = "./state";
+/// Present on hosts installed with deploy/install.sh; loaded only by the systemd unit.
+const INSTALLED_ENV_FILE: &str = "/etc/vuln-watch/env";
 
 #[derive(Parser)]
 #[command(
@@ -156,6 +158,24 @@ fn real_main() -> Result<()> {
             offline,
         };
         return doctor::run(&http, &opts);
+    }
+
+    // On an installed host the credentials and state belong to the systemd unit.
+    let unit = match cli.command {
+        Command::Run { dry_run: false, .. } => Some("run"),
+        Command::Digest { dry_run: false } => Some("digest"),
+        Command::TestNotify => Some("test-notify"),
+        _ => None,
+    };
+    if let Some(unit) = unit {
+        if cli.state_dir == Path::new(DEFAULT_STATE_DIR) && Path::new(INSTALLED_ENV_FILE).exists() {
+            bail!(
+                "outside systemd, {INSTALLED_ENV_FILE} is not loaded and state is not shared with the timers; \
+                 run `sudo systemctl start vuln-watch@{unit}.service` \
+                 (output: sudo journalctl -u vuln-watch@{unit} -n 40), \
+                 or pass --state-dir to run against a separate state directory"
+            );
+        }
     }
 
     let cfg = Config::load(&cli.config)?;

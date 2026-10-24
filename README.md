@@ -160,6 +160,8 @@ vuln-watch [--config PATH] [--state-dir DIR] <COMMAND>
 
 `--state-dir` defaults to `$STATE_DIRECTORY` (`/var/lib/vuln-watch` under systemd).
 
+On an installed host, only the systemd unit loads `/etc/vuln-watch/env` and uses the shared state, so `run`, `digest` and `test-notify` refuse to run from a shell; use `sudo systemctl start vuln-watch@digest.service` (and `sudo journalctl -u vuln-watch@digest` for the output) instead. `--dry-run` and an explicit `--state-dir` still work.
+
 `--dry-run` prints decisions instead of sending and keeps no state:
 
 ```bash

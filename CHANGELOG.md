@@ -13,6 +13,7 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 
 ### Changed
 
+- On a host with `/etc/vuln-watch/env`, `run`, `digest` and `test-notify` started from a shell (no `--state-dir`, outside systemd) stop with a pointer to `systemctl start vuln-watch@<command>.service` instead of failing on missing credentials and using `./state`.
 - `deploy/install.sh` prints a short summary instead of the setup steps when updating an existing install.
 
 ## [1.0.0-rc.1] - 2026-10-24
