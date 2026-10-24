@@ -81,21 +81,34 @@ Channel delivery: set `discord.mode = "webhook"` and `DISCORD_WEBHOOK_URL`.
 
 ### 2. Install
 
-From a [release](https://github.com/Matuyuhi/vuln-watch/releases) (x86_64 / aarch64 Linux, glibc 2.35 or later):
+On x86_64 / aarch64 Linux with systemd (glibc 2.35 or later, e.g. Ubuntu 22.04+, Debian 12+):
 
 ```bash
-VERSION=0.1.0                                   # see the releases page
-TARGET=$(uname -m)-unknown-linux-gnu            # x86_64 or aarch64
-NAME=vuln-watch-v$VERSION-$TARGET
+curl -fsSL https://raw.githubusercontent.com/Matuyuhi/vuln-watch/main/install.sh | sudo bash
+```
+
+This downloads the latest [release](https://github.com/Matuyuhi/vuln-watch/releases) for the machine, checks it against `SHA256SUMS`, and installs `/usr/local/bin/vuln-watch`, the systemd units, and `/etc/vuln-watch/{config.toml,env}` if they do not exist yet. To pick a version, append `-s -- --version 1.2.0` to `bash`.
+
+<details>
+<summary>Manual install from a release archive</summary>
+
+```bash
+VERSION=1.2.0                                   # see the releases page
+NAME=vuln-watch-v$VERSION-$(uname -m)-unknown-linux-gnu
 curl -fsSLO https://github.com/Matuyuhi/vuln-watch/releases/download/v$VERSION/$NAME.tar.gz
 curl -fsSLO https://github.com/Matuyuhi/vuln-watch/releases/download/v$VERSION/SHA256SUMS
 sha256sum --check --ignore-missing SHA256SUMS
-gh attestation verify $NAME.tar.gz --repo Matuyuhi/vuln-watch   # optional, provenance
+gh attestation verify $NAME.tar.gz --repo Matuyuhi/vuln-watch   # optional, build provenance
 tar -xzf $NAME.tar.gz
 sudo ./$NAME/deploy/install.sh
 ```
 
-From source (requires a Rust toolchain):
+</details>
+
+<details>
+<summary>Build from source</summary>
+
+Requires a Rust toolchain.
 
 ```bash
 git clone https://github.com/Matuyuhi/vuln-watch.git
@@ -103,7 +116,7 @@ cd vuln-watch
 sudo ./deploy/install.sh
 ```
 
-This installs `/usr/local/bin/vuln-watch`, the systemd units, and `/etc/vuln-watch/{config.toml,env}` if they do not exist yet.
+</details>
 
 ### 3. Configure
 
@@ -142,6 +155,7 @@ vuln-watch [--config PATH] [--state-dir DIR] <COMMAND>
   digest [--dry-run]                       send the queued digest
   test-notify                              send a test message
   check-config                             validate config and credentials
+  upgrade [--check] [--version V] [--pre]  update to the latest release (as root)
 ```
 
 `--state-dir` defaults to `$STATE_DIRECTORY` (`/var/lib/vuln-watch` under systemd).
@@ -156,7 +170,7 @@ Set `installed.enabled = false` on machines without dpkg.
 
 ## Operations
 
-- **Update**: repeat the install steps with the new release (or `git pull && sudo ./deploy/install.sh`). Existing config and state are kept; check [CHANGELOG.md](CHANGELOG.md) for changes to `config.example.toml`.
+- **Update**: `sudo vuln-watch upgrade` installs the latest release the same way as `install.sh` (`--check` only reports, `--version 1.2.0` picks a version, `--pre` includes pre-releases). Config and state are kept; check [CHANGELOG.md](CHANGELOG.md) for changes to `config.example.toml`. From source: `git pull && sudo ./deploy/install.sh`.
 - **Sandbox**: the unit uses `DynamicUser`, `ProtectSystem=strict` and a syscall filter; the process can only make outbound connections and write its state directory.
 - **Uninstall**:
 

@@ -81,12 +81,20 @@ DM で受け取る場合（既定）:
 
 ### 2. インストール
 
-[リリース](https://github.com/Matuyuhi/vuln-watch/releases)から入れる場合（x86_64 / aarch64 Linux、glibc 2.35 以降）:
+x86_64 / aarch64 の Linux（systemd、glibc 2.35 以降。Ubuntu 22.04 以降、Debian 12 以降など）で次を実行します。
 
 ```bash
-VERSION=0.1.0                                   # リリースページで確認
-TARGET=$(uname -m)-unknown-linux-gnu            # x86_64 または aarch64
-NAME=vuln-watch-v$VERSION-$TARGET
+curl -fsSL https://raw.githubusercontent.com/Matuyuhi/vuln-watch/main/install.sh | sudo bash
+```
+
+マシンに合った最新の[リリース](https://github.com/Matuyuhi/vuln-watch/releases)をダウンロードして `SHA256SUMS` で検証し、`/usr/local/bin/vuln-watch` と systemd ユニットを配置します。`/etc/vuln-watch/{config.toml,env}` がなければ作成します。バージョンを指定する場合は `bash` の後ろに `-s -- --version 1.2.0` を付けます。
+
+<details>
+<summary>リリースのアーカイブから手動で入れる</summary>
+
+```bash
+VERSION=1.2.0                                   # リリースページで確認
+NAME=vuln-watch-v$VERSION-$(uname -m)-unknown-linux-gnu
 curl -fsSLO https://github.com/Matuyuhi/vuln-watch/releases/download/v$VERSION/$NAME.tar.gz
 curl -fsSLO https://github.com/Matuyuhi/vuln-watch/releases/download/v$VERSION/SHA256SUMS
 sha256sum --check --ignore-missing SHA256SUMS
@@ -95,7 +103,12 @@ tar -xzf $NAME.tar.gz
 sudo ./$NAME/deploy/install.sh
 ```
 
-ソースからビルドする場合（Rust ツールチェーンが必要）:
+</details>
+
+<details>
+<summary>ソースからビルドする</summary>
+
+Rust ツールチェーンが必要です。
 
 ```bash
 git clone https://github.com/Matuyuhi/vuln-watch.git
@@ -103,7 +116,7 @@ cd vuln-watch
 sudo ./deploy/install.sh
 ```
 
-`/usr/local/bin/vuln-watch` と systemd ユニットを配置し、`/etc/vuln-watch/{config.toml,env}` がなければ作成します。
+</details>
 
 ### 3. 設定
 
@@ -142,6 +155,7 @@ vuln-watch [--config PATH] [--state-dir DIR] <COMMAND>
   digest [--dry-run]                       ダイジェストを送信
   test-notify                              テスト通知を送信
   check-config                             設定と認証情報を検証
+  upgrade [--check] [--version V] [--pre]  最新リリースに更新（root で実行）
 ```
 
 `--state-dir` の既定値は `$STATE_DIRECTORY` です（systemd では `/var/lib/vuln-watch`）。
@@ -156,7 +170,7 @@ dpkg のない環境では `installed.enabled = false` にしてください。
 
 ## 運用
 
-- **更新**: 新しいリリースでインストール手順をもう一度実行します（ソースの場合は `git pull && sudo ./deploy/install.sh`）。既存の設定と状態はそのまま残ります。`config.example.toml` の変更は [CHANGELOG.md](CHANGELOG.md) で確認してください。
+- **更新**: `sudo vuln-watch upgrade` で最新リリースを `install.sh` と同じ手順で入れ直します（`--check` は確認のみ、`--version 1.2.0` でバージョン指定、`--pre` でプレリリースも対象）。設定と状態はそのまま残ります。`config.example.toml` の変更は [CHANGELOG.md](CHANGELOG.md) で確認してください。ソースから入れた場合は `git pull && sudo ./deploy/install.sh`。
 - **サンドボックス**: ユニットは `DynamicUser`、`ProtectSystem=strict`、syscall フィルタを使います。プロセスができるのは外向き通信と状態ディレクトリへの書き込みだけです。
 - **アンインストール**:
 

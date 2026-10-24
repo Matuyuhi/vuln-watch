@@ -26,6 +26,9 @@ elif [[ -z "$BIN" ]]; then
   BIN=target/release/vuln-watch
 fi
 
+previous=""
+[[ -x /usr/local/bin/vuln-watch ]] && previous=$(/usr/local/bin/vuln-watch --version 2>/dev/null || echo "vuln-watch (unknown)")
+
 install -Dm755 "$BIN" /usr/local/bin/vuln-watch
 echo "installed $(/usr/local/bin/vuln-watch --version)"
 
@@ -43,6 +46,11 @@ install -m644 deploy/systemd/vuln-watch@.service /etc/systemd/system/
 install -m644 deploy/systemd/vuln-watch-run.timer /etc/systemd/system/
 install -m644 deploy/systemd/vuln-watch-digest.timer /etc/systemd/system/
 systemctl daemon-reload
+
+if [[ -n "$previous" ]]; then
+  echo "updated from ${previous#vuln-watch }; config in /etc/vuln-watch was kept"
+  exit 0
+fi
 
 cat <<'EOF'
 
