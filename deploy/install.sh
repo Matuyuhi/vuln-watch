@@ -61,5 +61,5 @@ Installed. Next steps:
   3. sudo systemctl start vuln-watch@test-notify.service   (test DM)
   4. sudo systemctl enable --now vuln-watch-run.timer vuln-watch-digest.timer
   5. sudo vuln-watch doctor   (again, to confirm the timers)
-  logs: journalctl -u 'vuln-watch@*' -f
+  logs: sudo journalctl -u 'vuln-watch@*' -f
 EOF

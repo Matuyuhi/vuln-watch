@@ -135,13 +135,12 @@ sudo ./deploy/install.sh
 ### 4. 起動
 
 ```bash
-sudo systemctl start vuln-watch@check-config.service
-journalctl -u vuln-watch@check-config -n 40
+sudo vuln-watch doctor
 
 sudo systemctl start vuln-watch@test-notify.service
 
 sudo systemctl enable --now vuln-watch-run.timer vuln-watch-digest.timer
-journalctl -u 'vuln-watch@*' -f
+sudo journalctl -u 'vuln-watch@*' -f
 ```
 
 ダイジェストの送信時刻は `deploy/systemd/vuln-watch-digest.timer` で設定します（8:00 Asia/Tokyo）。

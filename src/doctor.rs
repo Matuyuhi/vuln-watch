@@ -528,7 +528,7 @@ fn check_systemd(r: &mut Report) {
                     get("Result"),
                     get("ExecMainStatus")
                 ),
-                Some(&format!("journalctl -u {unit} -n 50")),
+                Some(&format!("sudo journalctl -u {unit} -n 50")),
             );
         }
     }
@@ -568,7 +568,7 @@ fn check_state(r: &mut Report, db_path: &Path, cfg: Option<&Config>, root: bool)
         let name = key.trim_start_matches("fail:");
         let count: u32 = count.parse().unwrap_or(0);
         let detail = format!("source `{name}` failed {count} time(s) in a row");
-        let hint = Some("journalctl -u vuln-watch@run -n 100");
+        let hint = Some("sudo journalctl -u vuln-watch@run -n 100");
         if count >= threshold {
             r.fail("source", detail, hint);
         } else {

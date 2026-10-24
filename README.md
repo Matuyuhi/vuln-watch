@@ -135,13 +135,12 @@ sudo ./deploy/install.sh
 ### 4. Start
 
 ```bash
-sudo systemctl start vuln-watch@check-config.service
-journalctl -u vuln-watch@check-config -n 40
+sudo vuln-watch doctor
 
 sudo systemctl start vuln-watch@test-notify.service
 
 sudo systemctl enable --now vuln-watch-run.timer vuln-watch-digest.timer
-journalctl -u 'vuln-watch@*' -f
+sudo journalctl -u 'vuln-watch@*' -f
 ```
 
 The digest time is set in `deploy/systemd/vuln-watch-digest.timer` (08:00 Asia/Tokyo).
