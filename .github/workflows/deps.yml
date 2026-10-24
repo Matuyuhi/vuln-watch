@@ -1,0 +1,34 @@
+# 依存関係スキャン（cargo-deny、設定は deny.toml）
+# - advisories: RustSec の脆弱性・unmaintained・yanked
+# - bans/licenses/sources: 禁止クレート・ライセンス・取得元
+# コードが変わらなくても新しい advisory は日々公開されるので、毎日定期実行もする。
+name: Dependencies
+
+on:
+  push:
+    branches: [main]
+    paths: ["**/Cargo.toml", "Cargo.lock", "deny.toml", ".github/workflows/deps.yml"]
+  pull_request:
+    paths: ["**/Cargo.toml", "Cargo.lock", "deny.toml", ".github/workflows/deps.yml"]
+  schedule:
+    - cron: "41 22 * * *" # daily, 07:41 JST
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  cargo-deny:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        checks:
+          - advisories
+          - bans licenses sources
+    steps:
+      - uses: actions/checkout@v5
+      - uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          command: check ${{ matrix.checks }}
+          arguments: --locked
