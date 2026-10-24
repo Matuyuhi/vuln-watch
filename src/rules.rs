@@ -1,7 +1,7 @@
 use std::cmp::Ordering;
 
 use crate::config::{AlreadyFixed, Rules, SourceMode, Watch};
-use crate::installed::{cmp_deb_version, Installed};
+use crate::installed::{cmp_deb_version, split_kernel_release, Installed};
 use crate::model::{Decision, Item, Level};
 use crate::text::contains_word;
 
@@ -98,6 +98,35 @@ pub struct InstalledMatch<'a> {
     pub already_fixed: AlreadyFixed,
 }
 
+/// Running kernel version and the fixed version for its flavour, when a USN fixes the
+/// kernel this machine is running but the fix is not running yet (no reboot since).
+/// None when the running kernel is not a dpkg-installed Ubuntu kernel, or the item
+/// has no `linux-image-*` entry for its flavour and upstream series.
+fn pending_kernel_reboot(item: &Item, installed: &Installed) -> Option<(String, String)> {
+    let (upstream, _, flavour) = split_kernel_release(installed.kernel.as_deref()?)?;
+    let running = installed.kernel_version()?;
+    let series = format!("{upstream}-");
+    let fixed = item
+        .fixed
+        .iter()
+        .filter_map(|(pkg, ver)| {
+            let rest = pkg.strip_prefix("linux-image-")?;
+            let rest = rest.strip_prefix("unsigned-").unwrap_or(rest);
+            if rest == flavour && ver.starts_with(&series) {
+                Some(ver.clone())
+            } else if rest == flavour {
+                // Metapackage: "6.8.0.147.147" stands for kernel "6.8.0-147.147".
+                let (abi, upload) = ver.strip_prefix(&format!("{upstream}."))?.split_once('.')?;
+                Some(format!("{upstream}-{abi}.{upload}"))
+            } else {
+                let (u, _, f) = split_kernel_release(rest)?;
+                (u == upstream && f == flavour && ver.starts_with(&series)).then(|| ver.clone())
+            }
+        })
+        .max_by(|a, b| cmp_deb_version(a, b))?;
+    (cmp_deb_version(running, &fixed) == Ordering::Less).then(|| (running.to_string(), fixed))
+}
+
 /// Decide based on installed packages for items that carry fixed versions (USN).
 /// Returns None when the item has no distro package information.
 fn evaluate_installed(item: &Item, im: &InstalledMatch) -> Option<Decision> {
@@ -128,6 +157,13 @@ fn evaluate_installed(item: &Item, im: &InstalledMatch) -> Option<Decision> {
             format!("インストール済み・未適用: {}", list(&vulnerable)),
         )
     } else if !patched.is_empty() {
+        // A new kernel is installed but only takes effect after a reboot.
+        if let Some((running, fixed)) = pending_kernel_reboot(item, im.installed) {
+            return Some(Decision::new(
+                Level::Urgent,
+                format!("インストール済み・再起動待ち: 実行中 {running} → {fixed}"),
+            ));
+        }
         match im.already_fixed {
             AlreadyFixed::Digest => Decision::new(
                 Level::Digest,
@@ -497,6 +533,124 @@ mod tests {
             evaluate(&usn_item(), SourceMode::Filter, &Rules::default(), &w).level,
             Level::Urgent
         );
+    }
+
+    fn kernel_usn(flavour: &str, abi: &str, meta: &str, image: &str) -> Item {
+        let mut i = item("USN-8917-1: Linux kernel vulnerabilities", None);
+        i.source = "ubuntu-usn".into();
+        i.fixed = vec![
+            (format!("linux-image-{flavour}"), meta.into()),
+            (format!("linux-image-6.8.0-{abi}-{flavour}"), image.into()),
+        ];
+        i
+    }
+
+    fn generic_kernel_usn() -> Item {
+        kernel_usn("generic", "147", "6.8.0.147.147", "6.8.0-147.147")
+    }
+
+    fn kernel_host(running: &str, meta: &str) -> Installed {
+        Installed::from_pairs(
+            "noble",
+            &[
+                ("linux-image-generic", meta),
+                ("linux-image-6.8.0-145-generic", "6.8.0-145.145"),
+                ("linux-image-6.8.0-147-generic", "6.8.0-147.147"),
+            ],
+        )
+        .with_kernel(running)
+    }
+
+    fn decide(i: &Item, inst: &Installed, already_fixed: AlreadyFixed) -> Decision {
+        let im = InstalledMatch {
+            installed: inst,
+            already_fixed,
+        };
+        evaluate_with(i, SourceMode::Filter, &Rules::default(), &[], Some(&im))
+    }
+
+    #[test]
+    fn kernel_installed_but_not_running_is_urgent() {
+        let inst = kernel_host("6.8.0-145-generic", "6.8.0.147.147");
+        for af in [AlreadyFixed::Digest, AlreadyFixed::Ignore] {
+            let d = decide(&generic_kernel_usn(), &inst, af);
+            assert_eq!(d.level, Level::Urgent);
+            assert!(d.reason.contains("再起動待ち"), "{}", d.reason);
+            assert!(
+                d.reason.contains("6.8.0-145.145 → 6.8.0-147.147"),
+                "{}",
+                d.reason
+            );
+        }
+        // Only the metapackage listed: its version is mapped to the kernel's format.
+        let mut i = generic_kernel_usn();
+        i.fixed.truncate(1);
+        let d = decide(&i, &inst, AlreadyFixed::Digest);
+        assert_eq!(d.level, Level::Urgent);
+        assert!(d.reason.contains("6.8.0-145.145 → 6.8.0-147.147"));
+        // Metapackage listed in the kernel's own version format.
+        i.fixed[0].1 = "6.8.0-147.147".into();
+        let d = decide(&i, &inst, AlreadyFixed::Digest);
+        assert_eq!(d.level, Level::Urgent);
+        assert!(d.reason.contains("6.8.0-145.145 → 6.8.0-147.147"));
+    }
+
+    #[test]
+    fn kernel_running_fixed_follows_policy() {
+        for running in ["6.8.0-147-generic", "6.8.0-150-generic"] {
+            let inst = Installed::from_pairs(
+                "noble",
+                &[
+                    ("linux-image-generic", "6.8.0.150.150"),
+                    ("linux-image-6.8.0-147-generic", "6.8.0-147.147"),
+                    ("linux-image-6.8.0-150-generic", "6.8.0-150.150"),
+                ],
+            )
+            .with_kernel(running);
+            let d = decide(&generic_kernel_usn(), &inst, AlreadyFixed::Digest);
+            assert_eq!(d.level, Level::Digest, "{running}: {}", d.reason);
+            assert!(d.reason.contains("適用済み"));
+            let d = decide(&generic_kernel_usn(), &inst, AlreadyFixed::Ignore);
+            assert_eq!(d.level, Level::Ignore, "{running}");
+        }
+    }
+
+    #[test]
+    fn kernel_not_patched_is_urgent_as_before() {
+        let inst = Installed::from_pairs(
+            "noble",
+            &[
+                ("linux-image-generic", "6.8.0.145.145"),
+                ("linux-image-6.8.0-145-generic", "6.8.0-145.145"),
+            ],
+        )
+        .with_kernel("6.8.0-145-generic");
+        let d = decide(&generic_kernel_usn(), &inst, AlreadyFixed::Digest);
+        assert_eq!(d.level, Level::Urgent);
+        assert!(d.reason.contains("未適用"), "{}", d.reason);
+    }
+
+    #[test]
+    fn kernel_usn_for_other_flavour_is_unchanged() {
+        let inst = kernel_host("6.8.0-145-generic", "6.8.0.147.147");
+        let azure = kernel_usn("azure", "1030", "6.8.0.1030.31", "6.8.0-1030.31");
+        let d = decide(&azure, &inst, AlreadyFixed::Digest);
+        assert_eq!(d.level, Level::Ignore);
+        assert!(d.reason.contains("未インストール"), "{}", d.reason);
+    }
+
+    #[test]
+    fn kernel_unknown_to_dpkg_keeps_patched_result() {
+        // Custom kernel or container: the running kernel has no dpkg package.
+        for running in ["6.9.3-custom", "6.8.0-140-generic"] {
+            let inst = Installed::from_pairs("noble", &[("linux-image-generic", "6.8.0.147.147")])
+                .with_kernel(running);
+            let d = decide(&generic_kernel_usn(), &inst, AlreadyFixed::Digest);
+            assert_eq!(d.level, Level::Digest, "{running}: {}", d.reason);
+        }
+        let inst = Installed::from_pairs("noble", &[("linux-image-generic", "6.8.0.147.147")]);
+        let d = decide(&generic_kernel_usn(), &inst, AlreadyFixed::Digest);
+        assert_eq!(d.level, Level::Digest);
     }
 
     #[test]

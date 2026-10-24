@@ -38,6 +38,7 @@ oss-security often carries a disclosure before a CVE record exists.
 |---|---|
 | Listed in CISA KEV | urgent |
 | Installed package older than the fixed version in a USN | urgent |
+| Kernel USN already installed, but the running kernel is older (reboot pending) | urgent |
 | Strong watch match (package, product or title) with CVSS ≥ 7.0 or no score | urgent |
 | Strong watch match with CVSS < 7.0 | digest |
 | Watch term found only in the description | digest, flagged for review |
@@ -58,6 +59,8 @@ Thresholds, exclusions and the watch list are set in [`config.example.toml`](con
 ### Installed packages
 
 With `[installed] enabled = true`, USN entries are compared with `/var/lib/dpkg/status` using dpkg version ordering. The file is re-read on every run, so a package counts as patched as soon as `apt upgrade` has run. The release codename is read from `/etc/os-release`. A USN for a package that is not installed is ignored, even if it matches the watch list.
+
+A kernel fix only takes effect after a reboot. For a kernel USN whose packages are installed, the running kernel (`uname -r`, e.g. `6.8.0-145-generic`) is also compared: if its `linux-image-<release>` package is older than the fixed version for the same flavour, the notice is urgent with `再起動待ち` (reboot pending) instead of patched. A running kernel that dpkg does not know (custom kernel, container) is not compared. `vuln-watch doctor` shows the running kernel it detected.
 
 ## Reliability
 

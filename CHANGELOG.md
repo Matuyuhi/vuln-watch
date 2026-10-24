@@ -5,6 +5,10 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 
 ## [Unreleased]
 
+### Fixed
+
+- A kernel USN whose fix is installed but not running yet (no reboot since `apt upgrade` / unattended-upgrades) is now urgent with `インストール済み・再起動待ち: 実行中 <running> → <fixed>`, instead of being reported as patched. The running kernel is read with `uname -r` and compared through its `linux-image-<release>` package; kernels unknown to dpkg keep the previous behaviour. `vuln-watch doctor` shows the running kernel.
+
 ## [1.0.3] - 2026-10-24
 
 ### Fixed

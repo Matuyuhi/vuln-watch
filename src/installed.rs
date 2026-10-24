@@ -12,6 +12,8 @@ use crate::config::InstalledConfig;
 pub struct Installed {
     /// Ubuntu release codename (e.g. "noble").
     pub release: Option<String>,
+    /// Running kernel release (`uname -r`, e.g. "6.8.0-145-generic").
+    pub kernel: Option<String>,
     packages: HashMap<String, String>,
 }
 
@@ -31,12 +33,18 @@ impl Installed {
                 .and_then(|t| codename_from_os_release(&t)),
         };
         let packages = parse_dpkg_status(&text);
+        let kernel = running_kernel_release();
         tracing::debug!(
-            "installed: {} packages, release {:?}",
+            "installed: {} packages, release {:?}, kernel {:?}",
             packages.len(),
-            release
+            release,
+            kernel
         );
-        Ok(Self { release, packages })
+        Ok(Self {
+            release,
+            kernel,
+            packages,
+        })
     }
 
     #[cfg(test)]
@@ -47,7 +55,14 @@ impl Installed {
                 .iter()
                 .map(|(k, v)| (k.to_string(), v.to_string()))
                 .collect(),
+            kernel: None,
         }
+    }
+
+    #[cfg(test)]
+    pub fn with_kernel(mut self, release: &str) -> Self {
+        self.kernel = Some(release.to_string());
+        self
     }
 
     pub fn version(&self, package: &str) -> Option<&str> {
@@ -57,6 +72,50 @@ impl Installed {
     pub fn package_count(&self) -> usize {
         self.packages.len()
     }
+
+    /// dpkg version of the running kernel's image package (e.g. "6.8.0-145.145").
+    /// None for kernels not installed by dpkg (custom kernel, container).
+    pub fn kernel_version(&self) -> Option<&str> {
+        let k = self.kernel.as_deref()?;
+        ["linux-image-", "linux-image-unsigned-"]
+            .iter()
+            .find_map(|prefix| self.version(&format!("{prefix}{k}")))
+    }
+}
+
+/// Running kernel release via `uname -r`. /proc/sys/kernel/osrelease is hidden by
+/// `ProcSubset=pid` in the systemd unit, so it is not read.
+fn running_kernel_release() -> Option<String> {
+    let out = std::process::Command::new("uname").arg("-r").output();
+    match out {
+        Ok(o) if o.status.success() => {
+            let r = String::from_utf8_lossy(&o.stdout).trim().to_string();
+            (!r.is_empty()).then_some(r)
+        }
+        Ok(o) => {
+            tracing::warn!("uname -r failed: {}", o.status);
+            None
+        }
+        Err(e) => {
+            tracing::warn!("running uname -r: {e}");
+            None
+        }
+    }
+}
+
+/// Split an Ubuntu kernel release "6.8.0-145-generic" into
+/// (upstream "6.8.0", ABI "145", flavour "generic").
+pub fn split_kernel_release(release: &str) -> Option<(&str, &str, &str)> {
+    let mut parts = release.splitn(3, '-');
+    let upstream = parts.next()?;
+    let abi = parts.next()?;
+    let flavour = parts.next()?;
+    let valid = !upstream.is_empty()
+        && upstream.bytes().all(|c| c.is_ascii_digit() || c == b'.')
+        && !abi.is_empty()
+        && abi.bytes().all(|c| c.is_ascii_digit())
+        && !flavour.is_empty();
+    valid.then_some((upstream, abi, flavour))
 }
 
 /// Installed packages from /var/lib/dpkg/status: Package -> Version.
@@ -204,6 +263,41 @@ mod tests {
         assert_eq!(m["zlib1g"], "1:1.3.dfsg-3.1ubuntu2.2");
         assert_eq!(m["nginx"], "1.24.0-2ubuntu7.5");
         assert!(!m.contains_key("oldpkg"));
+    }
+
+    #[test]
+    fn running_kernel_package_version() {
+        let text = "Package: linux-image-6.8.0-145-generic\nStatus: install ok installed\nVersion: 6.8.0-145.145\n\nPackage: linux-image-6.8.0-147-generic\nStatus: install ok installed\nVersion: 6.8.0-147.147\n\nPackage: linux-image-unsigned-6.8.0-150-lowlatency\nStatus: install ok installed\nVersion: 6.8.0-150.150\n";
+        let base = Installed {
+            release: Some("noble".into()),
+            kernel: None,
+            packages: parse_dpkg_status(text),
+        };
+        assert_eq!(base.kernel_version(), None);
+        let i = base.clone().with_kernel("6.8.0-145-generic");
+        assert_eq!(i.kernel_version(), Some("6.8.0-145.145"));
+        let i = base.clone().with_kernel("6.8.0-150-lowlatency");
+        assert_eq!(i.kernel_version(), Some("6.8.0-150.150"));
+        let i = base.with_kernel("6.9.3-custom");
+        assert_eq!(i.kernel_version(), None);
+    }
+
+    #[test]
+    fn splits_kernel_release() {
+        assert_eq!(
+            split_kernel_release("6.8.0-145-generic"),
+            Some(("6.8.0", "145", "generic"))
+        );
+        assert_eq!(
+            split_kernel_release("6.8.0-1021-generic-64k"),
+            Some(("6.8.0", "1021", "generic-64k"))
+        );
+        assert_eq!(split_kernel_release("6.8.0-145"), None);
+        assert_eq!(split_kernel_release("6.9.3-custom"), None);
+        assert_eq!(
+            split_kernel_release("6.6.87.2-microsoft-standard-WSL2"),
+            None
+        );
     }
 
     #[test]
