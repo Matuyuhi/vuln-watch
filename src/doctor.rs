@@ -129,7 +129,7 @@ pub fn run(http: &Http, opts: &Options) -> Result<()> {
     Ok(())
 }
 
-fn is_root() -> bool {
+pub(crate) fn is_root() -> bool {
     fs::metadata("/proc/self")
         .map(|m| m.uid() == 0)
         .unwrap_or(false)

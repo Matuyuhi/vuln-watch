@@ -15,7 +15,7 @@ cargo deny check            # daily in deps.yml: RustSec, licenses, banned crate
 
 - Single test: `cargo test <name_substring>` (e.g. `cargo test strong_match_wins_over_earlier_weak_match`). Tests are inline `#[cfg(test)] mod tests` per module; there is no `tests/` directory.
 - Local end-to-end without sending or persisting anything: `cargo run -- --config config.example.toml run --dry-run --limit 5`. This hits the real sources over the network. Set `installed.enabled = false` on machines without dpkg (e.g. macOS).
-- `run` / `digest` / `test-notify` refuse to run from a shell when `/etc/vuln-watch/env` exists and `--state-dir` is the default; pass `--state-dir` or `--dry-run` (see `src/main.rs`).
+- When `/etc/vuln-watch/env` exists, systemd is running and `--state-dir` is the default, `run` / `digest` / `test-notify` / `check-config` re-run themselves under `systemd-run` with the [Service] settings of `vuln-watch@.service` (`src/delegate.rs`); they need root, except `run --dry-run`. Never open the production state.db as root: files it creates would be unwritable for the DynamicUser.
 
 ## Architecture
 
