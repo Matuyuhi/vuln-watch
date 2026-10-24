@@ -209,6 +209,7 @@ CI workflows:
 - [CI](.github/workflows/ci.yml): fmt, clippy, tests.
 - [Live smoke test](.github/workflows/smoke.yml): weekly dry run against the real sources, to catch upstream format changes.
 - [Dependencies](.github/workflows/deps.yml): daily [cargo-deny](deny.toml) check (RustSec, licenses, banned crates, sources). Dependabot opens update PRs weekly.
+- [CodeQL](.github/workflows/codeql.yml): static analysis of the Rust code and the workflows on every push and PR, plus weekly. Results are under *Security → Code scanning*.
 - [Release](.github/workflows/release.yml): cuts and publishes a release (see below).
 
 ### Releasing
