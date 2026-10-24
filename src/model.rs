@@ -44,9 +44,24 @@ impl Item {
         }
     }
 
-    /// Id shown to the user (prefers the CVE id).
+    /// Id shown to the user: the CVE id, or a short form of URL-like feed ids
+    /// (e.g. ".../notices/USN-8954-1" -> "USN-8954-1").
     pub fn display_id(&self) -> &str {
-        self.cve.as_deref().unwrap_or(&self.id)
+        if let Some(cve) = &self.cve {
+            return cve;
+        }
+        if self.id.contains("://") || self.id.starts_with("tag:") {
+            if let Some(last) = self
+                .id
+                .trim_end_matches('/')
+                .rsplit('/')
+                .next()
+                .filter(|s| !s.is_empty())
+            {
+                return last;
+            }
+        }
+        &self.id
     }
 }
 
@@ -137,5 +152,15 @@ mod tests {
         item.cve = Some("cve-2026-1111".into());
         assert_eq!(item.dedupe_key(), "CVE-2026-1111");
         assert_eq!(item.display_id(), "cve-2026-1111");
+    }
+
+    #[test]
+    fn display_id_shortens_urls() {
+        let item = Item::new("usn", "https://ubuntu.com/security/notices/USN-8954-1");
+        assert_eq!(item.display_id(), "USN-8954-1");
+        let item = Item::new("rel", "tag:github.com,2008:Repository/1/release-1.31.8");
+        assert_eq!(item.display_id(), "release-1.31.8");
+        let item = Item::new("ghsa", "GHSA-xxxx");
+        assert_eq!(item.display_id(), "GHSA-xxxx");
     }
 }
