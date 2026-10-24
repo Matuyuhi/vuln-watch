@@ -160,16 +160,22 @@ impl Http {
 
 /// Read a body as text, failing instead of buffering more than `MAX_BODY_BYTES`.
 fn read_capped(resp: reqwest::blocking::Response) -> Result<String> {
-    use std::io::Read;
     if resp.content_length().is_some_and(|n| n > MAX_BODY_BYTES) {
         bail!("response body larger than {MAX_BODY_BYTES} bytes");
     }
+    read_text_capped(resp, MAX_BODY_BYTES)
+}
+
+/// Bounded read applied to the decoded stream, so it also covers chunked and gzip responses.
+/// Invalid UTF-8 is rejected rather than lossily expanded (which could triple memory use).
+fn read_text_capped(reader: impl std::io::Read, limit: u64) -> Result<String> {
+    use std::io::Read;
     let mut buf = Vec::new();
-    resp.take(MAX_BODY_BYTES + 1).read_to_end(&mut buf)?;
-    if buf.len() as u64 > MAX_BODY_BYTES {
-        bail!("response body larger than {MAX_BODY_BYTES} bytes");
+    reader.take(limit + 1).read_to_end(&mut buf)?;
+    if buf.len() as u64 > limit {
+        bail!("response body larger than {limit} bytes");
     }
-    Ok(String::from_utf8_lossy(&buf).into_owned())
+    String::from_utf8(buf).map_err(|_| anyhow::anyhow!("response body is not valid UTF-8"))
 }
 
 /// Extract the `rel="next"` URL from a Link header.
@@ -198,5 +204,16 @@ mod tests {
             Some("https://api.github.com/advisories?after=abc&per_page=100")
         );
         assert_eq!(next_link(r#"<https://x>; rel="prev""#), None);
+    }
+
+    #[test]
+    fn body_cap_accepts_limit_and_rejects_above() {
+        assert_eq!(read_text_capped(&b"abcd"[..], 4).unwrap(), "abcd");
+        assert!(read_text_capped(&b"abcde"[..], 4).is_err());
+    }
+
+    #[test]
+    fn body_cap_rejects_invalid_utf8() {
+        assert!(read_text_capped(&[0xffu8; 4][..], 8).is_err());
     }
 }
