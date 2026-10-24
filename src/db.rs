@@ -96,6 +96,14 @@ impl Db {
         Self::init(conn)
     }
 
+    /// Open an existing database without creating or migrating it.
+    pub fn open_read_only(path: &Path) -> Result<Self> {
+        let conn = Connection::open_with_flags(path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
+            .with_context(|| format!("failed to open database {}", path.display()))?;
+        conn.busy_timeout(Duration::from_secs(5))?;
+        Ok(Self { conn })
+    }
+
     pub fn open_in_memory() -> Result<Self> {
         Self::init(Connection::open_in_memory()?)
     }
@@ -165,6 +173,14 @@ impl Db {
         Ok(())
     }
 
+    pub fn kv_with_prefix(&self, prefix: &str) -> Result<Vec<(String, String)>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT key, value FROM kv WHERE substr(key, 1, length(?1)) = ?1 ORDER BY key",
+        )?;
+        let rows = stmt.query_map(params![prefix], |r| Ok((r.get(0)?, r.get(1)?)))?;
+        Ok(rows.collect::<rusqlite::Result<_>>()?)
+    }
+
     pub fn del_kv(&self, key: &str) -> Result<()> {
         self.conn
             .execute("DELETE FROM kv WHERE key = ?1", params![key])?;
@@ -227,6 +243,11 @@ impl Db {
             }
         }
         Ok(out)
+    }
+
+    pub fn queue_len(&self, q: Queue) -> Result<i64> {
+        let sql = format!("SELECT COUNT(*) FROM {}", q.table());
+        Ok(self.conn.query_row(&sql, [], |r| r.get(0))?)
     }
 
     pub fn dequeue(&self, q: Queue, key: &str) -> Result<()> {
@@ -298,6 +319,22 @@ impl Db {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn kv_prefix_and_queue_len() {
+        let db = Db::open_in_memory().unwrap();
+        db.set_kv("fail:kev", "3").unwrap();
+        db.set_kv("failalert:kev", "1").unwrap();
+        db.set_kv("fail:ghsa", "1").unwrap();
+        assert_eq!(
+            db.kv_with_prefix("fail:").unwrap(),
+            vec![
+                ("fail:ghsa".to_string(), "1".to_string()),
+                ("fail:kev".to_string(), "3".to_string())
+            ]
+        );
+        assert_eq!(db.queue_len(Queue::Outbox).unwrap(), 0);
+    }
 
     #[test]
     fn seen_and_kv_roundtrip() {

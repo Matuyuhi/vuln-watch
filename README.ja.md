@@ -135,13 +135,12 @@ sudo ./deploy/install.sh
 ### 4. 起動
 
 ```bash
-sudo systemctl start vuln-watch@check-config.service
-journalctl -u vuln-watch@check-config -n 40
+sudo vuln-watch doctor
 
 sudo systemctl start vuln-watch@test-notify.service
 
 sudo systemctl enable --now vuln-watch-run.timer vuln-watch-digest.timer
-journalctl -u 'vuln-watch@*' -f
+sudo journalctl -u 'vuln-watch@*' -f
 ```
 
 ダイジェストの送信時刻は `deploy/systemd/vuln-watch-digest.timer` で設定します（8:00 Asia/Tokyo）。
@@ -155,10 +154,13 @@ vuln-watch [--config PATH] [--state-dir DIR] <COMMAND>
   digest [--dry-run]                       ダイジェストを送信
   test-notify                              テスト通知を送信
   check-config                             設定と認証情報を検証
+  doctor [--offline]                       インストール状態を診断（root で実行）
   upgrade [--check] [--version V] [--pre]  最新リリースに更新（root で実行）
 ```
 
 `--state-dir` の既定値は `$STATE_DIRECTORY` です（systemd では `/var/lib/vuln-watch`）。
+
+インストール済みのホストでは `/etc/vuln-watch/env` を読み込み、共有の state を使うのは systemd の unit だけです。そのためシェルから `run`・`digest`・`test-notify` を実行すると、案内を出して止まります。代わりに `sudo systemctl start vuln-watch@digest.service` を使い、出力は `sudo journalctl -u vuln-watch@digest` で確認してください。`--dry-run` や `--state-dir` を明示した場合はこれまでどおり動きます。
 
 `--dry-run` は送信せずに判定結果を表示し、状態も保存しません:
 
@@ -170,6 +172,7 @@ dpkg のない環境では `installed.enabled = false` にしてください。
 
 ## 運用
 
+- **診断**: `sudo vuln-watch doctor` でインストール状態を項目ごとに ok / warn / FAIL で表示します。PATH 上で先に見つかる古い `vuln-watch`、新しいリリースの有無、パースできなくなった設定、`/etc/vuln-watch/env` の認証情報の不足や例のままの値とパーミッション、unit ファイルと `daemon-reload` の要否、タイマーが有効か、直近の実行が成功したか、連続して失敗しているソース、未送信の緊急通知、中断された upgrade の残骸を確認します。Discord には何も送りません。FAIL があれば終了コード 1 で終わり、`--offline` でリリース確認を省きます。インストール後や upgrade 後に実行してください。
 - **更新**: `sudo vuln-watch upgrade` で最新リリースを `install.sh` と同じ手順で入れ直します（`--check` は確認のみ、`--version 1.2.0` でバージョン指定、`--pre` でプレリリースも対象）。設定と状態はそのまま残ります。`config.example.toml` の変更は [CHANGELOG.md](CHANGELOG.md) で確認してください。ソースから入れた場合は `git pull && sudo ./deploy/install.sh`。
 - **サンドボックス**: ユニットは `DynamicUser`、`ProtectSystem=strict`、syscall フィルタを使います。プロセスができるのは外向き通信と状態ディレクトリへの書き込みだけです。
 - **アンインストール**:

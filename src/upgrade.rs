@@ -45,8 +45,7 @@ pub fn run(http: &Http, github_token: Option<&str>, opts: &Options) -> Result<()
         Some(v) => parse_version(v)?,
         None => {
             let pre = opts.pre || !current.pre.is_empty();
-            let releases = fetch_releases(http, github_token)?;
-            match pick_latest(&releases, pre) {
+            match latest(http, github_token, pre)? {
                 Some(v) => v,
                 None if pre => bail!("no releases of {REPO} found"),
                 None => bail!("no stable release of {REPO} yet; use --pre to include pre-releases"),
@@ -80,9 +79,14 @@ pub fn run(http: &Http, github_token: Option<&str>, opts: &Options) -> Result<()
     install(http, &target)
 }
 
-fn parse_version(v: &str) -> Result<Version> {
+pub fn parse_version(v: &str) -> Result<Version> {
     let v = v.strip_prefix('v').unwrap_or(v);
     Version::parse(v).with_context(|| format!("not a valid version: {v}"))
+}
+
+/// Newest published release, including pre-releases when `pre` is set.
+pub fn latest(http: &Http, github_token: Option<&str>, pre: bool) -> Result<Option<Version>> {
+    Ok(pick_latest(&fetch_releases(http, github_token)?, pre))
 }
 
 fn fetch_releases(http: &Http, github_token: Option<&str>) -> Result<Vec<Release>> {

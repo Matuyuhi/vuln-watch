@@ -135,13 +135,12 @@ sudo ./deploy/install.sh
 ### 4. Start
 
 ```bash
-sudo systemctl start vuln-watch@check-config.service
-journalctl -u vuln-watch@check-config -n 40
+sudo vuln-watch doctor
 
 sudo systemctl start vuln-watch@test-notify.service
 
 sudo systemctl enable --now vuln-watch-run.timer vuln-watch-digest.timer
-journalctl -u 'vuln-watch@*' -f
+sudo journalctl -u 'vuln-watch@*' -f
 ```
 
 The digest time is set in `deploy/systemd/vuln-watch-digest.timer` (08:00 Asia/Tokyo).
@@ -155,10 +154,13 @@ vuln-watch [--config PATH] [--state-dir DIR] <COMMAND>
   digest [--dry-run]                       send the queued digest
   test-notify                              send a test message
   check-config                             validate config and credentials
+  doctor [--offline]                       diagnose the installation (as root)
   upgrade [--check] [--version V] [--pre]  update to the latest release (as root)
 ```
 
 `--state-dir` defaults to `$STATE_DIRECTORY` (`/var/lib/vuln-watch` under systemd).
+
+On an installed host, only the systemd unit loads `/etc/vuln-watch/env` and uses the shared state, so `run`, `digest` and `test-notify` refuse to run from a shell; use `sudo systemctl start vuln-watch@digest.service` (and `sudo journalctl -u vuln-watch@digest` for the output) instead. `--dry-run` and an explicit `--state-dir` still work.
 
 `--dry-run` prints decisions instead of sending and keeps no state:
 
@@ -170,6 +172,7 @@ Set `installed.enabled = false` on machines without dpkg.
 
 ## Operations
 
+- **Diagnose**: `sudo vuln-watch doctor` checks the installation and prints ok / warn / FAIL per item: a stale `vuln-watch` earlier on PATH, a newer release, a config that no longer parses, missing or example credentials in `/etc/vuln-watch/env` and its permissions, unit files and `daemon-reload`, whether the timers are enabled and the last run succeeded, sources failing repeatedly, undelivered urgent messages, and leftovers of an interrupted upgrade. It sends nothing to Discord and exits with 1 when something fails; `--offline` skips the release check. Run it after installing or upgrading.
 - **Update**: `sudo vuln-watch upgrade` installs the latest release the same way as `install.sh` (`--check` only reports, `--version 1.2.0` picks a version, `--pre` includes pre-releases). Config and state are kept; check [CHANGELOG.md](CHANGELOG.md) for changes to `config.example.toml`. From source: `git pull && sudo ./deploy/install.sh`.
 - **Sandbox**: the unit uses `DynamicUser`, `ProtectSystem=strict` and a syscall filter; the process can only make outbound connections and write its state directory.
 - **Uninstall**:
