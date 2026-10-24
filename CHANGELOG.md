@@ -5,6 +5,8 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 
 ## [Unreleased]
 
+## [1.0.0-rc.2] - 2026-10-24
+
 ### Added
 
 - `install.sh` for one-line installs: `curl -fsSL https://raw.githubusercontent.com/Matuyuhi/vuln-watch/main/install.sh | sudo bash`.
@@ -25,5 +27,6 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 - systemd units (`vuln-watch@.service`, run and digest timers) and `deploy/install.sh`.
 - Release archives for x86_64 and aarch64 Linux with SHA256 checksums and build provenance attestations.
 
-[Unreleased]: https://github.com/Matuyuhi/vuln-watch/compare/v1.0.0-rc.1...HEAD
+[Unreleased]: https://github.com/Matuyuhi/vuln-watch/compare/v1.0.0-rc.2...HEAD
+[1.0.0-rc.2]: https://github.com/Matuyuhi/vuln-watch/compare/v1.0.0-rc.1...v1.0.0-rc.2
 [1.0.0-rc.1]: https://github.com/Matuyuhi/vuln-watch/releases/tag/v1.0.0-rc.1
