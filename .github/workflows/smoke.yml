@@ -19,4 +19,15 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           RUST_LOG: info
-        run: ./target/release/vuln-watch --config config.example.toml run --dry-run --limit 5 --strict
+        run: |
+          set -o pipefail
+          ./target/release/vuln-watch --config config.example.toml run --dry-run --limit 5 --strict | tee out.txt
+          # Surface the per-item decisions as a run annotation (readable from the checks API).
+          {
+            echo "## Dry-run decisions"
+            echo '```'
+            grep -E '^\[' out.txt || echo "(no items)"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          msg=$(grep -E '^\[' out.txt | head -40 | sed -e 's/%/%25/g' | awk 'BEGIN{ORS="%0A"} {print}')
+          echo "::notice title=dry-run decisions::${msg:-no items}"
