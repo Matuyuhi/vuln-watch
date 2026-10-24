@@ -12,6 +12,7 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 - `install.sh` for one-line installs: `curl -fsSL https://raw.githubusercontent.com/Matuyuhi/vuln-watch/main/install.sh | sudo bash`.
 - `vuln-watch upgrade` updates to the latest GitHub release (`--check`, `--version`, `--pre`, `--force`).
 - `vuln-watch doctor` diagnoses an installation: binaries on PATH, release, config, credentials in `/etc/vuln-watch/env`, systemd units and timers, failing sources and undelivered messages.
+- `vuln-watch doctor` points out lines of `/etc/vuln-watch/env` that systemd ignores (not `KEY=value`, config.toml settings such as `discord.mode`) and variables vuln-watch does not read.
 
 ### Changed
 

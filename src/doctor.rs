@@ -260,11 +260,99 @@ fn parse_env_file(text: &str) -> HashMap<String, String> {
         .filter(|l| !l.is_empty() && !l.starts_with('#') && !l.starts_with(';'))
         .filter_map(|l| {
             let (k, v) = l.split_once('=')?;
-            let k = k.trim().trim_start_matches("export ").trim();
+            let k = k.trim();
             let v = v.trim();
             (!v.is_empty()).then(|| (k.to_string(), v.to_string()))
         })
         .collect()
+}
+
+/// Variables vuln-watch (or its HTTP client) reads from the environment.
+const KNOWN_ENV: &[&str] = &[
+    "DISCORD_BOT_TOKEN",
+    "DISCORD_USER_ID",
+    "DISCORD_WEBHOOK_URL",
+    "GITHUB_TOKEN",
+    "HEARTBEAT_URL",
+    "RUST_LOG",
+    "VULN_WATCH_CONFIG",
+    "HTTPS_PROXY",
+    "HTTP_PROXY",
+    "ALL_PROXY",
+    "NO_PROXY",
+];
+
+#[derive(Debug, PartialEq, Eq)]
+enum EnvIssue {
+    /// Not `KEY=value`; systemd skips the line.
+    Invalid { line: usize, head: String },
+    /// A config.toml setting written into the env file.
+    ConfigKey { line: usize, head: String },
+    /// Well-formed but not a variable vuln-watch reads (often a typo).
+    Unknown { line: usize, key: String },
+}
+
+/// Lines of an EnvironmentFile that do not do what was probably meant.
+/// Only the part before `=` is kept so that values (tokens) are never printed.
+fn lint_env_file(text: &str) -> Vec<EnvIssue> {
+    let mut out = Vec::new();
+    for (i, raw) in text.lines().enumerate() {
+        let line = i + 1;
+        let l = raw.trim();
+        if l.is_empty() || l.starts_with('#') || l.starts_with(';') {
+            continue;
+        }
+        let key = l.split_once('=').map(|(k, _)| k.trim());
+        let head: String = key
+            .unwrap_or_else(|| l.split([':', ' ', '\t']).next().unwrap_or(l))
+            .chars()
+            .take(40)
+            .collect();
+        let valid = key.is_some_and(|k| {
+            k.chars()
+                .enumerate()
+                .all(|(i, c)| c == '_' || c.is_ascii_alphabetic() || (i > 0 && c.is_ascii_digit()))
+                && !k.is_empty()
+        });
+        let config_like = head.starts_with('[')
+            || head.contains('.')
+            || (!head.is_empty() && head.chars().all(|c| c.is_ascii_lowercase() || c == '_'));
+        match key {
+            Some(k) if valid => {
+                if !KNOWN_ENV.iter().any(|known| known.eq_ignore_ascii_case(k)) {
+                    out.push(EnvIssue::Unknown {
+                        line,
+                        key: k.to_string(),
+                    });
+                }
+            }
+            _ if config_like => out.push(EnvIssue::ConfigKey { line, head }),
+            _ => out.push(EnvIssue::Invalid { line, head }),
+        }
+    }
+    out
+}
+
+fn report_env_issues(r: &mut Report, issues: &[EnvIssue]) {
+    for issue in issues {
+        match issue {
+            EnvIssue::Invalid { line, head } => r.warn(
+                "env",
+                format!("{ENV_FILE} line {line}: `{head}` is not KEY=value; systemd ignores it"),
+                Some("write it as KEY=value without quotes or `export`, or comment it out with #"),
+            ),
+            EnvIssue::ConfigKey { line, head } => r.warn(
+                "env",
+                format!("{ENV_FILE} line {line}: `{head}` looks like a config.toml setting; systemd ignores it"),
+                Some("move it to /etc/vuln-watch/config.toml (e.g. `mode` under [discord])"),
+            ),
+            EnvIssue::Unknown { line, key } => r.warn(
+                "env",
+                format!("{ENV_FILE} line {line}: `{key}` is not used by vuln-watch (typo?)"),
+                Some(&format!("known variables: {}", KNOWN_ENV[..5].join(", "))),
+            ),
+        }
+    }
 }
 
 fn secrets_from(env: &HashMap<String, String>) -> Secrets {
@@ -311,6 +399,7 @@ fn check_env_file(r: &mut Report) -> Option<HashMap<String, String>> {
             if mode & 0o077 == 0 && meta.uid() == 0 {
                 r.ok("env", format!("{ENV_FILE} (mode 600)"));
             }
+            report_env_issues(r, &lint_env_file(&text));
             Some(parse_env_file(&text))
         }
         Err(e) => {
@@ -621,7 +710,8 @@ mod tests {
              DISCORD_BOT_TOKEN=abc=def\n\
              DISCORD_USER_ID=\n\
              ; other comment\n\
-             export GITHUB_TOKEN = ghp_x \n\
+             GITHUB_TOKEN = ghp_x \n\
+             export HEARTBEAT_URL=https://x\n\
              garbage\n",
         );
         assert_eq!(
@@ -630,7 +720,50 @@ mod tests {
         );
         assert_eq!(env.get("GITHUB_TOKEN").map(String::as_str), Some("ghp_x"));
         assert!(!env.contains_key("DISCORD_USER_ID"));
-        assert_eq!(env.len(), 2);
+        // systemd rejects `export`, so the variable is not set.
+        assert!(!env.contains_key("HEARTBEAT_URL"));
+    }
+
+    #[test]
+    fn lints_env_file() {
+        let issues = lint_env_file(
+            "# comment\n\
+             DISCORD_BOT_TOKEN=secret\n\
+             RUST_LOG=info\n\
+             https_proxy=http://proxy:3128\n\
+             discord.mode = \"webhook\"\n\
+             [discord]\n\
+             DISCORD_WEBHOOK=https://x\n\
+             export GITHUB_TOKEN=secret\n\
+             DISCORD_USER_ID: 123\n",
+        );
+        assert_eq!(
+            issues,
+            vec![
+                EnvIssue::ConfigKey {
+                    line: 5,
+                    head: "discord.mode".into()
+                },
+                EnvIssue::ConfigKey {
+                    line: 6,
+                    head: "[discord]".into()
+                },
+                EnvIssue::Unknown {
+                    line: 7,
+                    key: "DISCORD_WEBHOOK".into()
+                },
+                EnvIssue::Invalid {
+                    line: 8,
+                    head: "export GITHUB_TOKEN".into()
+                },
+                EnvIssue::Invalid {
+                    line: 9,
+                    head: "DISCORD_USER_ID".into()
+                },
+            ]
+        );
+        let shown = format!("{issues:?}");
+        assert!(!shown.contains("secret") && !shown.contains("123"));
     }
 
     #[test]
