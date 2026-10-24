@@ -81,11 +81,26 @@ DM で受け取る場合（既定）:
 
 ### 2. インストール
 
+[リリース](https://github.com/Matuyuhi/vuln-watch/releases)から入れる場合（x86_64 / aarch64 Linux、glibc 2.35 以降）:
+
+```bash
+VERSION=0.1.0                                   # リリースページで確認
+TARGET=$(uname -m)-unknown-linux-gnu            # x86_64 または aarch64
+NAME=vuln-watch-v$VERSION-$TARGET
+curl -fsSLO https://github.com/Matuyuhi/vuln-watch/releases/download/v$VERSION/$NAME.tar.gz
+curl -fsSLO https://github.com/Matuyuhi/vuln-watch/releases/download/v$VERSION/SHA256SUMS
+sha256sum --check --ignore-missing SHA256SUMS
+gh attestation verify $NAME.tar.gz --repo Matuyuhi/vuln-watch   # 任意: ビルド来歴の検証
+tar -xzf $NAME.tar.gz
+sudo ./$NAME/deploy/install.sh
+```
+
+ソースからビルドする場合（Rust ツールチェーンが必要）:
+
 ```bash
 git clone https://github.com/Matuyuhi/vuln-watch.git
 cd vuln-watch
-sudo ./deploy/install.sh                # cargo でビルド
-sudo ./deploy/install.sh ./vuln-watch   # リリースのバイナリを使う場合
+sudo ./deploy/install.sh
 ```
 
 `/usr/local/bin/vuln-watch` と systemd ユニットを配置し、`/etc/vuln-watch/{config.toml,env}` がなければ作成します。
@@ -141,7 +156,7 @@ dpkg のない環境では `installed.enabled = false` にしてください。
 
 ## 運用
 
-- **更新**: `git pull && sudo ./deploy/install.sh`。既存の設定は上書きしません。
+- **更新**: 新しいリリースでインストール手順をもう一度実行します（ソースの場合は `git pull && sudo ./deploy/install.sh`）。既存の設定と状態はそのまま残ります。`config.example.toml` の変更は [CHANGELOG.md](CHANGELOG.md) で確認してください。
 - **サンドボックス**: ユニットは `DynamicUser`、`ProtectSystem=strict`、syscall フィルタを使います。プロセスができるのは外向き通信と状態ディレクトリへの書き込みだけです。
 - **アンインストール**:
 
@@ -165,7 +180,23 @@ CI ワークフロー:
 - [CI](.github/workflows/ci.yml): fmt、clippy、テスト。
 - [Live smoke test](.github/workflows/smoke.yml): 週 1 回、実際の情報源に対して dry-run を実行し、上流のフォーマット変更を検知します。
 - [Dependencies](.github/workflows/deps.yml): [cargo-deny](deny.toml) を毎日実行します（RustSec、ライセンス、禁止クレート、取得元）。依存の更新 PR は Dependabot が週 1 回作成します。
-- [Release](.github/workflows/release.yml): `v*` タグで x86_64 と aarch64 の Linux バイナリをビルドします。
+- [Release](.github/workflows/release.yml): `v*` タグごとにリリースを公開します（下記）。
+
+### リリース手順
+
+1. 変更をマージするたびに [CHANGELOG.md](CHANGELOG.md) の `## [Unreleased]` に追記します。
+2. 最新の `main` で次を実行します。
+
+   ```bash
+   scripts/release.sh 0.2.0           # Cargo.toml/Cargo.lock の更新、CHANGELOG の日付付け、コミットと v0.2.0 タグの作成
+   git show v0.2.0                    # 内容を確認
+   git push --atomic origin main v0.2.0
+   ```
+
+   （`scripts/release.sh 0.2.0 --push` で push までまとめて行えます。）`0.2.0-rc.1` のようにサフィックス付きのバージョンはプレリリースとして公開されます。
+3. [Release](.github/workflows/release.yml) ワークフローが、タグと `Cargo.toml` のバージョン一致の確認、fmt/clippy/テスト、x86_64 と aarch64 のビルドと動作確認を行い、アーカイブを `SHA256SUMS`・ビルド来歴の attestation・CHANGELOG の該当セクション（リリースノート）とともに公開します。
+
+公開せずにビルドだけ試すには、Release ワークフローを手動実行します（*Actions → Release → Run workflow*）。アーカイブは実行結果の artifact として残ります。
 
 ## ライセンス
 

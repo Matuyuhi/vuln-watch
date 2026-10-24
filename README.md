@@ -81,11 +81,26 @@ Channel delivery: set `discord.mode = "webhook"` and `DISCORD_WEBHOOK_URL`.
 
 ### 2. Install
 
+From a [release](https://github.com/Matuyuhi/vuln-watch/releases) (x86_64 / aarch64 Linux, glibc 2.35 or later):
+
+```bash
+VERSION=0.1.0                                   # see the releases page
+TARGET=$(uname -m)-unknown-linux-gnu            # x86_64 or aarch64
+NAME=vuln-watch-v$VERSION-$TARGET
+curl -fsSLO https://github.com/Matuyuhi/vuln-watch/releases/download/v$VERSION/$NAME.tar.gz
+curl -fsSLO https://github.com/Matuyuhi/vuln-watch/releases/download/v$VERSION/SHA256SUMS
+sha256sum --check --ignore-missing SHA256SUMS
+gh attestation verify $NAME.tar.gz --repo Matuyuhi/vuln-watch   # optional, provenance
+tar -xzf $NAME.tar.gz
+sudo ./$NAME/deploy/install.sh
+```
+
+From source (requires a Rust toolchain):
+
 ```bash
 git clone https://github.com/Matuyuhi/vuln-watch.git
 cd vuln-watch
-sudo ./deploy/install.sh                # builds with cargo
-sudo ./deploy/install.sh ./vuln-watch   # or use a release binary
+sudo ./deploy/install.sh
 ```
 
 This installs `/usr/local/bin/vuln-watch`, the systemd units, and `/etc/vuln-watch/{config.toml,env}` if they do not exist yet.
@@ -141,7 +156,7 @@ Set `installed.enabled = false` on machines without dpkg.
 
 ## Operations
 
-- **Update**: `git pull && sudo ./deploy/install.sh`. Existing config is kept.
+- **Update**: repeat the install steps with the new release (or `git pull && sudo ./deploy/install.sh`). Existing config and state are kept; check [CHANGELOG.md](CHANGELOG.md) for changes to `config.example.toml`.
 - **Sandbox**: the unit uses `DynamicUser`, `ProtectSystem=strict` and a syscall filter; the process can only make outbound connections and write its state directory.
 - **Uninstall**:
 
@@ -165,7 +180,23 @@ CI workflows:
 - [CI](.github/workflows/ci.yml): fmt, clippy, tests.
 - [Live smoke test](.github/workflows/smoke.yml): weekly dry run against the real sources, to catch upstream format changes.
 - [Dependencies](.github/workflows/deps.yml): daily [cargo-deny](deny.toml) check (RustSec, licenses, banned crates, sources). Dependabot opens update PRs weekly.
-- [Release](.github/workflows/release.yml): `v*` tags build x86_64 and aarch64 Linux binaries.
+- [Release](.github/workflows/release.yml): publishes a release for each `v*` tag (see below).
+
+### Releasing
+
+1. List the changes under `## [Unreleased]` in [CHANGELOG.md](CHANGELOG.md) as they are merged.
+2. On an up-to-date `main`, run:
+
+   ```bash
+   scripts/release.sh 0.2.0           # bumps Cargo.toml/Cargo.lock, dates the changelog, commits and tags v0.2.0
+   git show v0.2.0                    # review
+   git push --atomic origin main v0.2.0
+   ```
+
+   (`scripts/release.sh 0.2.0 --push` does both.) Versions with a suffix such as `0.2.0-rc.1` are published as pre-releases.
+3. The [Release](.github/workflows/release.yml) workflow checks that the tag matches `Cargo.toml`, runs fmt/clippy/tests, builds and smoke-tests the x86_64 and aarch64 binaries, and publishes the archives with `SHA256SUMS`, a build provenance attestation, and the changelog section as release notes.
+
+To try the build without publishing, run the Release workflow manually (*Actions → Release → Run workflow*); the archives are attached to the run as artifacts.
 
 ## License
 
