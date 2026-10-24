@@ -5,6 +5,8 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 
 ## [Unreleased]
 
+## [1.0.3] - 2026-10-24
+
 ### Fixed
 
 - An urgent message that Discord refuses (HTTP 400/413, e.g. a feed link it does not accept as an embed URL) is resent as plain text instead of failing every run and holding up the urgent messages queued after it.
@@ -61,7 +63,8 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 - systemd units (`vuln-watch@.service`, run and digest timers) and `deploy/install.sh`.
 - Release archives for x86_64 and aarch64 Linux with SHA256 checksums and build provenance attestations.
 
-[Unreleased]: https://github.com/Matuyuhi/vuln-watch/compare/v1.0.2...HEAD
+[Unreleased]: https://github.com/Matuyuhi/vuln-watch/compare/v1.0.3...HEAD
+[1.0.3]: https://github.com/Matuyuhi/vuln-watch/compare/v1.0.2...v1.0.3
 [1.0.2]: https://github.com/Matuyuhi/vuln-watch/compare/v1.0.1...v1.0.2
 [1.0.1]: https://github.com/Matuyuhi/vuln-watch/compare/v1.0.0...v1.0.1
 [1.0.0]: https://github.com/Matuyuhi/vuln-watch/compare/v1.0.0-rc.2...v1.0.0
