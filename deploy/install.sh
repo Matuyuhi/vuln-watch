@@ -1,8 +1,12 @@
 #!/usr/bin/env bash
 # Install or update vuln-watch on a systemd host.
 #   sudo ./deploy/install.sh [path/to/vuln-watch-binary]
-# Without an argument the binary is built with `cargo build --release`.
+# Without an argument, the binary next to deploy/ is used (release archive);
+# in a source checkout it is built with `cargo build --release`.
 set -euo pipefail
+
+BIN="${1:-}"
+[[ -z "$BIN" ]] || BIN=$(realpath "$BIN")
 
 cd "$(dirname "$0")/.."
 
@@ -11,8 +15,9 @@ if [[ $EUID -ne 0 ]]; then
   exit 1
 fi
 
-BIN="${1:-}"
-if [[ -z "$BIN" ]]; then
+if [[ -z "$BIN" && -x ./vuln-watch && ! -f Cargo.toml ]]; then
+  BIN=./vuln-watch
+elif [[ -z "$BIN" ]]; then
   if [[ -n "${SUDO_USER:-}" ]]; then
     sudo -u "$SUDO_USER" -H bash -lc "cd '$PWD' && cargo build --release --locked"
   else
@@ -22,6 +27,7 @@ if [[ -z "$BIN" ]]; then
 fi
 
 install -Dm755 "$BIN" /usr/local/bin/vuln-watch
+echo "installed $(/usr/local/bin/vuln-watch --version)"
 
 install -d -m755 /etc/vuln-watch
 if [[ ! -f /etc/vuln-watch/config.toml ]]; then

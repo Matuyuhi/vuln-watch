@@ -1,36 +1,215 @@
+# Cut and publish a release, entirely from Actions.
+#
+# Run it from Actions → Release → Run workflow on main, with the version to
+# release (e.g. 0.2.0). List the changes under "## [Unreleased]" in
+# CHANGELOG.md beforehand; they become the release notes.
+#
+# Jobs:
+#   prepare  bump Cargo.toml/Cargo.lock, date CHANGELOG.md, fmt/clippy/test,
+#            then commit "release: vX.Y.Z" to main and push the vX.Y.Z tag
+#   build    one archive per target from the tagged commit, smoke-tested
+#   publish  SHA256SUMS, build provenance attestation, GitHub release
+#
+# With "dry run" checked nothing is pushed or published; the archives are
+# attached to the run as artifacts.
+#
+# Tags pushed with GITHUB_TOKEN do not start other workflows, so everything
+# runs in this one workflow.
 name: Release
 
 on:
-  push:
-    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version to release, e.g. 0.2.0 (a suffix such as 0.2.0-rc.1 makes a pre-release)"
+        required: true
+        type: string
+      dry_run:
+        description: "Dry run: build only, push and publish nothing"
+        type: boolean
+        default: false
 
 permissions:
-  contents: write
+  contents: read
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+  VERSION: ${{ inputs.version }}
 
 jobs:
+  prepare:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    outputs:
+      version: ${{ steps.bump.outputs.version }}
+      tag: ${{ steps.bump.outputs.tag }}
+      prerelease: ${{ steps.bump.outputs.prerelease }}
+    steps:
+      - name: Check branch
+        if: ${{ !inputs.dry_run && github.ref != 'refs/heads/main' }}
+        run: |
+          echo "::error::releases are cut from main (got $GITHUB_REF); use dry run on other branches"
+          exit 1
+
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Bump version
+        id: bump
+        run: |
+          scripts/bump-version.sh "$VERSION"
+          version="${VERSION#v}"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "tag=v$version" >> "$GITHUB_OUTPUT"
+          [[ "$version" == *-* ]] && pre=true || pre=false
+          echo "prerelease=$pre" >> "$GITHUB_OUTPUT"
+          git diff
+
+      - name: Release notes
+        run: scripts/changelog-section.sh "${{ steps.bump.outputs.version }}" | tee release-notes.md
+      - uses: actions/upload-artifact@v7
+        with:
+          name: release-notes
+          path: release-notes.md
+
+      - run: cargo fmt --all --check
+      - run: cargo clippy --all-targets --locked -- -D warnings
+      - run: cargo test --locked
+
+      - name: Commit and tag
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add Cargo.toml Cargo.lock CHANGELOG.md
+          git commit -m "release: $TAG"
+          git tag -a "$TAG" -m "$TAG"
+          git show --stat HEAD
+        env:
+          TAG: ${{ steps.bump.outputs.tag }}
+
+      - name: Push
+        if: ${{ !inputs.dry_run }}
+        run: git push --atomic origin "HEAD:$GITHUB_REF_NAME" "$TAG"
+        env:
+          TAG: ${{ steps.bump.outputs.tag }}
+
+      # Dry run: hand the unpushed release commit to the build jobs.
+      - name: Bundle release commit
+        if: ${{ inputs.dry_run }}
+        run: git bundle create release.bundle "^$GITHUB_SHA" "$TAG"
+        env:
+          TAG: ${{ steps.bump.outputs.tag }}
+      - uses: actions/upload-artifact@v7
+        if: ${{ inputs.dry_run }}
+        with:
+          name: release-bundle
+          path: release.bundle
+
   build:
+    needs: prepare
     strategy:
+      fail-fast: true
       matrix:
         include:
+          # Built on the oldest supported runner so the binary runs on glibc >= 2.35
+          # (Ubuntu 22.04, Debian 12).
           - target: x86_64-unknown-linux-gnu
             runner: ubuntu-22.04
           - target: aarch64-unknown-linux-gnu
             runner: ubuntu-22.04-arm
     runs-on: ${{ matrix.runner }}
+    env:
+      TAG: ${{ needs.prepare.outputs.tag }}
     steps:
       - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.dry_run && github.sha || needs.prepare.outputs.tag }}
+      - uses: actions/download-artifact@v8
+        if: ${{ inputs.dry_run }}
+        with:
+          name: release-bundle
+      - name: Check out the unpushed release commit
+        if: ${{ inputs.dry_run }}
+        run: |
+          git fetch release.bundle "refs/tags/$TAG:refs/tags/$TAG"
+          git checkout --quiet "$TAG"
+          rm release.bundle
+
       - uses: dtolnay/rust-toolchain@stable
-      - run: cargo build --release --locked
+        with:
+          targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+
+      - run: cargo build --release --locked --target ${{ matrix.target }}
+
+      - name: Smoke test
+        run: |
+          out=$(target/${{ matrix.target }}/release/vuln-watch --version)
+          echo "$out"
+          [[ "$out" == "vuln-watch ${{ needs.prepare.outputs.version }}" ]]
+
       - name: Package
         run: |
-          name=vuln-watch-${GITHUB_REF_NAME}-${{ matrix.target }}
+          name=vuln-watch-$TAG-${{ matrix.target }}
           mkdir -p "dist/$name"
-          cp target/release/vuln-watch config.example.toml README.md README.ja.md LICENSE "dist/$name/"
+          cp target/${{ matrix.target }}/release/vuln-watch "dist/$name/"
+          cp config.example.toml README.md README.ja.md CHANGELOG.md LICENSE "dist/$name/"
           cp -r deploy "dist/$name/"
-          tar -C dist -czf "dist/$name.tar.gz" "$name"
-          (cd dist && sha256sum "$name.tar.gz" > "$name.tar.gz.sha256")
-      - uses: softprops/action-gh-release@v3
+          tar -C dist --owner=0 --group=0 -czf "dist/$name.tar.gz" "$name"
+
+      - uses: actions/upload-artifact@v7
         with:
-          files: |
-            dist/*.tar.gz
-            dist/*.sha256
+          name: dist-${{ matrix.target }}
+          path: dist/*.tar.gz
+          if-no-files-found: error
+
+  publish:
+    needs: [prepare, build]
+    if: ${{ !inputs.dry_run }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Checksums
+        working-directory: dist
+        run: |
+          sha256sum vuln-watch-*.tar.gz > SHA256SUMS
+          cat SHA256SUMS
+
+      - uses: actions/attest-build-provenance@v4
+        with:
+          subject-path: dist/vuln-watch-*.tar.gz
+
+      - name: Create release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ needs.prepare.outputs.tag }}
+        run: |
+          flags=()
+          [[ "${{ needs.prepare.outputs.prerelease }}" == true ]] && flags+=(--prerelease)
+          gh release create "$TAG" \
+            --verify-tag \
+            --title "$TAG" \
+            --notes-file dist/release-notes.md \
+            "${flags[@]}" \
+            dist/vuln-watch-*.tar.gz dist/SHA256SUMS

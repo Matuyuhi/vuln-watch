@@ -81,11 +81,26 @@ DM で受け取る場合（既定）:
 
 ### 2. インストール
 
+[リリース](https://github.com/Matuyuhi/vuln-watch/releases)から入れる場合（x86_64 / aarch64 Linux、glibc 2.35 以降）:
+
+```bash
+VERSION=0.1.0                                   # リリースページで確認
+TARGET=$(uname -m)-unknown-linux-gnu            # x86_64 または aarch64
+NAME=vuln-watch-v$VERSION-$TARGET
+curl -fsSLO https://github.com/Matuyuhi/vuln-watch/releases/download/v$VERSION/$NAME.tar.gz
+curl -fsSLO https://github.com/Matuyuhi/vuln-watch/releases/download/v$VERSION/SHA256SUMS
+sha256sum --check --ignore-missing SHA256SUMS
+gh attestation verify $NAME.tar.gz --repo Matuyuhi/vuln-watch   # 任意: ビルド来歴の検証
+tar -xzf $NAME.tar.gz
+sudo ./$NAME/deploy/install.sh
+```
+
+ソースからビルドする場合（Rust ツールチェーンが必要）:
+
 ```bash
 git clone https://github.com/Matuyuhi/vuln-watch.git
 cd vuln-watch
-sudo ./deploy/install.sh                # cargo でビルド
-sudo ./deploy/install.sh ./vuln-watch   # リリースのバイナリを使う場合
+sudo ./deploy/install.sh
 ```
 
 `/usr/local/bin/vuln-watch` と systemd ユニットを配置し、`/etc/vuln-watch/{config.toml,env}` がなければ作成します。
@@ -141,7 +156,7 @@ dpkg のない環境では `installed.enabled = false` にしてください。
 
 ## 運用
 
-- **更新**: `git pull && sudo ./deploy/install.sh`。既存の設定は上書きしません。
+- **更新**: 新しいリリースでインストール手順をもう一度実行します（ソースの場合は `git pull && sudo ./deploy/install.sh`）。既存の設定と状態はそのまま残ります。`config.example.toml` の変更は [CHANGELOG.md](CHANGELOG.md) で確認してください。
 - **サンドボックス**: ユニットは `DynamicUser`、`ProtectSystem=strict`、syscall フィルタを使います。プロセスができるのは外向き通信と状態ディレクトリへの書き込みだけです。
 - **アンインストール**:
 
@@ -165,7 +180,19 @@ CI ワークフロー:
 - [CI](.github/workflows/ci.yml): fmt、clippy、テスト。
 - [Live smoke test](.github/workflows/smoke.yml): 週 1 回、実際の情報源に対して dry-run を実行し、上流のフォーマット変更を検知します。
 - [Dependencies](.github/workflows/deps.yml): [cargo-deny](deny.toml) を毎日実行します（RustSec、ライセンス、禁止クレート、取得元）。依存の更新 PR は Dependabot が週 1 回作成します。
-- [Release](.github/workflows/release.yml): `v*` タグで x86_64 と aarch64 の Linux バイナリをビルドします。
+- [Release](.github/workflows/release.yml): リリースを作成・公開します（下記）。
+
+### リリース手順
+
+リリース作業はすべて GitHub Actions 上で行います。
+
+1. 変更をマージするたびに [CHANGELOG.md](CHANGELOG.md) の `## [Unreleased]` に追記します。
+2. `main` で *Actions → Release → Run workflow* を開き、バージョン（例: `0.2.0`）を入力して実行します。`0.2.0-rc.1` のようにサフィックス付きのバージョンはプレリリースとして公開されます。
+3. ワークフローが `Cargo.toml`/`Cargo.lock` のバージョン更新、CHANGELOG の日付付け、fmt/clippy/テストを行い、`release: v0.2.0` コミットと `v0.2.0` タグを `main` に push します。続けて x86_64 と aarch64 をビルド・動作確認し、アーカイブを `SHA256SUMS`・ビルド来歴の attestation・CHANGELOG の該当セクション（リリースノート）とともに公開します。
+
+*dry run* にチェックを入れると、push と公開以外をすべて実行し、アーカイブを実行結果の artifact として残します。dry run は `main` 以外のブランチでも実行できます。
+
+`main` にブランチ保護をかけている場合は、GitHub Actions が push できるように許可してください（ruleset のバイパス対象に追加）。許可がないと push ステップで失敗します。
 
 ## ライセンス
 
