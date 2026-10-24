@@ -6,7 +6,7 @@ Security fixes are made on `main` and shipped in the next release. Only the late
 
 | Version | Supported |
 |---|---|
-| latest release (currently `1.0.0-rc.1`) | yes |
+| [latest release](https://github.com/Matuyuhi/vuln-watch/releases/latest) | yes |
 | older releases | no |
 
 ## Reporting a vulnerability
