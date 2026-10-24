@@ -11,16 +11,16 @@ Security fixes are made on `main` and shipped in the next release. Only the late
 
 ## Reporting a vulnerability
 
-Please do **not** open a public issue, pull request or discussion for a security problem.
+Report security problems as a [public issue](https://github.com/Matuyuhi/vuln-watch/issues/new).
 
-Report it privately through GitHub: open the repository's **Security** tab and choose **Report a vulnerability** ([direct link](https://github.com/Matuyuhi/vuln-watch/security/advisories/new)).
+Issues are public, so **remove tokens, webhook URLs and user IDs** from anything you paste.
 
 Include as much of the following as you can:
 
 - the affected version or commit
 - a description of the problem and its impact
 - steps to reproduce, or a proof of concept
-- relevant configuration (with tokens, webhook URLs and user IDs removed)
+- relevant configuration
 
 This is a personal project maintained in spare time. You can expect:
 
@@ -28,7 +28,7 @@ This is a personal project maintained in spare time. You can expect:
 - an initial assessment within 14 days
 - a fix or mitigation plan as soon as practical after the issue is confirmed
 
-Once a fix is released, the issue is published as a GitHub Security Advisory and credited to the reporter unless you prefer to stay anonymous.
+Fixes are recorded in [CHANGELOG.md](CHANGELOG.md) with a link to the issue.
 
 ## Scope
 
