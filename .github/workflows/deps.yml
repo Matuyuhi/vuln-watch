@@ -1,7 +1,7 @@
-# 依存関係スキャン（cargo-deny、設定は deny.toml）
-# - advisories: RustSec の脆弱性・unmaintained・yanked
-# - bans/licenses/sources: 禁止クレート・ライセンス・取得元
-# コードが変わらなくても新しい advisory は日々公開されるので、毎日定期実行もする。
+# cargo-deny (configured in deny.toml)
+# - advisories: RustSec vulnerabilities, unmaintained and yanked crates
+# - bans, licenses, sources
+# Runs daily as well, since new advisories appear without code changes.
 name: Dependencies
 
 on:

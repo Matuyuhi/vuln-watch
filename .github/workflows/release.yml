@@ -25,7 +25,7 @@ jobs:
         run: |
           name=vuln-watch-${GITHUB_REF_NAME}-${{ matrix.target }}
           mkdir -p "dist/$name"
-          cp target/release/vuln-watch config.example.toml README.md LICENSE "dist/$name/"
+          cp target/release/vuln-watch config.example.toml README.md README.ja.md LICENSE "dist/$name/"
           cp -r deploy "dist/$name/"
           tar -C dist -czf "dist/$name.tar.gz" "$name"
           (cd dist && sha256sum "$name.tar.gz" > "$name.tar.gz.sha256")

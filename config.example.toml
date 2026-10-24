@@ -1,69 +1,63 @@
-# vuln-watch 設定例
-# 本番では /etc/vuln-watch/config.toml に置く。秘密情報（トークン等）はここに書かず
-# /etc/vuln-watch/env（EnvironmentFile）に書くこと。
+# vuln-watch configuration
+# Installed to /etc/vuln-watch/config.toml. Secrets go in /etc/vuln-watch/env.
 
 [discord]
-# "dm"      : Bot から自分宛ての DM（DISCORD_BOT_TOKEN が必要）
-# "webhook" : チャンネルの Webhook（DISCORD_WEBHOOK_URL が必要）
+# "dm": bot direct message (DISCORD_BOT_TOKEN)
+# "webhook": channel webhook (DISCORD_WEBHOOK_URL)
 mode = "dm"
-# DM の送り先ユーザー ID（開発者モードでユーザーを右クリック → ID をコピー）
-# 環境変数 DISCORD_USER_ID でも指定可
+# Recipient user ID. DISCORD_USER_ID overrides this.
 user_id = "000000000000000000"
 
 [rules]
-# CISA KEV（実際に悪用が確認された脆弱性）は常に即時通知
+# Items in CISA KEV are always urgent.
 kev_urgent = true
-# ウォッチ対象に強く一致（パッケージ名・製品名・タイトル）したとき、
-# CVSS がこの値以上、またはスコア未付与なら即時通知。未満ならダイジェスト。
-# 本文だけに名前が出る弱い一致は、誤検知防止のため常にダイジェスト。
+# Strong watch match (package, product or title): urgent if CVSS >= this or unscored,
+# digest otherwise. Description-only matches always go to the digest.
 watch_urgent_cvss = 7.0
-# ウォッチ対象外でも、CVSS がこの値以上なら即時通知（0 で無効）
+# Without a watch match: urgent if CVSS >= this. 0 disables.
 urgent_cvss = 0
-# ウォッチ対象外で CVSS がこの値以上ならダイジェスト（0 で無効）
+# Without a watch match: digest if CVSS >= this. 0 disables.
 digest_cvss = 9.0
-# ウォッチ対象外の通知から除外する語（KEV とウォッチ一致は除外されない）
+# Ignore items containing these words, unless they are in KEV or match a watch entry.
 exclude_keywords = ["wordpress", "plugin for wordpress", "sourcecodester", "code-projects"]
 
 [runtime]
-# 1 回の実行で送る即時通知の上限（超過分はダイジェストへ）
+# Urgent messages per run; the rest go to the digest.
 max_urgent_per_run = 10
-# 同じソースがこの回数連続で失敗したら警告を送る（2分間隔なら約10分）
+# Warn after this many consecutive failures of one source.
 alert_after_failures = 5
 http_timeout_secs = 30
-# 実行成功ごとに GET する死活監視 URL（healthchecks.io 等）。環境変数 HEARTBEAT_URL でも可
-# heartbeat_url = "https://hc-ping.com/xxxxxxxx"
-# 新着ゼロでもダイジェストを送る（毎朝の生存確認を兼ねる）
+# Pinged after every successful run. HEARTBEAT_URL overrides this.
+# heartbeat_url = "https://hc-ping.com/..."
+# Send the digest even when it is empty.
 digest_send_empty = true
-# 1 回の実行で取得する CVE レコードの上限
+# CVE records fetched per run; the remainder is processed on later runs.
 cvelist_max_records = 300
 
-# ───────── このサーバーのパッケージとの照合 ─────────
-# Ubuntu Security Notices（kind = "usn"）を、実際にインストールされているパッケージと照合する。
-#   未適用（インストール版 < 修正版） → 即時
-#   適用済み                          → already_fixed に従う（digest / ignore）
-#   未インストール                    → 通知しない（ウォッチリストより優先）
-# 毎回 dpkg の状態を読み直すので、apt upgrade 後は自動的に「適用済み」扱いになる。
-# dpkg のない環境（macOS 等）でローカル実行する場合は enabled = false に。
+# Match Ubuntu Security Notices (kind = "usn") against installed packages.
+#   installed, older than the fix  -> urgent
+#   installed, already patched     -> already_fixed ("digest" or "ignore")
+#   not installed                  -> ignored, even if it matches a watch entry
+# Set enabled = false on systems without dpkg.
 [installed]
 enabled = true
 # dpkg_status = "/var/lib/dpkg/status"
-# release = "noble"        # 省略時は /etc/os-release から自動取得
+# release = "noble"   # default: read from /etc/os-release
 already_fixed = "digest"
 
-# ───────── 監視対象（ウォッチリスト） ─────────
-# keywords: タイトル/製品名/本文に単語単位で一致（大文字小文字を無視）
-# packages: GitHub Advisory 等のパッケージ名に完全一致（Maven は group:artifact）
-# keywords と packages を両方省略すると name がキーワードになる
-# sources: このソースにだけ適用（省略で全ソース）。CVE が大量に出る対象のノイズ対策に使う
-# urgent = false: 一致してもダイジェストのみ（件数が多い対象向け）
+# Watch list
+#   keywords  whole-word, case-insensitive match on title, products and description
+#   packages  exact package name (Maven: group:artifact)
+#   sources   limit to these source names (default: all)
+#   urgent    false = matches only go to the digest
+# With neither keywords nor packages, name is used as the keyword.
 
-# --- サーバー (Ubuntu VPS) ---
+# Server
 [[watch]]
 name = "nginx"
 
-# カーネルは CVE が 1 日に数十件出るため oss-security に限定する。
-# パッチ公開は [installed] の照合で（実際に入っているカーネルだけ）即時通知され、
-# 悪用が確認されたものは KEV 経由で必ず即時通知される。
+# Dozens of kernel CVEs are published daily. Patches for the installed kernel are
+# covered by [installed]; exploited ones by KEV.
 [[watch]]
 name = "Linux kernel"
 keywords = ["linux kernel"]
@@ -79,7 +73,6 @@ keywords = ["openssl"]
 
 [[watch]]
 name = "sudo"
-keywords = ["sudo"]
 
 [[watch]]
 name = "glibc"
@@ -91,9 +84,7 @@ name = "systemd"
 [[watch]]
 name = "fail2ban"
 
-# --- Android / Kotlin ---
-# Android / Samsung は月例パッチで数十件まとめて出るのでダイジェストに回す
-# （悪用確認済みのものは KEV 経由で即時通知される）
+# Mobile platforms publish monthly batches; exploited ones arrive via KEV.
 [[watch]]
 name = "Android"
 keywords = ["google android", "android os"]
@@ -104,18 +95,17 @@ name = "Samsung Mobile"
 keywords = ["samsung mobile"]
 urgent = false
 
-# iOS アプリ開発向け。Apple は月例で数十件出るのでダイジェスト（悪用確認済みは KEV で即時）
 [[watch]]
 name = "Apple iOS"
 keywords = ["ios and ipados", "apple ios", "xcode"]
 urgent = false
 
-# Android アプリ内の WebView は Chromium ベース
 [[watch]]
 name = "Chrome / WebView"
 keywords = ["google chrome", "android webview", "chromium"]
 urgent = false
 
+# Libraries
 [[watch]]
 name = "OkHttp"
 keywords = ["okhttp"]
@@ -135,7 +125,6 @@ name = "Gradle / AGP"
 keywords = ["gradle"]
 packages = ["com.android.tools.build:gradle"]
 
-# --- Rust ---
 [[watch]]
 name = "tokio"
 packages = ["tokio"]
@@ -144,45 +133,39 @@ packages = ["tokio"]
 name = "rustls"
 packages = ["rustls"]
 
-# ───────── 情報源 ─────────
-# kind: kev / ghsa / cvelist / feed（RSS・Atom）
-# mode: filter（ルールで判定・既定）/ urgent（新着は全部即時）/ digest（全部ダイジェスト）
-# [[source]] を 1 つも書かないと kev・ghsa・cvelist の 3 つが有効になる
+# Sources
+#   kind  kev | ghsa | cvelist | usn | feed
+#   mode  filter (apply rules, default) | urgent | digest
+# Without any [[source]], kev, ghsa and cvelist are enabled.
 
-# CISA Known Exploited Vulnerabilities（悪用確認済み）
 [[source]]
 kind = "kev"
 
-# GitHub Advisory Database（パッケージ単位。GITHUB_TOKEN 推奨）
 [[source]]
 kind = "ghsa"
 
-# CVE List（CVE 公開そのもの。数分おきに更新）
 [[source]]
 kind = "cvelist"
 
-# Ubuntu Security Notices（パッチ公開）。JSON API でページを遡れるので停止中の分も取りこぼさない。
-# release は [installed] から自動。単独で使う場合は release = "noble" のように指定
+# Release defaults to [installed].release; set release = "noble" to use it on its own.
 [[source]]
 kind = "usn"
 name = "ubuntu-usn"
 
-# oss-security メーリングリスト（CVE 採番前の一次情報が最初に出やすい）
 [[source]]
 kind = "feed"
 name = "oss-security"
 url = "https://seclists.org/rss/oss-sec.rss"
 ignore_title_prefixes = ["Re:"]
 
-# GitHub Advisory のマルウェア（悪意あるパッケージ）。ウォッチ対象パッケージに一致したときだけ通知
-# [[source]]
-# kind = "ghsa"
-# name = "ghsa-malware"
-# url = "https://api.github.com/advisories?type=malware&sort=updated&direction=desc&per_page=100"
-
-# nginx のリリース（セキュリティ修正版の公開をいち早く検知）
 [[source]]
 kind = "feed"
 name = "nginx-releases"
 url = "https://github.com/nginx/nginx/releases.atom"
 mode = "digest"
+
+# Malicious packages. Only notified when a watch entry matches.
+# [[source]]
+# kind = "ghsa"
+# name = "ghsa-malware"
+# url = "https://api.github.com/advisories?type=malware&sort=updated&direction=desc&per_page=100"

@@ -3,7 +3,7 @@ name = "vuln-watch"
 version = "0.1.0"
 edition = "2021"
 rust-version = "1.82"
-description = "Poll vulnerability feeds (CISA KEV, GitHub Advisory, CVE List, RSS) and notify Discord"
+description = "Poll CISA KEV, GitHub Advisory, CVE List, Ubuntu USN and RSS feeds and notify Discord"
 license = "MIT"
 repository = "https://github.com/Matuyuhi/vuln-watch"
 

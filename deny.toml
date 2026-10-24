@@ -1,30 +1,29 @@
-# cargo-deny の設定（依存関係スキャン）
-# ローカルでは `cargo install cargo-deny --locked && cargo deny check` で実行できる。
-# CI では .github/workflows/deps.yml が PR・push・毎日の定期実行でチェックする。
-# 設定項目の詳細: https://embarkstudios.github.io/cargo-deny/
+# cargo-deny configuration. Run locally with `cargo deny check`;
+# CI runs it from .github/workflows/deps.yml.
+# Reference: https://embarkstudios.github.io/cargo-deny/
 
 [graph]
-# リリース対象の Linux ターゲットだけを見る（Windows/macOS 専用の依存で誤検知しない）
+# Only the released Linux targets (ignore Windows/macOS-only dependencies).
 targets = [
     "x86_64-unknown-linux-gnu",
     "aarch64-unknown-linux-gnu",
 ]
 all-features = true
 
-# ───────── 脆弱性（RustSec Advisory DB） ─────────
+# RustSec advisories
 [advisories]
-# 脆弱性・unsound・yanked はすべてエラー。メンテ終了（unmaintained）は
-# 直接依存だけをエラーにし、推移的依存は自分で直せないので対象外にする。
+# Vulnerabilities, unsound and yanked crates are errors. Unmaintained crates are
+# errors only for direct dependencies.
 unmaintained = "workspace"
 yanked = "deny"
-# 影響がないと判断した advisory はここに理由付きで追加する。
-# 例: { id = "RUSTSEC-0000-0000", reason = "該当機能を使っていない" }
+# Accepted advisories, with a reason:
+# { id = "RUSTSEC-0000-0000", reason = "affected feature is not used" }
 ignore = []
 
-# ───────── ライセンス ─────────
+# Licenses
 [licenses]
-# MIT で配布するバイナリに静的リンクしてよい寛容なライセンスだけを許可する。
-# コピーレフト（GPL/LGPL/MPL など）が入ってきたら CI で止まる。
+# Permissive licenses compatible with a statically linked MIT binary.
+# Copyleft licenses fail the check.
 allow = [
     "MIT",
     "Apache-2.0",
@@ -36,25 +35,25 @@ allow = [
     "BSL-1.0",
     "Unlicense",
     "Unicode-3.0",
-    "CDLA-Permissive-2.0", # webpki-roots（Mozilla のルート証明書データ）
+    "CDLA-Permissive-2.0", # webpki-roots (Mozilla root certificates)
 ]
 confidence-threshold = 0.9
 
-# ───────── 禁止クレート・重複 ─────────
+# Banned crates and duplicates
 [bans]
-# 同じクレートの複数バージョンは警告のみ（推移的依存では避けられないことが多い）
+# Duplicate versions are often unavoidable in transitive dependencies.
 multiple-versions = "warn"
 wildcards = "deny"
 highlight = "all"
 deny = [
-    # TLS は rustls に統一している。OpenSSL へのリンクが紛れ込んだら止める
-    { crate = "openssl-sys", reason = "rustls-tls を使う方針（静的バイナリ・依存を減らすため）" },
-    { crate = "native-tls", reason = "rustls-tls を使う方針（静的バイナリ・依存を減らすため）" },
+    # TLS is rustls only.
+    { crate = "openssl-sys", reason = "use rustls" },
+    { crate = "native-tls", reason = "use rustls" },
 ]
 
-# ───────── 取得元 ─────────
+# Sources
 [sources]
-# crates.io 以外（任意の git リポジトリや別レジストリ）からの依存を禁止する
+# crates.io only; no git or other registries.
 unknown-registry = "deny"
 unknown-git = "deny"
 allow-registry = ["https://github.com/rust-lang/crates.io-index"]
