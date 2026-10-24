@@ -130,7 +130,7 @@ sudo ./deploy/install.sh
 | `GITHUB_TOKEN` | recommended; a fine-grained token with no permissions is enough. Raises the API limit from 60 to 5,000 requests/hour and reads the CVE List through the API instead of the CDN (up to 5 min faster). |
 | `HEARTBEAT_URL` | optional; pinged after every successful run (e.g. healthchecks.io) |
 
-`/etc/vuln-watch/config.toml`: adjust the watch list and sources.
+`/etc/vuln-watch/config.toml`: adjust the watch list and sources. The watch list can also be edited with `vuln-watch watch` (see [Usage](#usage)).
 
 ### 4. Start
 
@@ -156,11 +156,23 @@ vuln-watch [--config PATH] [--state-dir DIR] <COMMAND>
   check-config                             validate config and credentials
   doctor [--offline]                       diagnose the installation (as root)
   upgrade [--check] [--version V] [--pre]  update to the latest release (as root)
+  watch list                               show the watch list
+  watch add NAME [-k WORD] [-p PKG]...     add a watch entry (as root)
+  watch edit NAME [-k ...] [--rm-keyword ...]  change a watch entry (as root)
+  watch remove NAME                        remove a watch entry (as root)
 ```
 
 `--state-dir` defaults to `$STATE_DIRECTORY` (`/var/lib/vuln-watch` under systemd).
 
 On an installed host, `run`, `digest`, `test-notify` and `check-config` started from a shell run as the systemd service: with `sudo`, vuln-watch re-runs itself through `systemd-run` with the settings of `vuln-watch@.service`, so it gets the credentials from `/etc/vuln-watch/env` and shares state with the timers, while the output and exit code stay in your terminal (`sudo vuln-watch digest`, `sudo vuln-watch run --strict`). Without `sudo` they stop with a hint, except `run --dry-run`, which needs neither. Pass `--state-dir` to run locally against a separate state directory instead.
+
+`vuln-watch watch` edits the `[[watch]]` entries of config.toml in place, keeping comments and formatting, and writes nothing unless the result passes the same validation as the service (unknown sources, empty values, duplicate names are rejected; repeated or very short keywords get a warning). `add` / `edit` take `-k/--keyword`, `-p/--package`, `-s/--source` (repeatable) and `--urgent` / `--no-urgent`; `edit` also takes `--rm-keyword`, `--rm-package` and `--rm-source`. Names match case-insensitively. `--dry-run` prints the result without writing; otherwise the previous file is kept as `config.toml.bak`. Changes apply from the next timer run, no restart needed. `watch list` and `--dry-run` work without `sudo`.
+
+```bash
+sudo vuln-watch watch add PHP -k php -p php/php-src
+sudo vuln-watch watch edit php -k laravel --no-urgent
+sudo vuln-watch watch remove PHP
+```
 
 `--dry-run` prints decisions instead of sending and keeps no state:
 
