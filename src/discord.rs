@@ -277,8 +277,11 @@ fn cvss_label(item: &Item) -> String {
 
 pub fn urgent_message(item: &Item, decision: &Decision) -> Message {
     let icon = if item.kev { "🔥" } else { "🚨" };
+    let product = product_hint(item)
+        .map(|p| format!("[{p}] "))
+        .unwrap_or_default();
     let content = truncate(
-        &format!("{icon} {} — {}", item.display_id(), item.title),
+        &format!("{icon} {} — {product}{}", item.display_id(), item.title),
         200,
     );
 
@@ -310,7 +313,6 @@ pub fn urgent_message(item: &Item, decision: &Decision) -> Message {
         "description": truncate(&item.summary, 2000),
         "color": color(item),
         "fields": fields,
-        "footer": {"text": "vuln-watch"},
         "timestamp": chrono::Utc::now().to_rfc3339(),
     });
     if item.url.starts_with("http") {
@@ -325,9 +327,13 @@ pub fn urgent_message(item: &Item, decision: &Decision) -> Message {
 /// Plain-text variant of `urgent_message` for when Discord rejects the embed.
 pub fn urgent_fallback_message(item: &Item, decision: &Decision) -> Message {
     let icon = if item.kev { "🔥" } else { "🚨" };
+    let product = product_hint(item)
+        .map(|p| format!("[{}] ", escape_md(&p)))
+        .unwrap_or_default();
     let mut text = format!(
-        "{icon} {} — {}\n{}",
+        "{icon} {} — {}{}\n{}",
         escape_md(&truncate(item.display_id(), 200)),
+        product,
         escape_md(&truncate(&item.title, 300)),
         escape_md(&truncate(&decision.reason, 300)),
     );
@@ -337,7 +343,42 @@ pub fn urgent_fallback_message(item: &Item, decision: &Decision) -> Message {
     Message::text(truncate(&text, 2000))
 }
 
-fn digest_line(e: &DigestEntry) -> String {
+/// Short "what is affected" label, or None when the title already names it.
+pub fn product_hint(item: &Item) -> Option<String> {
+    let first = item.products.first()?.trim();
+    if first.is_empty() {
+        return None;
+    }
+    let title = item.title.to_lowercase();
+    let label = first.to_lowercase();
+    // "vendor product" -> "product", "maven:group:artifact" -> "artifact"
+    let candidates = [
+        label.as_str(),
+        label.split_once(' ').map_or("", |(_, p)| p),
+        label.rsplit(':').next().unwrap_or(""),
+    ];
+    if candidates
+        .iter()
+        .any(|c| c.chars().count() >= 3 && title.contains(c))
+    {
+        return None;
+    }
+    let mut hint = truncate(first, 40);
+    if item.products.len() > 1 {
+        hint.push_str(&format!(" 他{}", item.products.len() - 1));
+    }
+    Some(hint)
+}
+
+fn score_label(item: &Item) -> String {
+    match (item.cvss, &item.severity) {
+        (Some(c), _) => format!("{c:.1}"),
+        (None, Some(s)) => s.to_lowercase(),
+        (None, None) => "-".into(),
+    }
+}
+
+fn digest_line(e: &DigestEntry, show_reason: bool) -> String {
     let item = &e.item;
     let id = escape_md(item.display_id());
     let head = if item.url.starts_with("http") {
@@ -345,12 +386,18 @@ fn digest_line(e: &DigestEntry) -> String {
     } else {
         id
     };
-    format!(
-        "• **{head}** {} — {} · {}",
+    let product = product_hint(item)
+        .map(|p| format!("`{}` ", p.replace('`', "'")))
+        .unwrap_or_default();
+    let mut line = format!(
+        "• **{head}** {product}{} — {}",
         escape_md(&truncate(&item.title, 90)),
-        cvss_label(item),
-        escape_md(&e.reason),
-    )
+        score_label(item),
+    );
+    if show_reason {
+        line.push_str(&format!(" · {}", escape_md(&e.reason)));
+    }
+    line
 }
 
 /// Build digest messages, each with one embed whose description stays under Discord limits,
@@ -358,19 +405,53 @@ fn digest_line(e: &DigestEntry) -> String {
 /// that resends what a failed one left in the queue.
 pub fn digest_messages(entries: &[DigestEntry], resumed: bool) -> Vec<(Message, Vec<String>)> {
     const MAX_DESC: usize = 3900;
+    const RELEVANT: &str = "**関係あり**";
+    const SCORE_ONLY: &str = "**その他の高 CVSS**（ウォッチ・サーバーに一致なし）";
+
+    // Items tied to you first, then the ones picked up only by their score.
+    let (score_only, relevant): (Vec<&DigestEntry>, Vec<&DigestEntry>) = entries
+        .iter()
+        .partition(|e| crate::rules::is_score_only(&e.reason));
+    let mut sections: Vec<(&str, bool, Vec<&DigestEntry>)> = Vec::new();
+    if !relevant.is_empty() {
+        sections.push((RELEVANT, true, relevant));
+    }
+    if !score_only.is_empty() {
+        sections.push((SCORE_ONLY, false, score_only));
+    }
+    let single_section = sections.len() == 1 && sections[0].0 == RELEVANT;
+
     let mut chunks: Vec<(String, Vec<String>)> = Vec::new();
     let mut cur = String::new();
     let mut keys = Vec::new();
-    for e in entries {
-        let line = truncate(&digest_line(e), 600);
-        if !cur.is_empty() && cur.chars().count() + line.chars().count() + 1 > MAX_DESC {
-            chunks.push((std::mem::take(&mut cur), std::mem::take(&mut keys)));
+    for (header, show_reason, list) in &sections {
+        let mut header_pending = !single_section;
+        for e in list {
+            let line = truncate(&digest_line(e, *show_reason), 600);
+            let header_len = if header_pending || cur.is_empty() {
+                header.chars().count() + 2
+            } else {
+                0
+            };
+            if !cur.is_empty()
+                && cur.chars().count() + header_len + line.chars().count() + 1 > MAX_DESC
+            {
+                chunks.push((std::mem::take(&mut cur), std::mem::take(&mut keys)));
+                header_pending = !single_section;
+            }
+            if header_pending {
+                if !cur.is_empty() {
+                    cur.push_str("\n\n");
+                }
+                cur.push_str(header);
+                header_pending = false;
+            }
+            if !cur.is_empty() {
+                cur.push('\n');
+            }
+            cur.push_str(&line);
+            keys.push(e.key.clone());
         }
-        if !cur.is_empty() {
-            cur.push('\n');
-        }
-        cur.push_str(&line);
-        keys.push(e.key.clone());
     }
     if !cur.is_empty() {
         chunks.push((cur, keys));
@@ -393,7 +474,6 @@ pub fn digest_messages(entries: &[DigestEntry], resumed: bool) -> Vec<(Message, 
                 embeds: vec![json!({
                     "description": desc,
                     "color": 0x5865F2,
-                    "footer": {"text": "vuln-watch"},
                 })],
             };
             (msg, keys)
@@ -432,8 +512,9 @@ mod tests {
         for (m, k) in &msgs {
             let d = m.embeds[0]["description"].as_str().unwrap();
             assert!(d.chars().count() <= 3900);
-            assert_eq!(d.lines().count(), k.len());
-            lines += d.lines().count();
+            let items = d.lines().filter(|l| l.starts_with("• ")).count();
+            assert_eq!(items, k.len());
+            lines += items;
             keys.extend(k.iter().cloned());
         }
         assert_eq!(lines, 200);
@@ -449,6 +530,101 @@ mod tests {
             .0
             .content
             .starts_with("📋 脆弱性ダイジェスト（再送）: 50件"));
+    }
+
+    fn entry(key: &str, title: &str, products: &[&str], reason: &str) -> DigestEntry {
+        let mut it = Item::new("cvelist", key);
+        it.cve = Some(key.into());
+        it.title = title.into();
+        it.url = format!("https://www.cve.org/CVERecord?id={key}");
+        it.cvss = Some(9.6);
+        it.severity = Some("CRITICAL".into());
+        it.products = products.iter().map(|p| p.to_string()).collect();
+        DigestEntry {
+            key: key.into(),
+            item: it,
+            reason: reason.into(),
+        }
+    }
+
+    #[test]
+    fn product_hint_only_when_title_lacks_it() {
+        let e = entry("CVE-1", "Path traversal in post media", &["Acme Forum"], "");
+        assert_eq!(product_hint(&e.item).as_deref(), Some("Acme Forum"));
+        let e = entry(
+            "CVE-2",
+            "open62541 1.5.0 heap overflow",
+            &["open62541 open62541"],
+            "",
+        );
+        assert_eq!(product_hint(&e.item), None);
+        let e = entry(
+            "CVE-3",
+            "Header injection",
+            &["maven:com.squareup.okhttp3:okhttp"],
+            "",
+        );
+        assert_eq!(
+            product_hint(&e.item).as_deref(),
+            Some("maven:com.squareup.okhttp3:okhttp")
+        );
+        let e = entry(
+            "CVE-4",
+            "OkHttp header injection",
+            &["maven:com.squareup.okhttp3:okhttp"],
+            "",
+        );
+        assert_eq!(product_hint(&e.item), None);
+        let e = entry("CVE-5", "Token forgery", &["Acme Server", "Acme Cloud"], "");
+        assert_eq!(product_hint(&e.item).as_deref(), Some("Acme Server 他1"));
+        let e = entry("CVE-6", "No products", &[], "");
+        assert_eq!(product_hint(&e.item), None);
+    }
+
+    #[test]
+    fn digest_groups_relevant_first() {
+        let entries = vec![
+            entry(
+                "CVE-1",
+                "Path traversal in post media",
+                &["Acme Forum"],
+                "CVSS 9.6 ≥ 9.0",
+            ),
+            entry(
+                "CVE-2",
+                "nginx: resolver overflow",
+                &["F5 nginx"],
+                "ウォッチ: nginx（タイトル: nginx） CVSS 6.1",
+            ),
+        ];
+        let msgs = digest_messages(&entries, false);
+        assert_eq!(msgs.len(), 1);
+        let d = msgs[0].0.embeds[0]["description"].as_str().unwrap();
+        let lines: Vec<&str> = d.lines().collect();
+        assert_eq!(lines[0], "**関係あり**");
+        assert!(lines[1].contains("CVE-2") && lines[1].contains("ウォッチ: nginx"));
+        assert_eq!(lines[2], "");
+        assert!(lines[3].starts_with("**その他の高 CVSS**"));
+        assert!(lines[4].contains("`Acme Forum` Path traversal"));
+        assert!(lines[4].ends_with("— 9.6"), "{}", lines[4]);
+        assert!(!lines[4].contains("≥"));
+        assert_eq!(msgs[0].1, vec!["CVE-2", "CVE-1"]);
+        assert!(msgs[0].0.embeds[0].get("footer").is_none());
+    }
+
+    #[test]
+    fn digest_without_score_only_has_no_headers() {
+        let entries = vec![entry(
+            "CVE-2",
+            "nginx: x",
+            &[],
+            "ウォッチ: nginx（タイトル: nginx）",
+        )];
+        let d = digest_messages(&entries, false)[0].0.embeds[0]["description"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        assert!(d.starts_with("• "), "{d}");
     }
 
     #[test]

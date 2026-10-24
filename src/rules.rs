@@ -70,6 +70,14 @@ pub fn match_watch<'a>(item: &Item, watches: &'a [Watch]) -> Option<WatchMatch<'
     weak
 }
 
+/// Prefix of reasons for items matched only by CVSS score (nothing ties them to you).
+pub const SCORE_ONLY_PREFIX: &str = "CVSS ";
+
+/// True when the decision was made on the CVSS score alone.
+pub fn is_score_only(reason: &str) -> bool {
+    reason.starts_with(SCORE_ONLY_PREFIX)
+}
+
 fn enabled(threshold: Option<f32>) -> Option<f32> {
     threshold.filter(|t| *t > 0.0)
 }
@@ -261,7 +269,7 @@ pub fn evaluate_with(
         if c >= t {
             return Decision::new(
                 Level::Urgent,
-                format!("CVSS {} ≥ {}", fmt_cvss(c), fmt_cvss(t)),
+                format!("{SCORE_ONLY_PREFIX}{} ≥ {}", fmt_cvss(c), fmt_cvss(t)),
             );
         }
     }
@@ -269,7 +277,7 @@ pub fn evaluate_with(
         if c >= t {
             return Decision::new(
                 Level::Digest,
-                format!("CVSS {} ≥ {}", fmt_cvss(c), fmt_cvss(t)),
+                format!("{SCORE_ONLY_PREFIX}{} ≥ {}", fmt_cvss(c), fmt_cvss(t)),
             );
         }
     }
