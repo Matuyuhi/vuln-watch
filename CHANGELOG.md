@@ -5,18 +5,24 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 
 ## [Unreleased]
 
-## [1.0.0-rc.2] - 2026-10-24
-
 ### Added
 
-- `install.sh` for one-line installs: `curl -fsSL https://raw.githubusercontent.com/Matuyuhi/vuln-watch/main/install.sh | sudo bash`.
-- `vuln-watch upgrade` updates to the latest GitHub release (`--check`, `--version`, `--pre`, `--force`).
 - `vuln-watch doctor` diagnoses an installation: binaries on PATH, release, config, credentials in `/etc/vuln-watch/env`, systemd units and timers, failing sources and undelivered messages.
 - `vuln-watch doctor` points out lines of `/etc/vuln-watch/env` that systemd ignores (not `KEY=value`, config.toml settings such as `discord.mode`) and variables vuln-watch does not read.
 
 ### Changed
 
 - On a host with `/etc/vuln-watch/env`, `run`, `digest` and `test-notify` started from a shell (no `--state-dir`, outside systemd) stop with a pointer to `systemctl start vuln-watch@<command>.service` instead of failing on missing credentials and using `./state`.
+
+## [1.0.0-rc.2] - 2026-10-24
+
+### Added
+
+- `install.sh` for one-line installs: `curl -fsSL https://raw.githubusercontent.com/Matuyuhi/vuln-watch/main/install.sh | sudo bash`.
+- `vuln-watch upgrade` updates to the latest GitHub release (`--check`, `--version`, `--pre`, `--force`).
+
+### Changed
+
 - `deploy/install.sh` prints a short summary instead of the setup steps when updating an existing install.
 
 ## [1.0.0-rc.1] - 2026-10-24
