@@ -5,6 +5,10 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 
 ## [Unreleased]
 
+### Fixed
+
+- An urgent message that Discord refuses (HTTP 400/413, e.g. a feed link it does not accept as an embed URL) is resent as plain text instead of failing every run and holding up the urgent messages queued after it.
+
 ### Security
 
 - Network errors for the Discord webhook and the heartbeat URL no longer include the URL (it embeds a secret token) in logs or journal output.

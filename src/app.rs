@@ -161,9 +161,23 @@ fn flush_outbox(
                 std::thread::sleep(std::time::Duration::from_millis(600));
             }
             let decision = Decision::new(Level::Urgent, e.reason.clone());
-            notifier
-                .send(db, &discord::urgent_message(&e.item, &decision))
-                .with_context(|| format!("sending notification for {}", e.item.display_id()))?;
+            let id = e.item.display_id();
+            match notifier.send(db, &discord::urgent_message(&e.item, &decision)) {
+                Ok(()) => {}
+                // Resending a message Discord refused would fail on every run and hold up
+                // everything queued behind it.
+                Err(err) if discord::is_rejected(&err) => {
+                    tracing::warn!(
+                        "Discord rejected the message for {id} ({err:#}), sending plain text"
+                    );
+                    notifier
+                        .send(db, &discord::urgent_fallback_message(&e.item, &decision))
+                        .with_context(|| format!("sending plain-text notification for {id}"))?;
+                }
+                Err(err) => {
+                    return Err(err.context(format!("sending notification for {id}")));
+                }
+            }
             db.set_alerted(&e.key, Level::Urgent)?;
             // It may have been queued for the digest earlier at a lower level.
             db.dequeue(Queue::Digest, &e.key)?;

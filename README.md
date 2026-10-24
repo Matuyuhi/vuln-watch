@@ -61,7 +61,7 @@ With `[installed] enabled = true`, USN entries are compared with `/var/lib/dpkg/
 
 ## Reliability
 
-- Urgent messages go into an outbox before cursors and ETags are committed. If Discord is unreachable, they are retried on the next run.
+- Urgent messages go into an outbox before cursors and ETags are committed. If Discord is unreachable, they are retried on the next run. A message Discord refuses as invalid is resent as plain text, so it cannot block the ones queued after it.
 - GitHub advisories are read in `updated` order and paged back to the last position, so advisories reviewed long after publication are not missed.
 - New CVE ids are queued and processed in batches of `cvelist_max_records`. A missed sync (detected from elapsed time, or from commit history when `GITHUB_TOKEN` is set) is filled from `deltaLog.json`, which covers about 30 days.
 - USN is paged back to the last seen notice.

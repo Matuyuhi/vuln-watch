@@ -179,6 +179,15 @@ fn is_channel_error(e: &anyhow::Error) -> bool {
         .is_some_and(|d| d.status == 403 || d.status == 404)
 }
 
+/// Discord accepted the request but refused this message's content (HTTP 400 "Invalid Form
+/// Body", 413 too large), e.g. an embed URL it does not consider well formed. Resending the
+/// same message can never succeed.
+pub fn is_rejected(e: &anyhow::Error) -> bool {
+    e.chain()
+        .find_map(|c| c.downcast_ref::<DiscordError>())
+        .is_some_and(|d| d.status == 400 || d.status == 413)
+}
+
 fn dm_key(user_id: &str) -> String {
     format!("discord:dm_channel:{user_id}")
 }
@@ -258,6 +267,21 @@ pub fn urgent_message(item: &Item, decision: &Decision) -> Message {
         content,
         embeds: vec![embed],
     }
+}
+
+/// Plain-text variant of `urgent_message` for when Discord rejects the embed.
+pub fn urgent_fallback_message(item: &Item, decision: &Decision) -> Message {
+    let icon = if item.kev { "🔥" } else { "🚨" };
+    let mut text = format!(
+        "{icon} {} — {}\n{}",
+        escape_md(&truncate(item.display_id(), 200)),
+        escape_md(&truncate(&item.title, 300)),
+        escape_md(&truncate(&decision.reason, 300)),
+    );
+    if item.url.starts_with("http") {
+        text.push_str(&format!("\n<{}>", truncate(&item.url, 1000)));
+    }
+    Message::text(truncate(&text, 2000))
 }
 
 fn digest_line(e: &DigestEntry) -> String {
@@ -368,5 +392,40 @@ mod tests {
         assert_eq!(e["color"], 0x8B0000);
         assert_eq!(e["url"], "https://example.com/1");
         assert_eq!(e["fields"].as_array().unwrap().len(), 5);
+    }
+
+    #[test]
+    fn rejected_only_for_invalid_body() {
+        let err = |status| {
+            anyhow::Error::new(DiscordError {
+                status,
+                body: String::new(),
+            })
+            .context("sending notification")
+        };
+        assert!(is_rejected(&err(400)));
+        assert!(is_rejected(&err(413)));
+        assert!(!is_rejected(&err(401)));
+        assert!(!is_rejected(&err(500)));
+        assert!(!is_rejected(&anyhow::anyhow!("connection refused")));
+    }
+
+    #[test]
+    fn fallback_message_is_plain_text() {
+        let mut it = item(1);
+        it.title = "x".repeat(5000);
+        let m = urgent_fallback_message(&it, &Decision::new(Level::Urgent, "CISA KEV"));
+        assert!(m.embeds.is_empty());
+        assert!(m.content.starts_with("🚨 CVE-2026-00001"));
+        assert!(m.content.contains("CISA KEV"));
+        assert!(m.content.ends_with("<https://example.com/1>"));
+        assert!(m.content.chars().count() <= 2000);
+
+        // An unbounded feed GUID must not crowd out the reason and link.
+        let mut it = Item::new("rel", "g".repeat(5000));
+        it.url = "https://example.com/x".into();
+        let m = urgent_fallback_message(&it, &Decision::new(Level::Urgent, "watch: nginx"));
+        assert!(m.content.contains("watch: nginx"));
+        assert!(m.content.ends_with("<https://example.com/x>"));
     }
 }
