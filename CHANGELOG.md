@@ -5,6 +5,11 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 
 ## [Unreleased]
 
+### Security
+
+- Network errors for the Discord webhook and the heartbeat URL no longer include the URL (it embeds a secret token) in logs or journal output.
+- HTTP response bodies are capped at 64 MiB so a hostile or broken feed cannot exhaust memory.
+
 ## [1.0.2] - 2026-10-24
 
 ### Added

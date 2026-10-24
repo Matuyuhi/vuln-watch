@@ -12,6 +12,9 @@ pub const USER_AGENT: &str = concat!(
     " (+https://github.com/Matuyuhi/vuln-watch)"
 );
 
+/// Upper bound for a response body; a hostile or broken feed must not exhaust memory.
+const MAX_BODY_BYTES: u64 = 64 * 1024 * 1024;
+
 pub struct Http {
     client: Client,
 }
@@ -82,6 +85,22 @@ impl Http {
         &self.client
     }
 
+    /// GET a URL that is itself a secret (heartbeat check-in URLs embed a token): errors never
+    /// carry the URL, so they are safe to log.
+    pub fn ping(&self, url: &str) -> Result<()> {
+        let resp = self
+            .client
+            .get(url)
+            .send()
+            .map_err(|e| e.without_url())
+            .context("heartbeat request failed")?;
+        let status = resp.status();
+        if !status.is_success() {
+            bail!("heartbeat endpoint returned HTTP {}", status.as_u16());
+        }
+        Ok(())
+    }
+
     /// GET with optional extra headers and conditional validators.
     /// Returns an error for anything except 2xx and 304.
     pub fn get(
@@ -122,9 +141,7 @@ impl Http {
                 link,
             });
         }
-        let body = resp
-            .text()
-            .with_context(|| format!("reading body of {url}"))?;
+        let body = read_capped(resp).with_context(|| format!("reading body of {url}"))?;
         if !(200..300).contains(&status) {
             bail!(
                 "GET {url} returned HTTP {status}: {}",
@@ -139,6 +156,20 @@ impl Http {
             link,
         })
     }
+}
+
+/// Read a body as text, failing instead of buffering more than `MAX_BODY_BYTES`.
+fn read_capped(resp: reqwest::blocking::Response) -> Result<String> {
+    use std::io::Read;
+    if resp.content_length().is_some_and(|n| n > MAX_BODY_BYTES) {
+        bail!("response body larger than {MAX_BODY_BYTES} bytes");
+    }
+    let mut buf = Vec::new();
+    resp.take(MAX_BODY_BYTES + 1).read_to_end(&mut buf)?;
+    if buf.len() as u64 > MAX_BODY_BYTES {
+        bail!("response body larger than {MAX_BODY_BYTES} bytes");
+    }
+    Ok(String::from_utf8_lossy(&buf).into_owned())
 }
 
 /// Extract the `rel="next"` URL from a Link header.
