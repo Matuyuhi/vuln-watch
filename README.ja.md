@@ -63,7 +63,7 @@ oss-security には、CVE レコードより先に報告が出ることがよく
 
 - 即時通知は、カーソルや ETag を確定する前に outbox に保存します。Discord に送れなかった分は次の実行で再送します。Discord が内容を不正として拒否した通知はテキストのみで送り直すため、後続の通知を止めません。
 - GitHub Advisory は `updated` 順に取得し、前回の位置までページを遡ります。公開から時間が経って reviewed になったものも拾えます。
-- 新しい CVE ID はキューに積み、`cvelist_max_records` 件ずつ処理します。同期の取りこぼしは経過時間（`GITHUB_TOKEN` 設定時はコミット履歴も）で検知し、約 30 日分の `deltaLog.json` から補完します。
+- 新しい CVE ID はキューに積み、`cvelist_max_records` 件ずつ処理します。同期の取りこぼしは経過時間（`GITHUB_TOKEN` 設定時はコミット履歴も）で検知し、約 30 日分の `deltaLog.json` から補完します。`deltaLog.json` を読めない場合は `delta.json` にフォールバックし、取りこぼした同期分の CVE が抜けている可能性を警告ログに出します。
 - USN は前回の位置までページを遡ります。
 - RSS は最新の数件しか配信されないため、長時間停止すると RSS の情報源では取りこぼすことがあります。`HEARTBEAT_URL` を設定すると、実行が止まったことに気づけます。
 

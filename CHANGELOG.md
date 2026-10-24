@@ -8,6 +8,8 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 ### Fixed
 
 - An urgent message that Discord refuses (HTTP 400/413, e.g. a feed link it does not accept as an embed URL) is resent as plain text instead of failing every run and holding up the urgent messages queued after it.
+- cvelist catch-up parses `deltaLog.json` (~33 MB) straight into its entries, cutting peak memory from about 143 MB to 36 MB (the unit has `MemoryMax=256M`).
+- If reading `deltaLog.json` fails, cvelist logs a warning and falls back to `delta.json` instead of failing the source and retrying the catch-up on every run. CVEs that only appeared in the missed syncs may be skipped in that case.
 
 ### Security
 
