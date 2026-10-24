@@ -2,7 +2,9 @@
 #
 # Run it from Actions → Release → Run workflow on main, with the version to
 # release (e.g. 0.2.0). List the changes under "## [Unreleased]" in
-# CHANGELOG.md beforehand; they become the release notes.
+# CHANGELOG.md beforehand; they become the release notes. A final release
+# (0.2.0) also takes in the sections of its pre-releases (0.2.0-rc.*), so
+# Unreleased may be empty when nothing changed after the last pre-release.
 #
 # Jobs:
 #   prepare  bump Cargo.toml/Cargo.lock, date CHANGELOG.md, fmt/clippy/test,

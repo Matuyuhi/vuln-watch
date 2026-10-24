@@ -46,4 +46,5 @@ Other modules:
 - User-facing changes update `README.md`, `README.ja.md` (keep both in sync) and `CHANGELOG.md` under `## [Unreleased]` in the same change.
 - Commit messages: Conventional Commits (`feat:`, `fix:`, `feat(doctor):`, `docs:`).
 - Releases are cut only via the Release workflow (Actions → Release → Run workflow); it bumps the version (`scripts/bump-version.sh`), dates the changelog and tags. Don't bump `Cargo.toml` versions by hand.
+- Always add entries under `## [Unreleased]`, also between a pre-release and the final release; never edit a released section. The final release folds its pre-release sections (`X.Y.Z-rc.*`) into `## [X.Y.Z]` by category (`scripts/changelog-release.py`, tested with `--self-test` in CI).
 - The weekly smoke workflow parses `[source]`-prefixed lines from `run --dry-run` stdout; keep that output format stable.

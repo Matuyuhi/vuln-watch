@@ -20,3 +20,7 @@ jobs:
       - run: cargo fmt --all --check
       - run: cargo clippy --all-targets -- -D warnings
       - run: cargo test
+      - name: Release scripts
+        run: |
+          python3 scripts/changelog-release.py --self-test
+          for f in scripts/*.sh; do bash -n "$f"; done
