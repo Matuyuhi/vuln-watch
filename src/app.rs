@@ -7,7 +7,7 @@ use crate::http::Http;
 use crate::installed::Installed;
 use crate::model::{Decision, Item, Level};
 use crate::rules::{self, InstalledMatch};
-use crate::sources::{self, Ctx};
+use crate::sources::{self, Ctx, Fetched};
 use crate::text::truncate;
 
 pub struct Secrets {
@@ -114,7 +114,7 @@ pub fn run(
         }
     }
 
-    flush_outbox(cfg, db, notifier, opts, &mut summary)?;
+    flush_outbox(cfg, db, notifier, &mut summary)?;
 
     if !opts.dry_run {
         retry_digest(cfg, db, notifier);
@@ -153,7 +153,6 @@ fn flush_outbox(
     cfg: &Config,
     db: &Db,
     notifier: &Notifier,
-    opts: &RunOptions,
     summary: &mut RunSummary,
 ) -> Result<()> {
     let entries = db.queue_entries(Queue::Outbox)?;
@@ -161,8 +160,8 @@ fn flush_outbox(
     let overflow = entries.len().saturating_sub(max);
     for (i, e) in entries.into_iter().enumerate() {
         if i < max {
-            if i > 0 && !opts.dry_run {
-                std::thread::sleep(std::time::Duration::from_millis(600));
+            if i > 0 {
+                notifier.pace();
             }
             let decision = Decision::new(Level::Urgent, e.reason.clone());
             let id = e.item.display_id();
@@ -221,9 +220,7 @@ fn process_source(
     installed: Option<&InstalledMatch>,
     summary: &mut RunSummary,
 ) -> Result<()> {
-    let name = src.name();
-    let init_key = format!("init:{name}");
-    let bootstrap = !opts.dry_run && db.get_kv(&init_key)?.is_none();
+    let bootstrap = !opts.dry_run && db.get_kv(&format!("init:{}", src.name()))?.is_none();
 
     let fetched = {
         let ctx = Ctx {
@@ -238,12 +235,29 @@ fn process_source(
         sources::fetch(src, &ctx)?
     };
 
+    handle_fetched(cfg, db, src, fetched, bootstrap, opts, installed, summary)
+}
+
+/// Decide and enqueue the items of one fetch, then persist its commit pairs.
+#[allow(clippy::too_many_arguments)]
+fn handle_fetched(
+    cfg: &Config,
+    db: &mut Db,
+    src: &SourceConfig,
+    fetched: Fetched,
+    bootstrap: bool,
+    opts: &RunOptions,
+    installed: Option<&InstalledMatch>,
+    summary: &mut RunSummary,
+) -> Result<()> {
+    let name = src.name();
+
     if bootstrap {
         let n = db.mark_seen_many(&name, fetched.items.iter().map(|i| i.id.as_str()))?;
         for (k, v) in &fetched.commit {
             db.set_kv(k, v)?;
         }
-        db.set_kv(&init_key, &chrono::Utc::now().to_rfc3339())?;
+        db.set_kv(&format!("init:{name}"), &chrono::Utc::now().to_rfc3339())?;
         tracing::info!("{name}: first run, recorded {n} existing items without notifying");
         summary.bootstrapped += n;
         return Ok(());
@@ -451,24 +465,361 @@ pub fn test_message() -> Message {
 
 #[cfg(test)]
 mod tests {
+    use std::cell::RefCell;
+
     use super::*;
+    use crate::discord::{Fail, Recorder};
+
+    const CONFIG: &str = r#"
+[runtime]
+max_urgent_per_run = 2
+alert_after_failures = 2
+
+[[source]]
+kind = "kev"
+
+[[source]]
+kind = "ghsa"
+"#;
+
+    fn cfg() -> Config {
+        Config::parse(CONFIG).unwrap()
+    }
+
+    fn src<'a>(cfg: &'a Config, name: &str) -> &'a SourceConfig {
+        cfg.sources.iter().find(|s| s.name() == name).unwrap()
+    }
+
+    fn opts() -> RunOptions {
+        RunOptions {
+            dry_run: false,
+            limit: None,
+            strict: false,
+        }
+    }
+
+    fn recorder(http: &Http, fail: Vec<(usize, Fail)>) -> Notifier<'_> {
+        Notifier::new(
+            http,
+            Target::Recorder(RefCell::new(Recorder::failing(fail))),
+        )
+    }
+
+    /// Urgent by the default rules (CISA KEV).
+    fn kev_item(source: &str, cve: &str) -> Item {
+        let mut item = Item::new(source, cve);
+        item.cve = Some(cve.into());
+        item.title = format!("{cve} title");
+        item.kev = true;
+        item
+    }
+
+    /// Digest by the default rules (unmatched, CVSS >= 9.0).
+    fn digest_item(source: &str, cve: &str) -> Item {
+        let mut item = Item::new(source, cve);
+        item.cve = Some(cve.into());
+        item.title = format!("{cve} title");
+        item.cvss = Some(9.5);
+        item
+    }
+
+    fn fetched(items: Vec<Item>, cursor: &str) -> Fetched {
+        Fetched {
+            items,
+            commit: vec![("cursor:test".into(), cursor.into())],
+        }
+    }
+
+    fn handle(cfg: &Config, db: &mut Db, name: &str, f: Fetched, s: &mut RunSummary) {
+        handle_fetched(cfg, db, src(cfg, name), f, false, &opts(), None, s).unwrap();
+    }
+
+    fn keys(db: &Db, q: Queue) -> Vec<String> {
+        db.queue_entries(q)
+            .unwrap()
+            .into_iter()
+            .map(|e| e.key)
+            .collect()
+    }
+
+    #[test]
+    fn bootstrap_marks_seen_and_commits_without_queueing() {
+        let cfg = cfg();
+        let mut db = Db::open_in_memory().unwrap();
+        let mut s = RunSummary::default();
+        let f = fetched(
+            vec![
+                kev_item("kev", "CVE-2026-0001"),
+                digest_item("kev", "CVE-2026-0002"),
+            ],
+            "c1",
+        );
+        handle_fetched(
+            &cfg,
+            &mut db,
+            src(&cfg, "kev"),
+            f,
+            true,
+            &opts(),
+            None,
+            &mut s,
+        )
+        .unwrap();
+
+        assert!(db.is_seen("kev", "CVE-2026-0001").unwrap());
+        assert!(db.is_seen("kev", "CVE-2026-0002").unwrap());
+        assert_eq!(db.get_kv("cursor:test").unwrap().as_deref(), Some("c1"));
+        assert!(db.get_kv("init:kev").unwrap().is_some());
+        assert_eq!(db.queue_len(Queue::Outbox).unwrap(), 0);
+        assert_eq!(db.queue_len(Queue::Digest).unwrap(), 0);
+        assert_eq!(s.bootstrapped, 2);
+    }
+
+    #[test]
+    fn urgent_item_is_in_outbox_before_commit() {
+        let cfg = cfg();
+        let mut db = Db::open_in_memory().unwrap();
+        // Fail the commit write if nothing has been enqueued yet.
+        db.execute_batch(
+            "CREATE TRIGGER commit_after_enqueue BEFORE INSERT ON kv
+             WHEN NEW.key = 'cursor:test' AND (SELECT COUNT(*) FROM outbox) = 0
+             BEGIN SELECT RAISE(ABORT, 'commit before enqueue'); END;",
+        )
+        .unwrap();
+        let mut s = RunSummary::default();
+        handle(
+            &cfg,
+            &mut db,
+            "kev",
+            fetched(vec![kev_item("kev", "CVE-2026-0001")], "c1"),
+            &mut s,
+        );
+        assert_eq!(keys(&db, Queue::Outbox), ["CVE-2026-0001#kev"]);
+        assert_eq!(db.get_kv("cursor:test").unwrap().as_deref(), Some("c1"));
+
+        // The trigger itself works: a commit with an empty outbox is refused.
+        db.dequeue(Queue::Outbox, "CVE-2026-0001#kev").unwrap();
+        db.del_kv("cursor:test").unwrap();
+        assert!(db.set_kv("cursor:test", "c2").is_err());
+    }
+
+    #[test]
+    fn same_cve_from_two_sources_is_sent_once() {
+        let cfg = cfg();
+        let http = Http::new(5).unwrap();
+        let notifier = recorder(&http, vec![]);
+        let mut db = Db::open_in_memory().unwrap();
+        let mut s = RunSummary::default();
+        handle(
+            &cfg,
+            &mut db,
+            "kev",
+            fetched(vec![kev_item("kev", "CVE-2026-0001")], "c1"),
+            &mut s,
+        );
+        handle(
+            &cfg,
+            &mut db,
+            "ghsa",
+            fetched(vec![kev_item("ghsa", "CVE-2026-0001")], "c2"),
+            &mut s,
+        );
+        flush_outbox(&cfg, &db, &notifier, &mut s).unwrap();
+
+        assert_eq!(notifier.sent().len(), 1);
+        assert_eq!(s.urgent, 1);
+        assert_eq!(db.queue_len(Queue::Outbox).unwrap(), 0);
+
+        // Seen again on a later run from a third copy: not sent again.
+        let mut again = kev_item("ghsa", "CVE-2026-0001");
+        again.id = "GHSA-xxxx".into();
+        handle(&cfg, &mut db, "ghsa", fetched(vec![again], "c3"), &mut s);
+        assert_eq!(db.queue_len(Queue::Outbox).unwrap(), 0);
+    }
+
+    #[test]
+    fn digest_cve_later_in_kev_is_sent_urgent_and_leaves_digest() {
+        let cfg = cfg();
+        let http = Http::new(5).unwrap();
+        let notifier = recorder(&http, vec![]);
+        let mut db = Db::open_in_memory().unwrap();
+        let mut s = RunSummary::default();
+        handle(
+            &cfg,
+            &mut db,
+            "ghsa",
+            fetched(vec![digest_item("ghsa", "CVE-2026-0001")], "c1"),
+            &mut s,
+        );
+        assert_eq!(keys(&db, Queue::Digest), ["CVE-2026-0001"]);
+        assert_eq!(
+            db.alerted_level("CVE-2026-0001").unwrap(),
+            Some(Level::Digest)
+        );
+
+        handle(
+            &cfg,
+            &mut db,
+            "kev",
+            fetched(vec![kev_item("kev", "CVE-2026-0001")], "c2"),
+            &mut s,
+        );
+        flush_outbox(&cfg, &db, &notifier, &mut s).unwrap();
+
+        let sent = notifier.sent();
+        assert_eq!(sent.len(), 1);
+        assert!(
+            sent[0].content.contains("CVE-2026-0001"),
+            "{}",
+            sent[0].content
+        );
+        assert_eq!(
+            db.alerted_level("CVE-2026-0001#kev").unwrap(),
+            Some(Level::Urgent)
+        );
+        assert!(keys(&db, Queue::Digest).is_empty());
+    }
+
+    #[test]
+    fn overflow_beyond_cap_goes_to_digest_with_one_notice() {
+        let cfg = cfg();
+        let http = Http::new(5).unwrap();
+        let notifier = recorder(&http, vec![]);
+        let mut db = Db::open_in_memory().unwrap();
+        let mut s = RunSummary::default();
+        let items = (1..=5)
+            .map(|i| kev_item("kev", &format!("CVE-2026-000{i}")))
+            .collect();
+        handle(&cfg, &mut db, "kev", fetched(items, "c1"), &mut s);
+        flush_outbox(&cfg, &db, &notifier, &mut s).unwrap();
+
+        let sent = notifier.sent();
+        assert_eq!(sent.len(), 3, "2 urgent + 1 overflow notice");
+        assert!(sent[0].content.contains("CVE-2026-0001"));
+        assert!(sent[1].content.contains("CVE-2026-0002"));
+        assert!(sent[2].content.contains("残り3件"), "{}", sent[2].content);
+        assert_eq!(s.urgent, 2);
+        assert_eq!(s.digested, 3);
+        assert_eq!(db.queue_len(Queue::Outbox).unwrap(), 0);
+        assert_eq!(
+            keys(&db, Queue::Digest),
+            [
+                "CVE-2026-0003#kev",
+                "CVE-2026-0004#kev",
+                "CVE-2026-0005#kev"
+            ]
+        );
+        let reason = &db.queue_entries(Queue::Digest).unwrap()[0].reason;
+        assert!(reason.contains("即時通知の上限超過"), "{reason}");
+    }
+
+    #[test]
+    fn rejected_message_is_resent_as_plain_text_and_next_item_still_sent() {
+        let cfg = cfg();
+        let http = Http::new(5).unwrap();
+        // Attempt 0 (first item, embed) is rejected; 1 is its fallback; 2 is the next item.
+        let notifier = recorder(&http, vec![(0, Fail::Rejected)]);
+        let mut db = Db::open_in_memory().unwrap();
+        let mut s = RunSummary::default();
+        handle(
+            &cfg,
+            &mut db,
+            "kev",
+            fetched(
+                vec![
+                    kev_item("kev", "CVE-2026-0001"),
+                    kev_item("kev", "CVE-2026-0002"),
+                ],
+                "c1",
+            ),
+            &mut s,
+        );
+        flush_outbox(&cfg, &db, &notifier, &mut s).unwrap();
+
+        let sent = notifier.sent();
+        assert_eq!(sent.len(), 2);
+        assert!(sent[0].embeds.is_empty(), "fallback is plain text");
+        assert!(sent[0].content.contains("CVE-2026-0001"));
+        assert!(!sent[1].embeds.is_empty());
+        assert!(sent[1].content.contains("CVE-2026-0002"));
+        assert_eq!(s.urgent, 2);
+        assert_eq!(db.queue_len(Queue::Outbox).unwrap(), 0);
+    }
+
+    #[test]
+    fn transient_error_keeps_item_and_later_items_in_outbox() {
+        let cfg = cfg();
+        let http = Http::new(5).unwrap();
+        let mut db = Db::open_in_memory().unwrap();
+        let mut s = RunSummary::default();
+        handle(
+            &cfg,
+            &mut db,
+            "kev",
+            fetched(
+                vec![
+                    kev_item("kev", "CVE-2026-0001"),
+                    kev_item("kev", "CVE-2026-0002"),
+                ],
+                "c1",
+            ),
+            &mut s,
+        );
+
+        let failing = recorder(&http, vec![(0, Fail::Transient)]);
+        assert!(flush_outbox(&cfg, &db, &failing, &mut s).is_err());
+        assert!(failing.sent().is_empty());
+        assert_eq!(
+            keys(&db, Queue::Outbox),
+            ["CVE-2026-0001#kev", "CVE-2026-0002#kev"]
+        );
+        assert_eq!(db.alerted_level("CVE-2026-0001#kev").unwrap(), None);
+
+        // Next run: both are sent, in order.
+        let ok = recorder(&http, vec![]);
+        flush_outbox(&cfg, &db, &ok, &mut s).unwrap();
+        let sent = ok.sent();
+        assert_eq!(sent.len(), 2);
+        assert!(sent[0].content.contains("CVE-2026-0001"));
+        assert!(sent[1].content.contains("CVE-2026-0002"));
+        assert_eq!(db.queue_len(Queue::Outbox).unwrap(), 0);
+    }
+
+    #[test]
+    fn source_failure_alerts_once_and_recovery_clears_counters() {
+        let cfg = cfg();
+        let http = Http::new(5).unwrap();
+        let notifier = recorder(&http, vec![]);
+        let db = Db::open_in_memory().unwrap();
+        let err = anyhow::anyhow!("HTTP 503");
+
+        source_failed(&cfg, &db, &notifier, "kev", &err, false).unwrap();
+        assert!(notifier.sent().is_empty(), "below alert_after_failures");
+        source_failed(&cfg, &db, &notifier, "kev", &err, false).unwrap();
+        source_failed(&cfg, &db, &notifier, "kev", &err, false).unwrap();
+        let sent = notifier.sent();
+        assert_eq!(sent.len(), 1, "one failing message");
+        assert!(
+            sent[0].content.contains("2回連続で失敗"),
+            "{}",
+            sent[0].content
+        );
+        assert_eq!(db.get_kv("fail:kev").unwrap().as_deref(), Some("3"));
+
+        source_succeeded(&db, &notifier, "kev", false).unwrap();
+        source_succeeded(&db, &notifier, "kev", false).unwrap();
+        let sent = notifier.sent();
+        assert_eq!(sent.len(), 2, "one recovered message");
+        assert!(sent[1].content.contains("復旧"), "{}", sent[1].content);
+        assert_eq!(db.get_kv("fail:kev").unwrap(), None);
+        assert_eq!(db.get_kv("failalert:kev").unwrap(), None);
+    }
 
     fn config() -> Config {
         let mut cfg = Config::parse("").unwrap();
         cfg.sources.clear();
         cfg.installed.enabled = false;
         cfg
-    }
-
-    fn recorder(http: &Http, fail_on: Option<usize>) -> Notifier<'_> {
-        Notifier::new(
-            http,
-            Target::Recorder {
-                sent: Default::default(),
-                attempts: Default::default(),
-                fail_on,
-            },
-        )
     }
 
     fn secrets() -> Secrets {
@@ -511,7 +862,7 @@ mod tests {
         let mut db = Db::open_in_memory().unwrap();
         let keys = fill_digest(&db);
 
-        let notifier = recorder(&http, Some(2));
+        let notifier = recorder(&http, vec![(1, Fail::Transient)]);
         assert!(digest(&cfg, &db, &notifier).is_err());
         assert_eq!(notifier.sent().len(), 1);
         let rest: Vec<String> = keys[1..].concat();
@@ -519,7 +870,7 @@ mod tests {
         assert!(db.get_kv(DIGEST_RETRY_KEY).unwrap().is_some());
 
         // Not retried right after the failure.
-        let notifier = recorder(&http, None);
+        let notifier = recorder(&http, vec![]);
         retry_digest(&cfg, &db, &notifier);
         assert!(notifier.sent().is_empty());
 
@@ -547,7 +898,7 @@ mod tests {
             Http::new(5).unwrap(),
         );
         fill_digest(&db);
-        let notifier = recorder(&http, None);
+        let notifier = recorder(&http, vec![]);
         assert_eq!(digest(&cfg, &db, &notifier).unwrap(), 60);
         assert_eq!(notifier.sent().len(), 3);
         assert!(notifier.sent()[0]
@@ -568,7 +919,7 @@ mod tests {
         assert!(db
             .try_lease(DIGEST_LOCK_KEY, chrono::Duration::minutes(1))
             .unwrap());
-        let notifier = recorder(&http, None);
+        let notifier = recorder(&http, vec![]);
         assert_eq!(digest(&cfg, &db, &notifier).unwrap(), 0);
         assert!(notifier.sent().is_empty());
         assert_eq!(queued(&db).len(), 60);
@@ -586,7 +937,7 @@ mod tests {
             .unwrap();
 
         // The urgent message goes out first; the digest retry then fails.
-        let notifier = recorder(&http, Some(2));
+        let notifier = recorder(&http, vec![(1, Fail::Transient)]);
         let opts = RunOptions {
             dry_run: false,
             limit: None,
