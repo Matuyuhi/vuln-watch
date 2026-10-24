@@ -180,23 +180,19 @@ CI ワークフロー:
 - [CI](.github/workflows/ci.yml): fmt、clippy、テスト。
 - [Live smoke test](.github/workflows/smoke.yml): 週 1 回、実際の情報源に対して dry-run を実行し、上流のフォーマット変更を検知します。
 - [Dependencies](.github/workflows/deps.yml): [cargo-deny](deny.toml) を毎日実行します（RustSec、ライセンス、禁止クレート、取得元）。依存の更新 PR は Dependabot が週 1 回作成します。
-- [Release](.github/workflows/release.yml): `v*` タグごとにリリースを公開します（下記）。
+- [Release](.github/workflows/release.yml): リリースを作成・公開します（下記）。
 
 ### リリース手順
 
+リリース作業はすべて GitHub Actions 上で行います。
+
 1. 変更をマージするたびに [CHANGELOG.md](CHANGELOG.md) の `## [Unreleased]` に追記します。
-2. 最新の `main` で次を実行します。
+2. `main` で *Actions → Release → Run workflow* を開き、バージョン（例: `0.2.0`）を入力して実行します。`0.2.0-rc.1` のようにサフィックス付きのバージョンはプレリリースとして公開されます。
+3. ワークフローが `Cargo.toml`/`Cargo.lock` のバージョン更新、CHANGELOG の日付付け、fmt/clippy/テストを行い、`release: v0.2.0` コミットと `v0.2.0` タグを `main` に push します。続けて x86_64 と aarch64 をビルド・動作確認し、アーカイブを `SHA256SUMS`・ビルド来歴の attestation・CHANGELOG の該当セクション（リリースノート）とともに公開します。
 
-   ```bash
-   scripts/release.sh 0.2.0           # Cargo.toml/Cargo.lock の更新、CHANGELOG の日付付け、コミットと v0.2.0 タグの作成
-   git show v0.2.0                    # 内容を確認
-   git push --atomic origin main v0.2.0
-   ```
+*dry run* にチェックを入れると、push と公開以外をすべて実行し、アーカイブを実行結果の artifact として残します。dry run は `main` 以外のブランチでも実行できます。
 
-   （`scripts/release.sh 0.2.0 --push` で push までまとめて行えます。）`0.2.0-rc.1` のようにサフィックス付きのバージョンはプレリリースとして公開されます。
-3. [Release](.github/workflows/release.yml) ワークフローが、タグと `Cargo.toml` のバージョン一致の確認、fmt/clippy/テスト、x86_64 と aarch64 のビルドと動作確認を行い、アーカイブを `SHA256SUMS`・ビルド来歴の attestation・CHANGELOG の該当セクション（リリースノート）とともに公開します。
-
-公開せずにビルドだけ試すには、Release ワークフローを手動実行します（*Actions → Release → Run workflow*）。アーカイブは実行結果の artifact として残ります。
+`main` にブランチ保護をかけている場合は、GitHub Actions が push できるように許可してください（ruleset のバイパス対象に追加）。許可がないと push ステップで失敗します。
 
 ## ライセンス
 

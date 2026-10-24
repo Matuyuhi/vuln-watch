@@ -180,23 +180,19 @@ CI workflows:
 - [CI](.github/workflows/ci.yml): fmt, clippy, tests.
 - [Live smoke test](.github/workflows/smoke.yml): weekly dry run against the real sources, to catch upstream format changes.
 - [Dependencies](.github/workflows/deps.yml): daily [cargo-deny](deny.toml) check (RustSec, licenses, banned crates, sources). Dependabot opens update PRs weekly.
-- [Release](.github/workflows/release.yml): publishes a release for each `v*` tag (see below).
+- [Release](.github/workflows/release.yml): cuts and publishes a release (see below).
 
 ### Releasing
 
+Releases are made entirely from GitHub Actions.
+
 1. List the changes under `## [Unreleased]` in [CHANGELOG.md](CHANGELOG.md) as they are merged.
-2. On an up-to-date `main`, run:
+2. Open *Actions → Release → Run workflow* on `main` and enter the version (e.g. `0.2.0`). Versions with a suffix such as `0.2.0-rc.1` are published as pre-releases.
+3. The workflow bumps `Cargo.toml`/`Cargo.lock`, dates the changelog, runs fmt/clippy/tests, pushes a `release: v0.2.0` commit to `main` with the `v0.2.0` tag, builds and smoke-tests the x86_64 and aarch64 binaries, and publishes the archives with `SHA256SUMS`, a build provenance attestation, and the changelog section as release notes.
 
-   ```bash
-   scripts/release.sh 0.2.0           # bumps Cargo.toml/Cargo.lock, dates the changelog, commits and tags v0.2.0
-   git show v0.2.0                    # review
-   git push --atomic origin main v0.2.0
-   ```
+Check *dry run* to do everything except pushing and publishing; the archives are attached to the run as artifacts. Dry runs also work on branches other than `main`.
 
-   (`scripts/release.sh 0.2.0 --push` does both.) Versions with a suffix such as `0.2.0-rc.1` are published as pre-releases.
-3. The [Release](.github/workflows/release.yml) workflow checks that the tag matches `Cargo.toml`, runs fmt/clippy/tests, builds and smoke-tests the x86_64 and aarch64 binaries, and publishes the archives with `SHA256SUMS`, a build provenance attestation, and the changelog section as release notes.
-
-To try the build without publishing, run the Release workflow manually (*Actions → Release → Run workflow*); the archives are attached to the run as artifacts.
+If `main` is protected, allow GitHub Actions to push to it (add it to the bypass list of the ruleset), or the push step fails.
 
 ## License
 

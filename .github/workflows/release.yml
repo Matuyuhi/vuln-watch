@@ -1,60 +1,82 @@
-# Build and publish a GitHub release.
+# Cut and publish a release, entirely from Actions.
 #
-# Triggered by pushing a `vX.Y.Z` tag (created by scripts/release.sh).
-# Running it manually (workflow_dispatch) builds and uploads the archives as
-# workflow artifacts only, without creating a release: use it to check the
-# pipeline before tagging.
+# Run it from Actions → Release → Run workflow on main, with the version to
+# release (e.g. 0.2.0). List the changes under "## [Unreleased]" in
+# CHANGELOG.md beforehand; they become the release notes.
 #
 # Jobs:
-#   verify   tag matches Cargo.toml, fmt/clippy/test pass, notes from CHANGELOG.md
-#   build    one archive per target, smoke-tested with --version
+#   prepare  bump Cargo.toml/Cargo.lock, date CHANGELOG.md, fmt/clippy/test,
+#            then commit "release: vX.Y.Z" to main and push the vX.Y.Z tag
+#   build    one archive per target from the tagged commit, smoke-tested
 #   publish  SHA256SUMS, build provenance attestation, GitHub release
+#
+# With "dry run" checked nothing is pushed or published; the archives are
+# attached to the run as artifacts.
+#
+# Tags pushed with GITHUB_TOKEN do not start other workflows, so everything
+# runs in this one workflow.
 name: Release
 
 on:
-  push:
-    tags: ["v*"]
   workflow_dispatch:
+    inputs:
+      version:
+        description: "Version to release, e.g. 0.2.0 (a suffix such as 0.2.0-rc.1 makes a pre-release)"
+        required: true
+        type: string
+      dry_run:
+        description: "Dry run: build only, push and publish nothing"
+        type: boolean
+        default: false
 
 permissions:
   contents: read
 
 concurrency:
-  group: release-${{ github.ref }}
+  group: release
   cancel-in-progress: false
 
 env:
   CARGO_TERM_COLOR: always
+  VERSION: ${{ inputs.version }}
 
 jobs:
-  verify:
+  prepare:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     outputs:
-      version: ${{ steps.version.outputs.version }}
-      prerelease: ${{ steps.version.outputs.prerelease }}
+      version: ${{ steps.bump.outputs.version }}
+      tag: ${{ steps.bump.outputs.tag }}
+      prerelease: ${{ steps.bump.outputs.prerelease }}
     steps:
+      - name: Check branch
+        if: ${{ !inputs.dry_run && github.ref != 'refs/heads/main' }}
+        run: |
+          echo "::error::releases are cut from main (got $GITHUB_REF); use dry run on other branches"
+          exit 1
+
       - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
       - uses: Swatinem/rust-cache@v2
 
-      - name: Resolve version
-        id: version
+      - name: Bump version
+        id: bump
         run: |
-          version=$(cargo metadata --no-deps --format-version 1 | jq -r '.packages[] | select(.name == "vuln-watch") | .version')
-          if [[ "$GITHUB_REF_TYPE" == tag ]]; then
-            if [[ "$GITHUB_REF_NAME" != "v$version" ]]; then
-              echo "::error::tag $GITHUB_REF_NAME does not match Cargo.toml version $version"
-              exit 1
-            fi
-          fi
+          scripts/bump-version.sh "$VERSION"
+          version="${VERSION#v}"
           echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "tag=v$version" >> "$GITHUB_OUTPUT"
           [[ "$version" == *-* ]] && pre=true || pre=false
           echo "prerelease=$pre" >> "$GITHUB_OUTPUT"
+          git diff
 
-      - name: Extract release notes
-        run: scripts/changelog-section.sh "${{ steps.version.outputs.version }}" > release-notes.md
+      - name: Release notes
+        run: scripts/changelog-section.sh "${{ steps.bump.outputs.version }}" | tee release-notes.md
       - uses: actions/upload-artifact@v7
         with:
           name: release-notes
@@ -64,8 +86,37 @@ jobs:
       - run: cargo clippy --all-targets --locked -- -D warnings
       - run: cargo test --locked
 
+      - name: Commit and tag
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add Cargo.toml Cargo.lock CHANGELOG.md
+          git commit -m "release: $TAG"
+          git tag -a "$TAG" -m "$TAG"
+          git show --stat HEAD
+        env:
+          TAG: ${{ steps.bump.outputs.tag }}
+
+      - name: Push
+        if: ${{ !inputs.dry_run }}
+        run: git push --atomic origin "HEAD:$GITHUB_REF_NAME" "$TAG"
+        env:
+          TAG: ${{ steps.bump.outputs.tag }}
+
+      # Dry run: hand the unpushed release commit to the build jobs.
+      - name: Bundle release commit
+        if: ${{ inputs.dry_run }}
+        run: git bundle create release.bundle "^$GITHUB_SHA" "$TAG"
+        env:
+          TAG: ${{ steps.bump.outputs.tag }}
+      - uses: actions/upload-artifact@v7
+        if: ${{ inputs.dry_run }}
+        with:
+          name: release-bundle
+          path: release.bundle
+
   build:
-    needs: verify
+    needs: prepare
     strategy:
       fail-fast: true
       matrix:
@@ -77,8 +128,23 @@ jobs:
           - target: aarch64-unknown-linux-gnu
             runner: ubuntu-22.04-arm
     runs-on: ${{ matrix.runner }}
+    env:
+      TAG: ${{ needs.prepare.outputs.tag }}
     steps:
       - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.dry_run && github.sha || needs.prepare.outputs.tag }}
+      - uses: actions/download-artifact@v8
+        if: ${{ inputs.dry_run }}
+        with:
+          name: release-bundle
+      - name: Check out the unpushed release commit
+        if: ${{ inputs.dry_run }}
+        run: |
+          git fetch release.bundle "refs/tags/$TAG:refs/tags/$TAG"
+          git checkout --quiet "$TAG"
+          rm release.bundle
+
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.target }}
@@ -92,11 +158,11 @@ jobs:
         run: |
           out=$(target/${{ matrix.target }}/release/vuln-watch --version)
           echo "$out"
-          [[ "$out" == "vuln-watch ${{ needs.verify.outputs.version }}" ]]
+          [[ "$out" == "vuln-watch ${{ needs.prepare.outputs.version }}" ]]
 
       - name: Package
         run: |
-          name=vuln-watch-v${{ needs.verify.outputs.version }}-${{ matrix.target }}
+          name=vuln-watch-$TAG-${{ matrix.target }}
           mkdir -p "dist/$name"
           cp target/${{ matrix.target }}/release/vuln-watch "dist/$name/"
           cp config.example.toml README.md README.ja.md CHANGELOG.md LICENSE "dist/$name/"
@@ -110,8 +176,8 @@ jobs:
           if-no-files-found: error
 
   publish:
-    needs: [verify, build]
-    if: github.ref_type == 'tag'
+    needs: [prepare, build]
+    if: ${{ !inputs.dry_run }}
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -137,12 +203,13 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
+          TAG: ${{ needs.prepare.outputs.tag }}
         run: |
           flags=()
-          [[ "${{ needs.verify.outputs.prerelease }}" == true ]] && flags+=(--prerelease)
-          gh release create "$GITHUB_REF_NAME" \
+          [[ "${{ needs.prepare.outputs.prerelease }}" == true ]] && flags+=(--prerelease)
+          gh release create "$TAG" \
             --verify-tag \
-            --title "$GITHUB_REF_NAME" \
+            --title "$TAG" \
             --notes-file dist/release-notes.md \
             "${flags[@]}" \
             dist/vuln-watch-*.tar.gz dist/SHA256SUMS
