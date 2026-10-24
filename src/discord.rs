@@ -137,13 +137,10 @@ impl<'a> Notifier<'a> {
         }
     }
 
-    /// Pause between consecutive messages to stay clear of Discord rate limits.
+    /// Pause between consecutive messages so a batch stays clear of Discord rate limits.
     pub fn pace(&self) {
-        match self.target {
-            Target::Stdout => {}
-            #[cfg(test)]
-            Target::Recorder(_) => {}
-            _ => sleep(Duration::from_millis(600)),
+        if matches!(self.target, Target::Webhook { .. } | Target::Dm { .. }) {
+            sleep(Duration::from_millis(600));
         }
     }
 
@@ -153,16 +150,6 @@ impl<'a> Notifier<'a> {
             Target::Recorder(r) => r.borrow().sent.clone(),
             _ => Vec::new(),
         }
-    }
-
-    pub fn send_all(&self, db: &Db, msgs: &[Message]) -> Result<()> {
-        for (i, m) in msgs.iter().enumerate() {
-            if i > 0 {
-                self.pace();
-            }
-            self.send(db, m)?;
-        }
-        Ok(())
     }
 
     fn dm_channel(&self, db: &Db, auth: &str, user_id: &str) -> Result<String> {
@@ -366,43 +353,50 @@ fn digest_line(e: &DigestEntry) -> String {
     )
 }
 
-/// Build digest messages, each with one embed whose description stays under Discord limits.
-pub fn digest_messages(entries: &[DigestEntry]) -> Vec<Message> {
+/// Build digest messages, each with one embed whose description stays under Discord limits,
+/// together with the queue keys of the entries in each message. `resumed` marks a digest
+/// that resends what a failed one left in the queue.
+pub fn digest_messages(entries: &[DigestEntry], resumed: bool) -> Vec<(Message, Vec<String>)> {
     const MAX_DESC: usize = 3900;
-    let mut chunks: Vec<String> = Vec::new();
+    let mut chunks: Vec<(String, Vec<String>)> = Vec::new();
     let mut cur = String::new();
+    let mut keys = Vec::new();
     for e in entries {
         let line = truncate(&digest_line(e), 600);
         if !cur.is_empty() && cur.chars().count() + line.chars().count() + 1 > MAX_DESC {
-            chunks.push(std::mem::take(&mut cur));
+            chunks.push((std::mem::take(&mut cur), std::mem::take(&mut keys)));
         }
         if !cur.is_empty() {
             cur.push('\n');
         }
         cur.push_str(&line);
+        keys.push(e.key.clone());
     }
     if !cur.is_empty() {
-        chunks.push(cur);
+        chunks.push((cur, keys));
     }
 
     let total = chunks.len();
     chunks
         .into_iter()
         .enumerate()
-        .map(|(i, desc)| {
-            let content = if i == 0 {
+        .map(|(i, (desc, keys))| {
+            let content = if i == 0 && resumed {
+                format!("📋 脆弱性ダイジェスト（再送）: {}件", entries.len())
+            } else if i == 0 {
                 format!("📋 脆弱性ダイジェスト: {}件", entries.len())
             } else {
                 format!("📋 ダイジェスト（続き {}/{}）", i + 1, total)
             };
-            Message {
+            let msg = Message {
                 content,
                 embeds: vec![json!({
                     "description": desc,
                     "color": 0x5865F2,
                     "footer": {"text": "vuln-watch"},
                 })],
-            }
+            };
+            (msg, keys)
         })
         .collect()
 }
@@ -430,20 +424,31 @@ mod tests {
                 reason: "CVSS 9.1 ≥ 9.0".into(),
             })
             .collect();
-        let msgs = digest_messages(&entries);
+        let msgs = digest_messages(&entries, false);
         assert!(msgs.len() > 1);
-        assert!(msgs[0].content.contains("200件"));
+        assert!(msgs[0].0.content.contains("200件"));
         let mut lines = 0;
-        for m in &msgs {
+        let mut keys = Vec::new();
+        for (m, k) in &msgs {
             let d = m.embeds[0]["description"].as_str().unwrap();
             assert!(d.chars().count() <= 3900);
+            assert_eq!(d.lines().count(), k.len());
             lines += d.lines().count();
+            keys.extend(k.iter().cloned());
         }
         assert_eq!(lines, 200);
-        assert!(msgs[0].embeds[0]["description"]
+        let expected: Vec<String> = (0..200).map(|i| i.to_string()).collect();
+        assert_eq!(keys, expected);
+        assert!(msgs[0].0.embeds[0]["description"]
             .as_str()
             .unwrap()
             .contains("\\*vulnerable\\*"));
+
+        let resumed = digest_messages(&entries[150..], true);
+        assert!(resumed[0]
+            .0
+            .content
+            .starts_with("📋 脆弱性ダイジェスト（再送）: 50件"));
     }
 
     #[test]

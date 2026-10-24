@@ -250,7 +250,7 @@ fn real_main() -> Result<ExitCode> {
             let notifier = Notifier::new(&http, app::build_target(&cfg, &secrets, dry_run)?);
             if dry_run {
                 let entries = db.queue_entries(db::Queue::Digest)?;
-                for m in discord::digest_messages(&entries) {
+                for (m, _) in discord::digest_messages(&entries, false) {
                     notifier.send(&db, &m)?;
                 }
                 println!("{} items queued (not cleared)", entries.len());
