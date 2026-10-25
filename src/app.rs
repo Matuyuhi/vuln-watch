@@ -78,8 +78,9 @@ pub struct RunSummary {
 /// transient unit, so systemd does not keep it from overlapping the timer's run; without
 /// this both could send the same outbox entries.
 const RUN_LOCK_KEY: &str = "run:lock";
-/// A little longer than the unit's TimeoutStartSec (300 s), so a killed run blocks the
-/// next runs for about a minute at most.
+/// Longer than the unit's TimeoutStartSec (300 s) and than one source or one send between
+/// renewals. Each renewal restarts it, so a run killed by the timeout blocks the next
+/// runs for at most this long.
 const RUN_LOCK_MINUTES: i64 = 6;
 
 pub fn run(
@@ -111,9 +112,10 @@ fn run_lock_ttl() -> chrono::Duration {
     chrono::Duration::minutes(RUN_LOCK_MINUTES)
 }
 
-/// Renew the run lock between steps, so a run that outlives the TTL (e.g. started with
-/// `--state-dir`, outside the unit's timeout) keeps it. If it expired and another run
-/// took it meanwhile, stop before sending anything that run may send too.
+/// Renew the run lock after each source and before each send, so a run that outlives
+/// the TTL (e.g. started with `--state-dir`, outside the unit's timeout) keeps it. If it
+/// expired and another run took it meanwhile, stop before sending anything that run may
+/// send too.
 fn renew_run_lock(db: &Db, lock: &mut Option<&mut String>) -> Result<()> {
     let Some(held) = lock.as_deref_mut() else {
         return Ok(());
@@ -172,7 +174,7 @@ fn locked_run(
         }
     }
 
-    flush_outbox(cfg, db, notifier, &mut summary)?;
+    flush_outbox(cfg, db, notifier, &mut summary, &mut lock)?;
 
     if !opts.dry_run {
         retry_digest(cfg, db, notifier);
@@ -212,6 +214,7 @@ fn flush_outbox(
     db: &Db,
     notifier: &Notifier,
     summary: &mut RunSummary,
+    lock: &mut Option<&mut String>,
 ) -> Result<()> {
     let entries = db.queue_entries(Queue::Outbox)?;
     let max = cfg.runtime.max_urgent_per_run;
@@ -221,6 +224,7 @@ fn flush_outbox(
             if i > 0 {
                 notifier.pace();
             }
+            renew_run_lock(db, lock)?;
             let decision = Decision::new(Level::Urgent, e.reason.clone());
             let id = e.item.display_id();
             match notifier.send(db, &discord::urgent_message(&e.item, &decision)) {
@@ -231,6 +235,7 @@ fn flush_outbox(
                     tracing::warn!(
                         "Discord rejected the message for {id} ({err:#}), sending plain text"
                     );
+                    renew_run_lock(db, lock)?;
                     notifier
                         .send(db, &discord::urgent_fallback_message(&e.item, &decision))
                         .with_context(|| format!("sending plain-text notification for {id}"))?;
@@ -257,6 +262,7 @@ fn flush_outbox(
         db.dequeue(Queue::Outbox, &e.key)?;
     }
     if overflow > 0 {
+        renew_run_lock(db, lock)?;
         notifier.send(
             db,
             &Message::text(format!(
@@ -683,7 +689,7 @@ kind = "ghsa"
             fetched(vec![kev_item("ghsa", "CVE-2026-0001")], "c2"),
             &mut s,
         );
-        flush_outbox(&cfg, &db, &notifier, &mut s).unwrap();
+        flush_outbox(&cfg, &db, &notifier, &mut s, &mut None).unwrap();
 
         assert_eq!(notifier.sent().len(), 1);
         assert_eq!(s.urgent, 1);
@@ -723,7 +729,7 @@ kind = "ghsa"
             fetched(vec![kev_item("kev", "CVE-2026-0001")], "c2"),
             &mut s,
         );
-        flush_outbox(&cfg, &db, &notifier, &mut s).unwrap();
+        flush_outbox(&cfg, &db, &notifier, &mut s, &mut None).unwrap();
 
         let sent = notifier.sent();
         assert_eq!(sent.len(), 1);
@@ -750,7 +756,7 @@ kind = "ghsa"
             .map(|i| kev_item("kev", &format!("CVE-2026-000{i}")))
             .collect();
         handle(&cfg, &mut db, "kev", fetched(items, "c1"), &mut s);
-        flush_outbox(&cfg, &db, &notifier, &mut s).unwrap();
+        flush_outbox(&cfg, &db, &notifier, &mut s, &mut None).unwrap();
 
         let sent = notifier.sent();
         assert_eq!(sent.len(), 3, "2 urgent + 1 overflow notice");
@@ -793,7 +799,7 @@ kind = "ghsa"
             ),
             &mut s,
         );
-        flush_outbox(&cfg, &db, &notifier, &mut s).unwrap();
+        flush_outbox(&cfg, &db, &notifier, &mut s, &mut None).unwrap();
 
         let sent = notifier.sent();
         assert_eq!(sent.len(), 2);
@@ -826,7 +832,7 @@ kind = "ghsa"
         );
 
         let failing = recorder(&http, vec![(0, Fail::Transient)]);
-        assert!(flush_outbox(&cfg, &db, &failing, &mut s).is_err());
+        assert!(flush_outbox(&cfg, &db, &failing, &mut s, &mut None).is_err());
         assert!(failing.sent().is_empty());
         assert_eq!(
             keys(&db, Queue::Outbox),
@@ -836,7 +842,7 @@ kind = "ghsa"
 
         // Next run: both are sent, in order.
         let ok = recorder(&http, vec![]);
-        flush_outbox(&cfg, &db, &ok, &mut s).unwrap();
+        flush_outbox(&cfg, &db, &ok, &mut s, &mut None).unwrap();
         let sent = ok.sent();
         assert_eq!(sent.len(), 2);
         assert!(sent[0].content.contains("CVE-2026-0001"));
@@ -1108,5 +1114,19 @@ kind = "ghsa"
         assert!(renew_run_lock(&db, &mut Some(&mut held)).is_err());
         db.release_lease(RUN_LOCK_KEY, &held).unwrap();
         assert_eq!(db.get_kv(RUN_LOCK_KEY).unwrap(), Some(other));
+    }
+
+    #[test]
+    fn flush_stops_without_sending_when_the_lock_was_taken() {
+        let (cfg, http) = (config(), Http::new(5).unwrap());
+        let db = Db::open_in_memory().unwrap();
+        outbox_with_one_urgent(&db);
+        let mut held = "2000-01-01T00:00:00Z 1-1".to_string();
+        db.try_lease(RUN_LOCK_KEY, run_lock_ttl()).unwrap().unwrap();
+        let notifier = recorder(&http, vec![]);
+        let mut s = RunSummary::default();
+        assert!(flush_outbox(&cfg, &db, &notifier, &mut s, &mut Some(&mut held)).is_err());
+        assert!(notifier.sent().is_empty());
+        assert_eq!(db.queue_len(Queue::Outbox).unwrap(), 1);
     }
 }
