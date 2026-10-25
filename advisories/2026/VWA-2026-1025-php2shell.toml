@@ -1,14 +1,15 @@
 id = "VWA-2026-1025-php2shell"
-revision = 1
+revision = 2
 status = "active"
 published = 2026-10-25
+updated = 2026-10-25
 expires = 2026-11-24
 severity = "critical"
 confidence = "confirmed"
 title = "PHP の認証不要 RCE「php2shell」（CVE-2026-109618 / 109619）、Web で PHP を動かすすべての環境に更新が必要"
 summary = """
 PHP は 2026-10-21 に、Web リクエストを処理するすべての PHP（PHP-FPM、Apache の mod_php、php-cgi、FrankenPHP、LiteSpeed）で認証なしにリモートコード実行につながる 2 件の脆弱性（CVE-2026-109618 / CVE-2026-109619、通称 php2shell）を修正した 8.5.12 / 8.4.27 / 8.3.36 / 8.2.35 を出し、直ちに更新するよう呼びかけた。
-mod_php ではアプリのコードが動く前に未認証のリクエストで攻撃できることが実証されており、カナダ Cyber Centre は PoC の存在を報じる公開情報を確認している（実際の悪用は現時点で未確認）。
+mod_php ではアプリのコードが動く前に未認証のリクエストで攻撃できることが実証されている。香港 HKCERT は 10-22 公開・10-23 更新の告知で両 CVE が実際に悪用されているとし、直ちに更新できない場合はインターネットに公開したアプリを隔離するよう求めている。Amazon は公開 4 日前の 10-17 から自社ハニーポットで攻撃の試行を観測したと報告しているが、成功した侵害の有無は明らかになっていない（CISA の KEV には 10-25 時点で未掲載）。
 PHP は多数の Web アプリ・アプライアンス・コンテナに組み込まれており、8.1 以前は PHP プロジェクトの更新対象外のため、ディストリビューションや製品ベンダーのバックポートを確認する必要がある。
 10-23 には 10-21 の更新で直っていない別の RCE（CVE-2026-115560）が告知され、次の通常リリースまでの緩和策として session.upload_progress.enabled=0 が推奨された。"""
 cves = ["CVE-2026-109618", "CVE-2026-109619"]
@@ -17,6 +18,8 @@ actions = [
   "8.1 以前を使っている場合は、ベンダーのバックポートを確認するか、サポート中の版へ移行する",
   "CVE-2026-115560 の修正が出るまで session.upload_progress.enabled=0 を設定する（10-21 の緩和策として既に設定済みならそのまま維持する）",
   "インターネットに公開した PHP サーバーと、PHP を同梱するサードパーティ製品・アプライアンス・コンテナを優先して洗い出す",
+  "直ちに更新できない場合は、インターネットに公開した PHP アプリを修正の適用・確認まで公開ネットワークから隔離する（HKCERT）",
+  "侵害の有無の調査は公開日の 10-21 ではなく、少なくとも 10-17 以降のログを対象にする（Amazon）",
 ]
 
 [[affects]]
@@ -59,6 +62,12 @@ title = "AL26-026 - Critical vulnerabilities impacting PHP - CVE-2026-109618 and
 quote = "The vulnerability is not addressed by the security updates released on October 21, 2026."
 
 [[references]]
+url = "https://www.hkcert.org/security-bulletin/php-multiple-vulnerabilities_20261022"
+kind = "primary"
+title = "PHP Multiple Vulnerabilities (HKCERT, Release Date: 22 Oct 2026 / Last Update Date: 23 Oct 2026)"
+quote = "CVE-2026-109618 and CVE-2026-109619 is being exploited in the wild."
+
+[[references]]
 url = "https://ubuntu.com/security/notices/USN-8948-1"
 kind = "primary"
 title = "USN-8948-1: PHP vulnerabilities"
@@ -69,3 +78,9 @@ url = "https://ubuntu.com/security/notices/USN-8948-2"
 kind = "primary"
 title = "USN-8948-2: PHP vulnerabilities"
 quote = "This provides the corrosponding updates in Ubuntu 14.04 LTS, Ubuntu 16.04 LTS, Ubuntu 18.04 LTS and Ubuntu 20.04 LTS."
+
+[[references]]
+url = "https://www.bleepingcomputer.com/news/security/amazon-says-php2shell-exploitation-began-4-days-before-patches/"
+kind = "secondary"
+title = "Amazon says PHP2Shell exploitation began 4 days before patches (BleepingComputer)"
+quote = "Technical analysis is ongoing, and it's unclear if any of these attempts would have succeeded in real-world systems."
