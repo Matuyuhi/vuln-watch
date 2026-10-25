@@ -1,3 +1,4 @@
+pub mod advisory;
 pub mod cvelist;
 pub mod feed;
 pub mod ghsa;
@@ -50,6 +51,9 @@ pub fn fetch(src: &SourceConfig, ctx: &Ctx) -> Result<Fetched> {
             src.release.as_deref().or(ctx.release.as_deref()),
             ctx,
         ),
+        SourceKind::Advisory => {
+            advisory::fetch(&name, src.url.as_deref(), src.branch.as_deref(), ctx)
+        }
     }?;
     if !src.ignore_title_prefixes.is_empty() {
         let prefixes: Vec<String> = src

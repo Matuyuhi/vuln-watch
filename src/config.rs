@@ -198,6 +198,8 @@ pub enum SourceKind {
     Feed,
     /// Ubuntu Security Notices (JSON API, with per-release package versions).
     Usn,
+    /// Advisories written by the scheduled Claude research, read from a GitHub repository.
+    Advisory,
 }
 
 impl SourceKind {
@@ -208,6 +210,7 @@ impl SourceKind {
             SourceKind::Cvelist => "cvelist",
             SourceKind::Feed => "feed",
             SourceKind::Usn => "usn",
+            SourceKind::Advisory => "advisory",
         }
     }
 }
@@ -242,6 +245,9 @@ pub struct SourceConfig {
     /// `usn` only: Ubuntu codename to query. Default: installed.release / os-release.
     #[serde(default)]
     pub release: Option<String>,
+    /// `advisory` only: branch of the repository to read. Default: "advisories".
+    #[serde(default)]
+    pub branch: Option<String>,
 }
 
 impl SourceConfig {
@@ -326,6 +332,7 @@ pub fn default_sources() -> Vec<SourceConfig> {
             enabled: true,
             ignore_title_prefixes: Vec::new(),
             release: None,
+            branch: None,
         })
         .collect()
 }

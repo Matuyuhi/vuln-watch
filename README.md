@@ -29,6 +29,7 @@ systemd timer (2 min) ─▶ vuln-watch run
 | `cvelist` | [CVEProject/cvelistV5](https://github.com/CVEProject/cvelistV5) | ~7 min sync + poll interval |
 | `usn` | [Ubuntu Security Notices](https://ubuntu.com/security/notices) (JSON API) | poll interval |
 | `feed` | Any RSS/Atom feed, e.g. [oss-security](https://seclists.org/oss-sec/) | poll interval |
+| `advisory` | Advisories written by a scheduled Claude research run, read from a GitHub branch ([details](#claude-advisories)) | research schedule + poll interval |
 
 oss-security often carries a disclosure before a CVE record exists.
 
@@ -63,6 +64,22 @@ Thresholds, exclusions and the watch list are set in [`config.example.toml`](con
 With `[installed] enabled = true`, USN entries are compared with `/var/lib/dpkg/status` using dpkg version ordering. The file is re-read on every run, so a package counts as patched as soon as `apt upgrade` has run. The release codename is read from `/etc/os-release`. A USN for a package that is not installed is ignored, even if it matches the watch list.
 
 A kernel fix only takes effect after a reboot. For a kernel USN whose packages are installed, the running kernel (`uname -r`, e.g. `6.8.0-145-generic`) is also compared: if its `linux-image-<release>` package is older than the fixed version for the same flavour, the notice is urgent with `再起動待ち` (reboot pending) instead of patched; if no fixed kernel image is installed yet, it is urgent as not applied (`未適用`). HWE and `virtual` metapackages count for the `generic` flavour. A running kernel that dpkg does not know (custom kernel, container) is not compared. `vuln-watch doctor` shows the running kernel it detected.
+
+### Claude advisories
+
+Some problems never get a CVE but still mean "update this now" for many products, e.g. compromised CA keys that Electron apps, Go binaries and `ca-certificates` must drop. A scheduled Claude research run writes such advisories, with the actions to take and their sources, as one TOML file each under `advisories/` of a GitHub branch (by default the `advisories` branch of this repository). `kind = "advisory"` reads that branch through the GitHub API; only files whose blob changed since the last run are downloaded, and `GITHUB_TOKEN` is used when set.
+
+| Condition | Result |
+|---|---|
+| A `deb` package of the advisory is installed and older than its fixed version | urgent |
+| Strong watch match, severity `high` or `critical`, confidence `likely` or `confirmed` | urgent |
+| Any other watch match | digest |
+| No match | digest, as reference |
+
+- Advisories with `confidence = "unverified"`, or without a `primary` reference, are never urgent.
+- Advisories past `expires`, and those with `status = "resolved"` or `"withdrawn"`, are skipped.
+- A new `revision` of an advisory is notified again; other edits are not.
+- Every message is labelled `Claude 調査` with its confidence and lists the actions and sources. Check the sources before acting.
 
 ## Reliability
 

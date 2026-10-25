@@ -134,7 +134,7 @@ name = "rustls"
 packages = ["rustls"]
 
 # Sources
-#   kind  kev | ghsa | cvelist | usn | feed
+#   kind  kev | ghsa | cvelist | usn | feed | advisory
 #   mode  filter (apply rules, default) | urgent | digest
 # Without any [[source]], kev, ghsa and cvelist are enabled.
 
@@ -163,6 +163,12 @@ kind = "feed"
 name = "nginx-releases"
 url = "https://github.com/nginx/nginx/releases.atom"
 mode = "digest"
+
+# Advisories from the scheduled Claude research (README: Claude advisories).
+# Defaults: url = "https://github.com/Matuyuhi/vuln-watch", branch = "advisories".
+# [[source]]
+# kind = "advisory"
+# name = "claude-advisories"
 
 # Malicious packages. Only notified when a watch entry matches.
 # [[source]]
