@@ -91,20 +91,40 @@ pub fn run(
     opts: &RunOptions,
 ) -> Result<RunSummary> {
     if opts.dry_run {
-        return locked_run(cfg, db, http, notifier, secrets, opts);
+        return locked_run(cfg, db, http, notifier, secrets, opts, None);
     }
-    if !db.try_lease(RUN_LOCK_KEY, chrono::Duration::minutes(RUN_LOCK_MINUTES))? {
+    let Some(mut lock) = db.try_lease(RUN_LOCK_KEY, run_lock_ttl())? else {
         tracing::info!("run: another run is in progress, skipping");
         return Ok(RunSummary {
             skipped: true,
             ..RunSummary::default()
         });
-    }
-    let result = locked_run(cfg, db, http, notifier, secrets, opts);
-    if let Err(e) = db.del_kv(RUN_LOCK_KEY) {
+    };
+    let result = locked_run(cfg, db, http, notifier, secrets, opts, Some(&mut lock));
+    if let Err(e) = db.release_lease(RUN_LOCK_KEY, &lock) {
         tracing::warn!("could not release {RUN_LOCK_KEY}: {e:#}");
     }
     result
+}
+
+fn run_lock_ttl() -> chrono::Duration {
+    chrono::Duration::minutes(RUN_LOCK_MINUTES)
+}
+
+/// Renew the run lock between steps, so a run that outlives the TTL (e.g. started with
+/// `--state-dir`, outside the unit's timeout) keeps it. If it expired and another run
+/// took it meanwhile, stop before sending anything that run may send too.
+fn renew_run_lock(db: &Db, lock: &mut Option<&mut String>) -> Result<()> {
+    let Some(held) = lock.as_deref_mut() else {
+        return Ok(());
+    };
+    match db.renew_lease(RUN_LOCK_KEY, held, run_lock_ttl())? {
+        Some(v) => {
+            *held = v;
+            Ok(())
+        }
+        None => anyhow::bail!("run lock expired and was taken by another run; stopping"),
+    }
 }
 
 fn locked_run(
@@ -114,6 +134,7 @@ fn locked_run(
     notifier: &Notifier,
     secrets: &Secrets,
     opts: &RunOptions,
+    mut lock: Option<&mut String>,
 ) -> Result<RunSummary> {
     let mut summary = RunSummary::default();
 
@@ -130,7 +151,7 @@ fn locked_run(
 
     for src in cfg.sources.iter().filter(|s| s.enabled) {
         let name = src.name();
-        match process_source(
+        let result = process_source(
             cfg,
             db,
             http,
@@ -139,7 +160,9 @@ fn locked_run(
             src,
             installed_match.as_ref(),
             &mut summary,
-        ) {
+        );
+        renew_run_lock(db, &mut lock)?;
+        match result {
             Ok(()) => source_succeeded(db, notifier, &name, opts.dry_run)?,
             Err(e) => {
                 tracing::warn!("source {name} failed: {e:#}");
@@ -403,15 +426,16 @@ const DIGEST_LOCK_MINUTES: i64 = 10;
 /// Send the queued digest. Each message's entries are dequeued once it is sent, so a
 /// failure part way leaves only the unsent entries queued, and `run` resends them.
 pub fn digest(cfg: &Config, db: &Db, notifier: &Notifier) -> Result<usize> {
-    if !db.try_lease(
+    let Some(lock) = db.try_lease(
         DIGEST_LOCK_KEY,
         chrono::Duration::minutes(DIGEST_LOCK_MINUTES),
-    )? {
+    )?
+    else {
         tracing::info!("digest: another digest is being sent, skipping");
         return Ok(0);
-    }
+    };
     let result = locked_digest(cfg, db, notifier);
-    if let Err(e) = db.del_kv(DIGEST_LOCK_KEY) {
+    if let Err(e) = db.release_lease(DIGEST_LOCK_KEY, &lock) {
         tracing::warn!("could not release {DIGEST_LOCK_KEY}: {e:#}");
     }
     result
@@ -953,7 +977,8 @@ kind = "ghsa"
         fill_digest(&db);
         assert!(db
             .try_lease(DIGEST_LOCK_KEY, chrono::Duration::minutes(1))
-            .unwrap());
+            .unwrap()
+            .is_some());
         let notifier = recorder(&http, vec![]);
         assert_eq!(digest(&cfg, &db, &notifier).unwrap(), 0);
         assert!(notifier.sent().is_empty());
@@ -1006,8 +1031,9 @@ kind = "ghsa"
         let mut db = Db::open_in_memory().unwrap();
         outbox_with_one_urgent(&db);
         assert!(db
-            .try_lease(RUN_LOCK_KEY, chrono::Duration::minutes(RUN_LOCK_MINUTES))
-            .unwrap());
+            .try_lease(RUN_LOCK_KEY, run_lock_ttl())
+            .unwrap()
+            .is_some());
         let notifier = recorder(&http, vec![]);
         let summary = run(&cfg, &mut db, &http, &notifier, &secrets(), &run_opts()).unwrap();
         assert!(summary.skipped);
@@ -1071,5 +1097,16 @@ kind = "ghsa"
             db.get_kv(RUN_LOCK_KEY).unwrap().as_deref(),
             Some("2999-01-01T00:00:00Z")
         );
+    }
+
+    #[test]
+    fn run_that_lost_its_lock_stops_and_leaves_the_new_lock() {
+        let db = Db::open_in_memory().unwrap();
+        // This run's lease expired and another run took it.
+        let mut held = "2000-01-01T00:00:00Z 1-1".to_string();
+        let other = db.try_lease(RUN_LOCK_KEY, run_lock_ttl()).unwrap().unwrap();
+        assert!(renew_run_lock(&db, &mut Some(&mut held)).is_err());
+        db.release_lease(RUN_LOCK_KEY, &held).unwrap();
+        assert_eq!(db.get_kv(RUN_LOCK_KEY).unwrap(), Some(other));
     }
 }

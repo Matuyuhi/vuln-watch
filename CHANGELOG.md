@@ -7,7 +7,7 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 
 ### Fixed
 
-- A manual `sudo vuln-watch run` that overlaps the timer's run is skipped (exit code 0, with a line on stderr) instead of running alongside it, which could send the same urgent message twice, exceed `max_urgent_per_run`, or send a source failure alert twice. `run` now holds a `run:lock` lease in `state.db` (6 minutes, just over the unit's `TimeoutStartSec`); `--dry-run` takes no lock.
+- A manual `sudo vuln-watch run` that overlaps the timer's run is skipped (exit code 0, with a line on stderr) instead of running alongside it, which could send the same urgent message twice, exceed `max_urgent_per_run`, or send a source failure alert twice. `run` now holds a `run:lock` lease in `state.db` (6 minutes, just over the unit's `TimeoutStartSec`, renewed after each source); a run whose lease expired and was taken by another run stops before sending. `--dry-run` takes no lock. Run and digest leases are released only by the process that holds them.
 
 ## [1.1.0] - 2026-10-24
 
