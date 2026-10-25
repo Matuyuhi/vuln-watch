@@ -5,6 +5,8 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 
 ## [Unreleased]
 
+## [1.1.2] - 2026-10-25
+
 ### Added
 
 - New source `kind = "advisory"`: advisories written by a scheduled Claude research run as TOML files under `advisories/` of a GitHub branch (default: the `advisories` branch of `Matuyuhi/vuln-watch`; set `url` and `branch` to use another). Meant for cross-cutting "update this now" cases without a CVE, such as compromised CA keys. Only changed files are downloaded. An advisory is urgent when one of its `deb` packages is installed and outdated, or when it strongly matches a watch entry with severity `high`/`critical` and confidence `likely`/`confirmed`; everything else goes to the digest, and `unverified` advisories or those without a primary source are never urgent. Expired, resolved and withdrawn advisories are skipped; a new `revision` is notified again. Messages are labelled `Claude 調査` with the confidence; urgent messages list the actions and sources, digest lines the actions and a link to the advisory file. `mode = "urgent"` / `"digest"` on the source still never makes an unverified advisory urgent.
@@ -87,7 +89,8 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 - systemd units (`vuln-watch@.service`, run and digest timers) and `deploy/install.sh`.
 - Release archives for x86_64 and aarch64 Linux with SHA256 checksums and build provenance attestations.
 
-[Unreleased]: https://github.com/Matuyuhi/vuln-watch/compare/v1.1.1...HEAD
+[Unreleased]: https://github.com/Matuyuhi/vuln-watch/compare/v1.1.2...HEAD
+[1.1.2]: https://github.com/Matuyuhi/vuln-watch/compare/v1.1.1...v1.1.2
 [1.1.1]: https://github.com/Matuyuhi/vuln-watch/compare/v1.1.0...v1.1.1
 [1.1.0]: https://github.com/Matuyuhi/vuln-watch/compare/v1.0.3...v1.1.0
 [1.0.3]: https://github.com/Matuyuhi/vuln-watch/compare/v1.0.2...v1.0.3
