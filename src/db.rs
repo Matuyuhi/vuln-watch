@@ -179,17 +179,42 @@ impl Db {
     }
 
     /// Take a lease stored under `key` for `ttl`, unless another process holds one that
-    /// has not expired. Atomic across processes sharing the database.
-    pub fn try_lease(&self, key: &str, ttl: chrono::Duration) -> Result<bool> {
-        let fmt =
-            |t: chrono::DateTime<chrono::Utc>| t.to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
+    /// has not expired. Atomic across processes sharing the database. Returns the stored
+    /// value, which identifies this holder for `renew_lease` / `release_lease`.
+    pub fn try_lease(&self, key: &str, ttl: chrono::Duration) -> Result<Option<String>> {
         let now = chrono::Utc::now();
+        let value = lease_value(now + ttl);
         let n = self.conn.execute(
             "INSERT INTO kv (key, value) VALUES (?1, ?2)
              ON CONFLICT(key) DO UPDATE SET value = excluded.value WHERE kv.value < ?3",
-            params![key, fmt(now + ttl), fmt(now)],
+            params![key, value, lease_time(now)],
         )?;
-        Ok(n > 0)
+        Ok((n > 0).then_some(value))
+    }
+
+    /// Extend a lease taken with `try_lease`. Returns the new value, or `None` when the
+    /// lease is no longer `held` (it expired and another process took it).
+    pub fn renew_lease(
+        &self,
+        key: &str,
+        held: &str,
+        ttl: chrono::Duration,
+    ) -> Result<Option<String>> {
+        let value = lease_value(chrono::Utc::now() + ttl);
+        let n = self.conn.execute(
+            "UPDATE kv SET value = ?3 WHERE key = ?1 AND value = ?2",
+            params![key, held, value],
+        )?;
+        Ok((n > 0).then_some(value))
+    }
+
+    /// Release a lease, unless another process has taken it over since.
+    pub fn release_lease(&self, key: &str, held: &str) -> Result<()> {
+        self.conn.execute(
+            "DELETE FROM kv WHERE key = ?1 AND value = ?2",
+            params![key, held],
+        )?;
+        Ok(())
     }
 
     pub fn kv_with_prefix(&self, prefix: &str) -> Result<Vec<(String, String)>> {
@@ -335,6 +360,17 @@ impl Db {
     }
 }
 
+/// Fixed-width UTC time, so lease values compare as strings.
+fn lease_time(t: chrono::DateTime<chrono::Utc>) -> String {
+    t.to_rfc3339_opts(chrono::SecondsFormat::Secs, true)
+}
+
+/// Expiry first (compared by `try_lease`), then a holder id unique to this take.
+fn lease_value(expiry: chrono::DateTime<chrono::Utc>) -> String {
+    let nonce = chrono::Utc::now().timestamp_nanos_opt().unwrap_or_default();
+    format!("{} {}-{nonce}", lease_time(expiry), std::process::id())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -375,12 +411,32 @@ mod tests {
     fn lease_is_exclusive_until_expired() {
         let db = Db::open_in_memory().unwrap();
         let ttl = chrono::Duration::minutes(10);
-        assert!(db.try_lease("lock", ttl).unwrap());
-        assert!(!db.try_lease("lock", ttl).unwrap());
+        assert!(db.try_lease("lock", ttl).unwrap().is_some());
+        assert!(db.try_lease("lock", ttl).unwrap().is_none());
         db.set_kv("lock", "2000-01-01T00:00:00Z").unwrap();
-        assert!(db.try_lease("lock", ttl).unwrap());
+        assert!(db.try_lease("lock", ttl).unwrap().is_some());
         db.del_kv("lock").unwrap();
-        assert!(db.try_lease("lock", ttl).unwrap());
+        assert!(db.try_lease("lock", ttl).unwrap().is_some());
+    }
+
+    #[test]
+    fn lease_renew_and_release_only_by_its_holder() {
+        let db = Db::open_in_memory().unwrap();
+        let ttl = chrono::Duration::minutes(10);
+        let old = db.try_lease("lock", ttl).unwrap().unwrap();
+        let held = db.renew_lease("lock", &old, ttl).unwrap().unwrap();
+        assert_ne!(held, old);
+        assert!(db.renew_lease("lock", &old, ttl).unwrap().is_none());
+
+        // Expired and taken over by another process: the old holder can neither
+        // renew nor release it.
+        db.set_kv("lock", "2000-01-01T00:00:00Z x").unwrap();
+        let other = db.try_lease("lock", ttl).unwrap().unwrap();
+        assert!(db.renew_lease("lock", &held, ttl).unwrap().is_none());
+        db.release_lease("lock", &held).unwrap();
+        assert_eq!(db.get_kv("lock").unwrap(), Some(other.clone()));
+        db.release_lease("lock", &other).unwrap();
+        assert_eq!(db.get_kv("lock").unwrap(), None);
     }
 
     #[test]
