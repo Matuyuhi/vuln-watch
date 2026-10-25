@@ -1,0 +1,71 @@
+id = "VWA-2026-1025-php2shell"
+revision = 1
+status = "active"
+published = 2026-10-25
+expires = 2026-11-24
+severity = "critical"
+confidence = "confirmed"
+title = "PHP の認証不要 RCE「php2shell」（CVE-2026-109618 / 109619）、Web で PHP を動かすすべての環境に更新が必要"
+summary = """
+PHP は 2026-10-21 に、Web リクエストを処理するすべての PHP（PHP-FPM、Apache の mod_php、php-cgi、FrankenPHP、LiteSpeed）で認証なしにリモートコード実行につながる 2 件の脆弱性（CVE-2026-109618 / CVE-2026-109619、通称 php2shell）を修正した 8.5.12 / 8.4.27 / 8.3.36 / 8.2.35 を出し、直ちに更新するよう呼びかけた。
+mod_php ではアプリのコードが動く前に未認証のリクエストで攻撃できることが実証されており、カナダ Cyber Centre は PoC の存在を報じる公開情報を確認している（実際の悪用は現時点で未確認）。
+PHP は多数の Web アプリ・アプライアンス・コンテナに組み込まれており、8.1 以前は PHP プロジェクトの更新対象外のため、ディストリビューションや製品ベンダーのバックポートを確認する必要がある。
+10-23 には 10-21 の更新で直っていない別の RCE（CVE-2026-115560）が告知され、次の通常リリースまでの緩和策として session.upload_progress.enabled=0 が推奨された。"""
+cves = ["CVE-2026-109618", "CVE-2026-109619"]
+actions = [
+  "PHP を 8.5.12 / 8.4.27 / 8.3.36 / 8.2.35 以降に更新する。ディストリビューションの PHP は配布元の修正版（Ubuntu は USN-8948-1 / USN-8948-2）に更新する",
+  "8.1 以前を使っている場合は、ベンダーのバックポートを確認するか、サポート中の版へ移行する",
+  "CVE-2026-115560 の修正が出るまで session.upload_progress.enabled=0 を設定する（10-21 の緩和策として既に設定済みならそのまま維持する）",
+  "インターネットに公開した PHP サーバーと、PHP を同梱するサードパーティ製品・アプライアンス・コンテナを優先して洗い出す",
+]
+
+[[affects]]
+name = "PHP"
+keywords = ["php"]
+fixed_versions = ["8.5.12", "8.4.27", "8.3.36", "8.2.35"]
+
+[[affects]]
+name = "PHP (Ubuntu)"
+keywords = ["php"]
+deb = [
+  { package = "php8.5-cli", fixed_version = "8.5.9-0ubuntu2.1", release = "stonking" },
+  { package = "php8.5-fpm", fixed_version = "8.5.9-0ubuntu2.1", release = "stonking" },
+  { package = "php8.5-cgi", fixed_version = "8.5.9-0ubuntu2.1", release = "stonking" },
+  { package = "libapache2-mod-php8.5", fixed_version = "8.5.9-0ubuntu2.1", release = "stonking" },
+  { package = "php8.5-cli", fixed_version = "8.5.4-0ubuntu1.5", release = "resolute" },
+  { package = "php8.5-fpm", fixed_version = "8.5.4-0ubuntu1.5", release = "resolute" },
+  { package = "php8.5-cgi", fixed_version = "8.5.4-0ubuntu1.5", release = "resolute" },
+  { package = "libapache2-mod-php8.5", fixed_version = "8.5.4-0ubuntu1.5", release = "resolute" },
+  { package = "php8.3-cli", fixed_version = "8.3.6-0ubuntu0.24.04.13", release = "noble" },
+  { package = "php8.3-fpm", fixed_version = "8.3.6-0ubuntu0.24.04.13", release = "noble" },
+  { package = "php8.3-cgi", fixed_version = "8.3.6-0ubuntu0.24.04.13", release = "noble" },
+  { package = "libapache2-mod-php8.3", fixed_version = "8.3.6-0ubuntu0.24.04.13", release = "noble" },
+  { package = "php8.1-cli", fixed_version = "8.1.2-1ubuntu2.28", release = "jammy" },
+  { package = "php8.1-fpm", fixed_version = "8.1.2-1ubuntu2.28", release = "jammy" },
+  { package = "php8.1-cgi", fixed_version = "8.1.2-1ubuntu2.28", release = "jammy" },
+  { package = "libapache2-mod-php8.1", fixed_version = "8.1.2-1ubuntu2.28", release = "jammy" },
+]
+
+[[references]]
+url = "https://www.php.net/"
+kind = "primary"
+title = "PHP: Security advisory: Critical remote code execution vulnerabilities, update now (2026-10-21) / Informational advisory: Session upload progress (2026-10-23)"
+quote = "All PHP users are strongly encouraged to update immediately."
+
+[[references]]
+url = "https://cyber.gc.ca/en/alerts-advisories/al26-026-critical-vulnerabilities-impacting-php-cve-2026-109618-cve-2026-109619"
+kind = "primary"
+title = "AL26-026 - Critical vulnerabilities impacting PHP - CVE-2026-109618 and CVE-2026-109619 - Update 1 (Canadian Centre for Cyber Security)"
+quote = "The vulnerability is not addressed by the security updates released on October 21, 2026."
+
+[[references]]
+url = "https://ubuntu.com/security/notices/USN-8948-1"
+kind = "primary"
+title = "USN-8948-1: PHP vulnerabilities"
+quote = "It was discovered that PHP incorrectly managed internal request state across worker reuse."
+
+[[references]]
+url = "https://ubuntu.com/security/notices/USN-8948-2"
+kind = "primary"
+title = "USN-8948-2: PHP vulnerabilities"
+quote = "This provides the corrosponding updates in Ubuntu 14.04 LTS, Ubuntu 16.04 LTS, Ubuntu 18.04 LTS and Ubuntu 20.04 LTS."

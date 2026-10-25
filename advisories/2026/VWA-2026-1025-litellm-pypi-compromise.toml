@@ -1,0 +1,43 @@
+id = "VWA-2026-1025-litellm-pypi-compromise"
+revision = 1
+status = "active"
+published = 2026-10-25
+expires = 2026-11-24
+severity = "high"
+confidence = "confirmed"
+title = "LiteLLM 1.107.0（PyPI / Docker イメージ）が改ざんされ認証情報窃取マルウェアを配布"
+summary = """
+2026-10-21、LiteLLM のリリースパイプラインが乗っ取られ、認証情報を盗みリモートコード実行ツールを読み込むマルウェア入りの litellm==1.107.0 が PyPI（11:39〜13:23 UTC）と Docker Hub / GHCR の v1.107.0・latest・main-latest・main-stable タグ（11:46〜14:20 UTC）で配布された。
+仕込まれた cook.pth / sitecustomize.py は Python の起動時に実行されるため、LiteLLM を import しなくても、その環境で Python（pip を含む）を起動しただけで動く。
+LiteLLM の 10-23 の調査報告によると、5 月に公開リポジトリへ誤ってコミットされたまま失効されなかった鍵から GitHub 組織オーナーのトークンが盗まれ、それを足がかりにリリースワークフローが改変された。
+該当の成果物は削除済みで、それ以前の版は安全とされているが、該当時間帯にインストール・起動した環境は侵害されたものとして扱い、到達可能だった秘密情報をすべてローテーションする必要がある。"""
+cves = []
+actions = [
+  "litellm==1.107.0 をインストールした環境、または該当時間帯に v1.107.0 / latest / main-latest / main-stable のイメージを起動したコンテナは侵害されたものとして扱う",
+  "site-packages の cook.pth / cook.py / sitecustomize.py と対応する __pycache__ を削除し、/tmp/remote_code_loader.lock を保持する常駐 python プロセスを停止してから、litellm==1.106.2 に固定して入れ直す（venv・イメージは作り直す方がよい）",
+  "そのホストから到達できた秘密情報（IAM ロール、LiteLLM プロキシ DB に保存したプロバイダキー、マスターキー・仮想キー、DATABASE_URL のパスワード、プロセス環境変数の秘密）をすべてローテーションする",
+  "（独自提案）litellm を間接依存に含む AI ツールやコンテナも、ロックファイルやイメージの digest で 1.107.0 が入っていないか確認する",
+]
+
+[[affects]]
+name = "LiteLLM"
+keywords = ["litellm"]
+packages = ["pypi:litellm"]
+
+[[references]]
+url = "https://docs.litellm.ai/blog/security-incident-oct-21-2026"
+kind = "primary"
+title = "Contained: Oct 21, 2026 LiteLLM release v1.107.0 Compromised"
+quote = "This version contained compiled malware which steals credentials and loads remote-code execution tools."
+
+[[references]]
+url = "https://docs.litellm.ai/blog/security-incident-oct-21-2026-attack-chain"
+kind = "primary"
+title = "LiteLLM v1.107.0 incident: attack chain（2026-10-23 の正式な調査報告）"
+quote = "From this point onwards, the threat actor had owner-level access to all repositories in our GitHub."
+
+[[references]]
+url = "https://www.microsoft.com/en-us/security/blog/2026/10/23/inside-the-litellm-1-107-0-supply-chain-compromise-credential-theft-through-python-startup-hooks/"
+kind = "secondary"
+title = "Inside the LiteLLM 1.107.0 supply chain compromise: Credential theft through Python startup hooks (Microsoft Security Blog)"
+quote = "An application did not need to import LiteLLM for the payload to run: starting Python in an affected environment could be enough."
