@@ -5,6 +5,8 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 
 ## [Unreleased]
 
+## [1.1.1] - 2026-10-25
+
 ### Fixed
 
 - A manual `sudo vuln-watch run` that overlaps the timer's run is skipped (exit code 0, with a line on stderr) instead of running alongside it, which could send the same urgent message twice, exceed `max_urgent_per_run`, or send a source failure alert twice. `run` now holds a `run:lock` lease in `state.db` (6 minutes, renewed after each source and before each send; a run killed by the unit's `TimeoutStartSec` blocks later runs for at most that long); a run whose lease expired and was taken by another run stops before sending. `--dry-run` takes no lock. Run and digest leases are released only by the process that holds them.
@@ -81,7 +83,8 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 - systemd units (`vuln-watch@.service`, run and digest timers) and `deploy/install.sh`.
 - Release archives for x86_64 and aarch64 Linux with SHA256 checksums and build provenance attestations.
 
-[Unreleased]: https://github.com/Matuyuhi/vuln-watch/compare/v1.1.0...HEAD
+[Unreleased]: https://github.com/Matuyuhi/vuln-watch/compare/v1.1.1...HEAD
+[1.1.1]: https://github.com/Matuyuhi/vuln-watch/compare/v1.1.0...v1.1.1
 [1.1.0]: https://github.com/Matuyuhi/vuln-watch/compare/v1.0.3...v1.1.0
 [1.0.3]: https://github.com/Matuyuhi/vuln-watch/compare/v1.0.2...v1.0.3
 [1.0.2]: https://github.com/Matuyuhi/vuln-watch/compare/v1.0.1...v1.0.2
