@@ -70,9 +70,44 @@ pub struct RunSummary {
     pub ignored: usize,
     pub bootstrapped: usize,
     pub failed_sources: Vec<String>,
+    /// Another run held the run lock, so this one did nothing.
+    pub skipped: bool,
 }
 
+/// Held while a (non dry-run) `run` is in progress. `sudo vuln-watch run` runs in its own
+/// transient unit, so systemd does not keep it from overlapping the timer's run; without
+/// this both could send the same outbox entries.
+const RUN_LOCK_KEY: &str = "run:lock";
+/// A little longer than the unit's TimeoutStartSec (300 s), so a killed run blocks the
+/// next runs for about a minute at most.
+const RUN_LOCK_MINUTES: i64 = 6;
+
 pub fn run(
+    cfg: &Config,
+    db: &mut Db,
+    http: &Http,
+    notifier: &Notifier,
+    secrets: &Secrets,
+    opts: &RunOptions,
+) -> Result<RunSummary> {
+    if opts.dry_run {
+        return locked_run(cfg, db, http, notifier, secrets, opts);
+    }
+    if !db.try_lease(RUN_LOCK_KEY, chrono::Duration::minutes(RUN_LOCK_MINUTES))? {
+        tracing::info!("run: another run is in progress, skipping");
+        return Ok(RunSummary {
+            skipped: true,
+            ..RunSummary::default()
+        });
+    }
+    let result = locked_run(cfg, db, http, notifier, secrets, opts);
+    if let Err(e) = db.del_kv(RUN_LOCK_KEY) {
+        tracing::warn!("could not release {RUN_LOCK_KEY}: {e:#}");
+    }
+    result
+}
+
+fn locked_run(
     cfg: &Config,
     db: &mut Db,
     http: &Http,
@@ -948,5 +983,93 @@ kind = "ghsa"
         assert_eq!(db.queue_len(Queue::Outbox).unwrap(), 0);
         assert_eq!(queued(&db).len(), 60);
         assert!(db.get_kv(DIGEST_RETRY_KEY).unwrap().is_some());
+    }
+
+    fn outbox_with_one_urgent(db: &Db) {
+        let mut item = Item::new("kev", "CVE-2026-0002");
+        item.cve = Some("CVE-2026-0002".into());
+        db.enqueue(Queue::Outbox, &item.alert_key(), &item, "CISA KEV")
+            .unwrap();
+    }
+
+    fn run_opts() -> RunOptions {
+        RunOptions {
+            dry_run: false,
+            limit: None,
+            strict: true,
+        }
+    }
+
+    #[test]
+    fn run_skips_while_another_run_holds_the_lock() {
+        let (cfg, http) = (config(), Http::new(5).unwrap());
+        let mut db = Db::open_in_memory().unwrap();
+        outbox_with_one_urgent(&db);
+        assert!(db
+            .try_lease(RUN_LOCK_KEY, chrono::Duration::minutes(RUN_LOCK_MINUTES))
+            .unwrap());
+        let notifier = recorder(&http, vec![]);
+        let summary = run(&cfg, &mut db, &http, &notifier, &secrets(), &run_opts()).unwrap();
+        assert!(summary.skipped);
+        assert!(notifier.sent().is_empty());
+        assert_eq!(db.queue_len(Queue::Outbox).unwrap(), 1);
+        // The other run's lease is left alone.
+        assert!(db.get_kv(RUN_LOCK_KEY).unwrap().is_some());
+    }
+
+    #[test]
+    fn run_releases_the_lock_when_done() {
+        let (cfg, http) = (config(), Http::new(5).unwrap());
+        let mut db = Db::open_in_memory().unwrap();
+        outbox_with_one_urgent(&db);
+        let notifier = recorder(&http, vec![]);
+        let summary = run(&cfg, &mut db, &http, &notifier, &secrets(), &run_opts()).unwrap();
+        assert!(!summary.skipped);
+        assert_eq!(summary.urgent, 1);
+        assert!(db.get_kv(RUN_LOCK_KEY).unwrap().is_none());
+    }
+
+    #[test]
+    fn run_releases_the_lock_on_error() {
+        let (mut cfg, http) = (config(), Http::new(5).unwrap());
+        cfg.installed.enabled = true;
+        cfg.installed.dpkg_status = "/nonexistent/dpkg/status".into();
+        let mut db = Db::open_in_memory().unwrap();
+        let notifier = recorder(&http, vec![]);
+        assert!(run(&cfg, &mut db, &http, &notifier, &secrets(), &run_opts()).is_err());
+        assert!(db.get_kv(RUN_LOCK_KEY).unwrap().is_none());
+    }
+
+    #[test]
+    fn expired_run_lock_does_not_block() {
+        let (cfg, http) = (config(), Http::new(5).unwrap());
+        let mut db = Db::open_in_memory().unwrap();
+        outbox_with_one_urgent(&db);
+        db.set_kv(RUN_LOCK_KEY, "2000-01-01T00:00:00Z").unwrap();
+        let notifier = recorder(&http, vec![]);
+        let summary = run(&cfg, &mut db, &http, &notifier, &secrets(), &run_opts()).unwrap();
+        assert!(!summary.skipped);
+        assert_eq!(notifier.sent().len(), 1);
+        assert_eq!(db.queue_len(Queue::Outbox).unwrap(), 0);
+        assert!(db.get_kv(RUN_LOCK_KEY).unwrap().is_none());
+    }
+
+    #[test]
+    fn dry_run_takes_no_lock() {
+        let (cfg, http) = (config(), Http::new(5).unwrap());
+        let mut db = Db::open_in_memory().unwrap();
+        db.set_kv(RUN_LOCK_KEY, "2999-01-01T00:00:00Z").unwrap();
+        let notifier = recorder(&http, vec![]);
+        let opts = RunOptions {
+            dry_run: true,
+            limit: None,
+            strict: true,
+        };
+        let summary = run(&cfg, &mut db, &http, &notifier, &secrets(), &opts).unwrap();
+        assert!(!summary.skipped);
+        assert_eq!(
+            db.get_kv(RUN_LOCK_KEY).unwrap().as_deref(),
+            Some("2999-01-01T00:00:00Z")
+        );
     }
 }

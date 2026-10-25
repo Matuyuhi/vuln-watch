@@ -243,7 +243,10 @@ fn real_main() -> Result<ExitCode> {
                 limit: dry_run.then_some(limit),
                 strict,
             };
-            app::run(&cfg, &mut db, &http, &notifier, &secrets, &opts)?;
+            let summary = app::run(&cfg, &mut db, &http, &notifier, &secrets, &opts)?;
+            if summary.skipped {
+                eprintln!("another run is in progress; skipped this run");
+            }
         }
         Command::Digest { dry_run } => {
             let db = Db::open(&db_path)?;
