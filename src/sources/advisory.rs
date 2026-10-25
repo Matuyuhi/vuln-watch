@@ -164,7 +164,9 @@ pub fn fetch(name: &str, url: Option<&str>, branch: Option<&str>, ctx: &Ctx) -> 
     }
 
     let tree_url = format!("{api}/git/trees/{branch}?recursive=1");
-    let validators = Validators::load(ctx.db, &tree_url)?;
+    // Validators are per source: the processed blob SHAs are, too.
+    let validators_key = format!("{tree_url}#{name}");
+    let validators = Validators::load(ctx.db, &validators_key)?;
     let resp = ctx.http.get(&tree_url, &headers, Some(&validators))?;
     if resp.not_modified() {
         return Ok(Fetched::empty());
@@ -184,9 +186,10 @@ pub fn fetch(name: &str, url: Option<&str>, branch: Option<&str>, ctx: &Ctx) -> 
         }
     }
     // Remember the tree only once every changed file has been read, so a capped run
-    // fetches the tree again next time instead of getting 304.
-    let mut commit = if changed.len() <= MAX_FILES_PER_RUN {
-        Validators::commit_pairs(&tree_url, &resp)
+    // fetches the tree again next time instead of getting 304. The first run reads
+    // everything: it is recorded without notifying only once.
+    let mut commit = if ctx.bootstrap || changed.len() <= MAX_FILES_PER_RUN {
+        Validators::commit_pairs(&validators_key, &resp)
     } else {
         tracing::info!(
             "{name}: {} changed advisories, reading {MAX_FILES_PER_RUN} this run",
@@ -522,5 +525,40 @@ kind = "secondary"
         assert!(fetched
             .commit
             .contains(&(sha_key("adv", PATH), "aaa".to_string())));
+    }
+
+    #[test]
+    fn caps_files_per_run_except_on_first_run() {
+        let entries: Vec<String> = (0..=MAX_FILES_PER_RUN)
+            .map(|i| {
+                format!(r#"{{"path": "advisories/a{i}.toml", "type": "blob", "sha": "s{i}"}}"#)
+            })
+            .collect();
+        let tree = format!(r#"{{"tree": [{}]}}"#, entries.join(","));
+        let base = serve(vec![
+            ("/git/trees/advisories".into(), tree),
+            ("/git/blobs/".into(), "not toml".into()),
+        ]);
+        let cfg = crate::config::Config::parse("").unwrap();
+        let http = crate::http::Http::new(5).unwrap();
+        for (bootstrap, expected) in [(false, MAX_FILES_PER_RUN), (true, MAX_FILES_PER_RUN + 1)] {
+            let db = crate::db::Db::open_in_memory().unwrap();
+            let ctx = Ctx {
+                http: &http,
+                db: &db,
+                cfg: &cfg,
+                github_token: None,
+                bootstrap,
+                limit: None,
+                release: None,
+            };
+            let fetched = fetch("adv", Some(&base), None, &ctx).unwrap();
+            let read = fetched
+                .commit
+                .iter()
+                .filter(|(k, _)| k.starts_with("advisory:adv:"))
+                .count();
+            assert_eq!(read, expected, "bootstrap = {bootstrap}");
+        }
     }
 }

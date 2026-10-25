@@ -79,7 +79,7 @@ Some problems never get a CVE but still mean "update this now" for many products
 - Advisories with `confidence = "unverified"`, or without a `primary` reference, are never urgent.
 - Advisories past `expires`, and those with `status = "resolved"` or `"withdrawn"`, are skipped.
 - A new `revision` of an advisory is notified again; other edits are not.
-- Every message is labelled `Claude 調査` with its confidence and lists the actions and sources. Check the sources before acting.
+- Every message is labelled `Claude 調査` with its confidence. Urgent messages list the actions and sources; digest lines show the actions and link to the advisory file, which lists the sources. Check the sources before acting.
 
 ## Reliability
 
