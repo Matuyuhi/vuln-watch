@@ -5,6 +5,8 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 
 ## [Unreleased]
 
+## [1.1.3] - 2026-10-25
+
 ### Changed
 
 - Advisories (`kind = "advisory"`) are now urgent by default, whether or not they match a watch entry or an installed package. Only advisories with severity `low` (unless an installed `deb` package of theirs is outdated), those whose only match is a watch entry with `urgent = false`, and unverified ones go to the digest. Previously only an outdated installed package or a strong watch match with severity `high`/`critical` was urgent, so a confirmed cross-cutting advisory such as a CA key compromise waited for the morning digest.
@@ -93,7 +95,8 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 - systemd units (`vuln-watch@.service`, run and digest timers) and `deploy/install.sh`.
 - Release archives for x86_64 and aarch64 Linux with SHA256 checksums and build provenance attestations.
 
-[Unreleased]: https://github.com/Matuyuhi/vuln-watch/compare/v1.1.2...HEAD
+[Unreleased]: https://github.com/Matuyuhi/vuln-watch/compare/v1.1.3...HEAD
+[1.1.3]: https://github.com/Matuyuhi/vuln-watch/compare/v1.1.2...v1.1.3
 [1.1.2]: https://github.com/Matuyuhi/vuln-watch/compare/v1.1.1...v1.1.2
 [1.1.1]: https://github.com/Matuyuhi/vuln-watch/compare/v1.1.0...v1.1.1
 [1.1.0]: https://github.com/Matuyuhi/vuln-watch/compare/v1.0.3...v1.1.0

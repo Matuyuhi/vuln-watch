@@ -1,6 +1,6 @@
 [package]
 name = "vuln-watch"
-version = "1.1.2"
+version = "1.1.3"
 edition = "2021"
 rust-version = "1.82"
 description = "Poll CISA KEV, GitHub Advisory, CVE List, Ubuntu USN and RSS feeds and notify Discord"
