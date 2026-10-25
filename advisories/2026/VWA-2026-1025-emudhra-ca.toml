@@ -1,7 +1,8 @@
 id = "VWA-2026-1025-emudhra-ca"
-revision = 1
+revision = 2
 status = "active"
 published = 2026-10-25
+updated = 2026-10-25
 expires = 2026-11-24
 severity = "high"
 confidence = "confirmed"
@@ -10,14 +11,16 @@ summary = """
 eMudhra（emSign）の Global TLS 中間 CA 8 件の秘密鍵が復元可能なほど弱いことが 2026-10-17 に報告され、eMudhra は翌日 8 件すべてを失効させた。
 Firefox は OneCRL で即日ブロックし、OneCRL を受け取れない環境向けに Firefox 158.0.1 / ESR 153.5.1 / ESR 115.43.1 を出した（CVE-2026-113470）。
 ブラウザ以外で OS や同梱の CA バンドルを使うソフトは自動では守られないため、Ubuntu は ca-certificates（USN-8944-1）と NSS（USN-8947-1）から emSign ECC Root CA - G3 を削除した（NSS では Comodo AAA Services root も削除）。
+Python は 10-20 の告知で、pip が同梱の certifi を常に読み込み無効化できないため、certifi 2026.10.19・pip 26.2.2・uv 0.13.4 など以降への即時更新と、キャッシュを使わないコンテナイメージの再ビルドを求めている。
 同時期に Go 1.27.3 / 1.26.10 が crypto/x509 で特定 CA の中間証明書を拒否する修正（CVE-2026-111943）を出しているが、Go の告知は CA 名を明記していない。
-eMudhra によれば失効した中間 CA から発行された証明書はなく、悪用は確認されていない。"""
+eMudhra によれば失効した中間 CA から発行された証明書はなく、悪用は確認されていないが、Mozilla は失効情報を確実に確認しないクライアントに向けて、鍵の悪用は近いうちに起こり得ると警告している。"""
 cves = ["CVE-2026-113470", "CVE-2026-111943"]
 actions = [
   "Ubuntu の ca-certificates と libnss3 を USN-8944-1 / USN-8947-1 の版以降に更新する",
   "Firefox / Thunderbird を 158.0.1（ESR は 153.5.1 / 115.43.1）以降に更新する",
   "Go を 1.27.3 / 1.26.10 以降に更新し、Go 製バイナリは再ビルドされた版に更新する",
-  "（独自提案）certifi や Electron 製アプリなど独自の CA バンドルを同梱するソフトも、配布元の更新を確認する",
+  "Python 環境では certifi 2026.10.19・pip 26.2.2・uv 0.13.4・sigstore 4.5.1・conda 26.9.4・pixi 0.82.1 以降に更新し、既存の各 venv の pip / uv も更新する。コンテナイメージはレイヤーキャッシュを無効にして再ビルドする（Python）",
+  "（独自提案）Electron 製アプリなど独自の CA バンドルを同梱するソフトも、配布元の更新を確認する",
 ]
 
 [[affects]]
@@ -44,6 +47,12 @@ deb = [
 name = "Firefox / Thunderbird"
 keywords = ["firefox", "thunderbird"]
 fixed_versions = ["158.0.1", "153.5.1", "115.43.1"]
+
+[[affects]]
+name = "Python (certifi / pip / uv)"
+keywords = ["certifi", "pip", "uv"]
+packages = ["pypi:certifi", "pypi:pip", "pypi:uv"]
+fixed_versions = ["2026.10.19", "26.2.2", "0.13.4"]
 
 [[affects]]
 name = "Go (crypto/x509)"
@@ -79,3 +88,15 @@ url = "https://www.openwall.com/lists/oss-security/2026/10/20/29"
 kind = "primary"
 title = "Go 1.27.3 and Go 1.26.10 are released (golang-announce, oss-security 転載)"
 quote = "Verify will now filter out chains which contain these intermediates, preventing them from being returned to the caller."
+
+[[references]]
+url = "https://discuss.python.org/t/information-for-python-users-regarding-emudhra-emsign-ca-certificate-security-incident/109576"
+kind = "primary"
+title = "Information for Python users regarding eMudhra / emSign CA certificate security incident (Python Discourse, 2026-10-20)"
+quote = "It’s important to immediately upgrade the software packages below to at least the versions specified and rebuild container images with layer caching disabled to fetch the latest system certificates."
+
+[[references]]
+url = "https://www.openwall.com/lists/oss-security/2026/10/20/1"
+kind = "primary"
+title = "eMudhra Intermediates Compromise (Mozilla, oss-security)"
+quote = "we highlight that abuse of the compromised private keys is likely in the near future."
