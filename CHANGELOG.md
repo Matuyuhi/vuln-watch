@@ -5,6 +5,10 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 
 ## [Unreleased]
 
+### Changed
+
+- Advisories (`kind = "advisory"`) are now urgent by default, whether or not they match a watch entry or an installed package. Only advisories with severity `low` (unless an installed `deb` package of theirs is outdated), those whose only match is a watch entry with `urgent = false`, and unverified ones go to the digest. Previously only an outdated installed package or a strong watch match with severity `high`/`critical` was urgent, so a confirmed cross-cutting advisory such as a CA key compromise waited for the morning digest.
+
 ## [1.1.2] - 2026-10-25
 
 ### Added
