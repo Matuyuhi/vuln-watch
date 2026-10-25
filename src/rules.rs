@@ -2,7 +2,7 @@ use std::cmp::Ordering;
 
 use crate::config::{AlreadyFixed, Rules, SourceMode, Watch};
 use crate::installed::{cmp_deb_version, split_kernel_release, Installed};
-use crate::model::{Decision, Item, Level};
+use crate::model::{Confidence, Decision, Item, Level};
 use crate::text::contains_word;
 
 /// How a watch entry matched an item.
@@ -202,6 +202,72 @@ fn evaluate_installed(item: &Item, im: &InstalledMatch) -> Option<Decision> {
     })
 }
 
+/// Advisories from the scheduled Claude research. They are few and cross-cutting, so one
+/// that matches nothing still goes to the digest; an unverified one is never urgent, even
+/// from a source with `mode = "urgent"`.
+fn evaluate_advisory(
+    item: &Item,
+    confidence: Confidence,
+    mode: SourceMode,
+    m: Option<&WatchMatch>,
+    installed: Option<&InstalledMatch>,
+) -> Decision {
+    let d = advisory_decision(item, confidence, m, installed);
+    let level = match mode {
+        SourceMode::Urgent => Level::Urgent,
+        SourceMode::Digest => d.level.min(Level::Digest),
+        SourceMode::Filter => d.level,
+    };
+    let level = if confidence == Confidence::Unverified {
+        level.min(Level::Digest)
+    } else {
+        level
+    };
+    Decision::new(level, d.reason)
+}
+
+fn advisory_decision(
+    item: &Item,
+    confidence: Confidence,
+    m: Option<&WatchMatch>,
+    installed: Option<&InstalledMatch>,
+) -> Decision {
+    let tag = format!("Claude 調査（{}）", confidence.label());
+    // Distro packages count only when one of them is installed here; the advisory may
+    // equally be about desktop apps that dpkg does not know. An outdated package decides;
+    // a patched one must not hide a watch match on another product of the advisory.
+    let installed = installed
+        .filter(|im| {
+            item.fixed
+                .iter()
+                .any(|(pkg, _)| im.installed.version(pkg).is_some())
+        })
+        .and_then(|im| evaluate_installed(item, im));
+    if let Some(d) = installed.as_ref().filter(|d| d.level == Level::Urgent) {
+        return Decision::new(Level::Urgent, format!("{tag} {}", d.reason));
+    }
+    if let Some(m) = m {
+        let severe = item
+            .severity
+            .as_deref()
+            .and_then(crate::sources::severity_to_score)
+            .is_some_and(|s| s >= 7.0);
+        let level = if m.strong && m.watch.urgent && severe && confidence >= Confidence::Likely {
+            Level::Urgent
+        } else {
+            Level::Digest
+        };
+        return Decision::new(
+            level,
+            format!("{tag} ウォッチ: {}（{}）", m.watch.name, m.evidence),
+        );
+    }
+    match installed {
+        Some(d) => Decision::new(d.level, format!("{tag} {}", d.reason)),
+        None => Decision::new(Level::Digest, format!("{tag} 参考")),
+    }
+}
+
 #[cfg(test)]
 pub fn evaluate(item: &Item, mode: SourceMode, rules: &Rules, watches: &[Watch]) -> Decision {
     evaluate_with(item, mode, rules, watches, None)
@@ -215,6 +281,9 @@ pub fn evaluate_with(
     installed: Option<&InstalledMatch>,
 ) -> Decision {
     let m = match_watch(item, watches);
+    if let Some(confidence) = item.confidence {
+        return evaluate_advisory(item, confidence, mode, m.as_ref(), installed);
+    }
     let watch_note = m
         .as_ref()
         .map(|m| format!(" / ウォッチ: {}（{}）", m.watch.name, m.evidence))
@@ -480,6 +549,133 @@ mod tests {
         assert_eq!(
             evaluate(&i, SourceMode::Filter, &Rules::default(), &w).level,
             Level::Ignore
+        );
+    }
+
+    fn advisory_item(severity: &str, confidence: Confidence) -> Item {
+        let mut i = item("Electron apps must be updated", None);
+        i.source = "claude-advisories".into();
+        i.severity = Some(severity.into());
+        i.confidence = Some(confidence);
+        i.products = vec!["Electron".into(), "ca-certificates".into()];
+        i.fixed = vec![("ca-certificates".into(), "20260101".into())];
+        i
+    }
+
+    fn electron_watch() -> Vec<Watch> {
+        vec![Watch {
+            name: "Electron".into(),
+            keywords: vec![],
+            packages: vec![],
+            sources: vec![],
+            urgent: true,
+        }]
+    }
+
+    #[test]
+    fn advisory_without_match_goes_to_digest() {
+        let d = evaluate(
+            &advisory_item("critical", Confidence::Confirmed),
+            SourceMode::Filter,
+            &Rules::default(),
+            &[],
+        );
+        assert_eq!(d.level, Level::Digest);
+        assert!(d.reason.starts_with("Claude 調査"));
+    }
+
+    #[test]
+    fn advisory_watch_match_is_urgent_when_severe_and_backed() {
+        let r = Rules::default();
+        let w = electron_watch();
+        let urgent = advisory_item("high", Confidence::Likely);
+        assert_eq!(
+            evaluate(&urgent, SourceMode::Filter, &r, &w).level,
+            Level::Urgent
+        );
+        for i in [
+            advisory_item("medium", Confidence::Confirmed),
+            advisory_item("critical", Confidence::Unverified),
+        ] {
+            assert_eq!(
+                evaluate(&i, SourceMode::Filter, &r, &w).level,
+                Level::Digest
+            );
+        }
+    }
+
+    #[test]
+    fn advisory_with_outdated_installed_package() {
+        let inst = Installed::from_pairs("noble", &[("ca-certificates", "20240203")]);
+        let im = InstalledMatch {
+            installed: &inst,
+            already_fixed: AlreadyFixed::Digest,
+        };
+        let r = Rules::default();
+        let d = evaluate_with(
+            &advisory_item("low", Confidence::Confirmed),
+            SourceMode::Filter,
+            &r,
+            &[],
+            Some(&im),
+        );
+        assert_eq!(d.level, Level::Urgent);
+        assert!(d.reason.contains("ca-certificates 20240203 → 20260101"));
+        let d = evaluate_with(
+            &advisory_item("low", Confidence::Unverified),
+            SourceMode::Filter,
+            &r,
+            &[],
+            Some(&im),
+        );
+        assert_eq!(d.level, Level::Digest);
+        // Not installed here: the dpkg entry does not make it "not applicable".
+        let none = Installed::from_pairs("noble", &[]);
+        let im = InstalledMatch {
+            installed: &none,
+            already_fixed: AlreadyFixed::Digest,
+        };
+        let d = evaluate_with(
+            &advisory_item("low", Confidence::Confirmed),
+            SourceMode::Filter,
+            &r,
+            &[],
+            Some(&im),
+        );
+        assert_eq!(d.level, Level::Digest);
+    }
+
+    #[test]
+    fn advisory_patched_package_does_not_hide_watch_match() {
+        let inst = Installed::from_pairs("noble", &[("ca-certificates", "20260101")]);
+        let im = InstalledMatch {
+            installed: &inst,
+            already_fixed: AlreadyFixed::Ignore,
+        };
+        let i = advisory_item("high", Confidence::Confirmed);
+        let r = Rules::default();
+        let d = evaluate_with(&i, SourceMode::Filter, &r, &electron_watch(), Some(&im));
+        assert_eq!(d.level, Level::Urgent);
+        let d = evaluate_with(&i, SourceMode::Filter, &r, &[], Some(&im));
+        assert_eq!(d.level, Level::Ignore);
+    }
+
+    #[test]
+    fn advisory_source_mode_keeps_safeguard() {
+        let r = Rules::default();
+        let unverified = advisory_item("critical", Confidence::Unverified);
+        let d = evaluate(&unverified, SourceMode::Urgent, &r, &[]);
+        assert_eq!(d.level, Level::Digest);
+        assert!(d.reason.starts_with("Claude 調査（未検証）"));
+        let confirmed = advisory_item("low", Confidence::Confirmed);
+        assert_eq!(
+            evaluate(&confirmed, SourceMode::Urgent, &r, &[]).level,
+            Level::Urgent
+        );
+        let severe = advisory_item("critical", Confidence::Confirmed);
+        assert_eq!(
+            evaluate(&severe, SourceMode::Digest, &r, &electron_watch()).level,
+            Level::Digest
         );
     }
 

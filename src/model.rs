@@ -29,6 +29,31 @@ pub struct Item {
     /// (Ubuntu Security Notices). Compared against installed packages.
     #[serde(default)]
     pub fixed: Vec<(String, String)>,
+    /// Set only for advisories written by the scheduled Claude research (`advisory` sources);
+    /// they are decided by their own rule instead of KEV / CVSS.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub confidence: Option<Confidence>,
+}
+
+/// How well an advisory is backed by primary sources.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Confidence {
+    /// Only news / blogs, or nothing that could be checked.
+    Unverified,
+    Likely,
+    /// Confirmed by a primary source (vendor, CERT, NVD, GHSA).
+    Confirmed,
+}
+
+impl Confidence {
+    pub fn label(self) -> &'static str {
+        match self {
+            Confidence::Unverified => "未検証",
+            Confidence::Likely => "可能性高",
+            Confidence::Confirmed => "一次情報で確認済み",
+        }
+    }
 }
 
 impl Item {

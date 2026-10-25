@@ -397,6 +397,16 @@ fn digest_line(e: &DigestEntry, show_reason: bool) -> String {
     if show_reason {
         line.push_str(&format!(" · {}", escape_md(&e.reason)));
     }
+    // Claude advisories: the actions on a second line; the linked file lists the sources.
+    if item.confidence.is_some() {
+        if let Some((_, actions)) = item.extra.iter().find(|(k, _)| k == "対策") {
+            let actions = actions.replace('\n', " ");
+            line.push_str(&format!(
+                "\n　対策: {}",
+                escape_md(&truncate(&actions, 150))
+            ));
+        }
+    }
     line
 }
 
@@ -493,6 +503,24 @@ mod tests {
         it.url = format!("https://example.com/{i}");
         it.cvss = Some(9.1);
         it
+    }
+
+    #[test]
+    fn digest_line_shows_advisory_actions() {
+        let mut it = item(1);
+        it.cve = None;
+        it.confidence = Some(crate::model::Confidence::Confirmed);
+        it.extra = vec![(
+            "対策".into(),
+            "・Update Electron\n・Update ca-certificates".into(),
+        )];
+        let e = DigestEntry {
+            key: "k".into(),
+            item: it,
+            reason: "Claude 調査（一次情報で確認済み） 参考".into(),
+        };
+        let line = digest_line(&e, true);
+        assert!(line.ends_with("\n　対策: ・Update Electron ・Update ca-certificates"));
     }
 
     #[test]

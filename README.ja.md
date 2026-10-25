@@ -29,6 +29,7 @@ systemd timer (2分) ─▶ vuln-watch run
 | `cvelist` | [CVEProject/cvelistV5](https://github.com/CVEProject/cvelistV5) | 約 7 分の同期 + ポーリング間隔 |
 | `usn` | [Ubuntu Security Notices](https://ubuntu.com/security/notices)（JSON API） | ポーリング間隔 |
 | `feed` | 任意の RSS/Atom（例: [oss-security](https://seclists.org/oss-sec/)） | ポーリング間隔 |
+| `advisory` | Claude の定期調査が GitHub のブランチに書く勧告（[詳細](#claude-の定期調査による勧告)） | 調査の間隔 + ポーリング間隔 |
 
 oss-security には、CVE レコードより先に報告が出ることがよくあります。
 
@@ -63,6 +64,22 @@ oss-security には、CVE レコードより先に報告が出ることがよく
 `[installed] enabled = true` にすると、USN を `/var/lib/dpkg/status` と照合します。バージョンは dpkg と同じ規則で比較します。dpkg の状態は毎回読み直すので、`apt upgrade` を実行すればすぐに適用済みとして扱われます。リリース名は `/etc/os-release` から取得します。インストールされていないパッケージの USN は、ウォッチリストに一致していても無視します。
 
 カーネルの修正は再起動するまで有効になりません。パッケージがインストール済みのカーネルの USN では、実行中のカーネル（`uname -r`、例: `6.8.0-145-generic`）も比較します。その `linux-image-<release>` パッケージが同じフレーバーの修正版より古ければ、適用済みではなく「再起動待ち」として即時通知します。修正版のカーネルイメージがまだインストールされていなければ「未適用」として即時通知します。HWE と `virtual` のメタパッケージは `generic` フレーバーとして扱います。dpkg で管理されていないカーネル（自前ビルド・コンテナ）は比較しません。検出した実行中のカーネルは `vuln-watch doctor` で確認できます。
+
+### Claude の定期調査による勧告
+
+CVE が付かないまま多くの製品に「今すぐ更新」が必要になる問題があります（例: CA の鍵の漏えいで、Electron 製アプリ・Go のバイナリ・`ca-certificates` が信頼を外す必要がある）。こうした勧告を、Claude の定期調査が対策と出典付きで GitHub のブランチ（既定ではこのリポジトリの `advisories` ブランチ）の `advisories/` 以下に 1 件 1 ファイルの TOML として書きます。`kind = "advisory"` はそのブランチを GitHub API で読み、前回から変わったファイルだけを取得します。`GITHUB_TOKEN` があれば使います。
+
+| 条件 | 結果 |
+|---|---|
+| 勧告の `deb` パッケージがインストール済みで修正版より古い | 即時 |
+| ウォッチに強一致、severity が `high` / `critical`、confidence が `likely` / `confirmed` | 即時 |
+| それ以外のウォッチ一致 | ダイジェスト |
+| 一致なし | ダイジェスト（参考） |
+
+- `confidence = "unverified"` の勧告と、`primary` の出典がない勧告は即時通知しません。
+- `expires` を過ぎた勧告、`status` が `resolved` / `withdrawn` の勧告は読み飛ばします。
+- `revision` が上がると再通知します。それ以外の修正では通知しません。
+- 通知には「Claude 調査」と確度を必ず載せます。即時通知には対策と出典を、ダイジェストには対策と勧告ファイルへのリンク（出典はファイル内）を載せます。対応の前に出典を確認してください。
 
 ## 取りこぼし対策
 
