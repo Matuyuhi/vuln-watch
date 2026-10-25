@@ -202,8 +202,8 @@ fn evaluate_installed(item: &Item, im: &InstalledMatch) -> Option<Decision> {
     })
 }
 
-/// Advisories from the scheduled Claude research. They are few and cross-cutting, so one
-/// that matches nothing still goes to the digest; an unverified one is never urgent, even
+/// Advisories from the scheduled Claude research: urgent unless their severity is low or
+/// the only match is a digest-only watch entry. An unverified one is never urgent, even
 /// from a source with `mode = "urgent"`.
 fn evaluate_advisory(
     item: &Item,
@@ -234,8 +234,8 @@ fn advisory_decision(
 ) -> Decision {
     let tag = format!("Claude 調査（{}）", confidence.label());
     // Distro packages count only when one of them is installed here; the advisory may
-    // equally be about desktop apps that dpkg does not know. An outdated package decides;
-    // a patched one must not hide a watch match on another product of the advisory.
+    // equally be about desktop apps that dpkg does not know. A patched package only
+    // explains the reason: the advisory's other products may still need updating.
     let installed = installed
         .filter(|im| {
             item.fixed
@@ -246,26 +246,19 @@ fn advisory_decision(
     if let Some(d) = installed.as_ref().filter(|d| d.level == Level::Urgent) {
         return Decision::new(Level::Urgent, format!("{tag} {}", d.reason));
     }
-    if let Some(m) = m {
-        let severe = item
-            .severity
-            .as_deref()
-            .and_then(crate::sources::severity_to_score)
-            .is_some_and(|s| s >= 7.0);
-        let level = if m.strong && m.watch.urgent && severe && confidence >= Confidence::Likely {
-            Level::Urgent
-        } else {
-            Level::Digest
-        };
-        return Decision::new(
-            level,
-            format!("{tag} ウォッチ: {}（{}）", m.watch.name, m.evidence),
-        );
-    }
-    match installed {
-        Some(d) => Decision::new(d.level, format!("{tag} {}", d.reason)),
-        None => Decision::new(Level::Digest, format!("{tag} 参考")),
-    }
+    let reason = match (m, &installed) {
+        (Some(m), _) => format!("{tag} ウォッチ: {}（{}）", m.watch.name, m.evidence),
+        (None, Some(d)) => format!("{tag} {}", d.reason),
+        (None, None) => format!("{tag} 横断勧告"),
+    };
+    // Advisories are few and every one is merged by hand, so they are urgent unless
+    // they are minor or match a watch entry that only goes to the digest.
+    let level = if item.severity.as_deref() == Some("low") || m.is_some_and(|m| !m.watch.urgent) {
+        Level::Digest
+    } else {
+        Level::Urgent
+    };
+    Decision::new(level, reason)
 }
 
 #[cfg(test)]
@@ -573,29 +566,38 @@ mod tests {
     }
 
     #[test]
-    fn advisory_without_match_goes_to_digest() {
+    fn advisory_is_urgent_by_default() {
+        let r = Rules::default();
         let d = evaluate(
-            &advisory_item("critical", Confidence::Confirmed),
+            &advisory_item("medium", Confidence::Confirmed),
             SourceMode::Filter,
-            &Rules::default(),
+            &r,
             &[],
         );
-        assert_eq!(d.level, Level::Digest);
-        assert!(d.reason.starts_with("Claude 調査"));
+        assert_eq!(d.level, Level::Urgent);
+        assert_eq!(d.reason, "Claude 調査（一次情報で確認済み） 横断勧告");
+        let d = evaluate(
+            &advisory_item("high", Confidence::Likely),
+            SourceMode::Filter,
+            &r,
+            &electron_watch(),
+        );
+        assert_eq!(d.level, Level::Urgent);
+        assert!(d.reason.contains("ウォッチ: Electron"));
     }
 
     #[test]
-    fn advisory_watch_match_is_urgent_when_severe_and_backed() {
+    fn advisory_goes_to_digest_when_minor_unverified_or_digest_watch() {
         let r = Rules::default();
-        let w = electron_watch();
-        let urgent = advisory_item("high", Confidence::Likely);
-        assert_eq!(
-            evaluate(&urgent, SourceMode::Filter, &r, &w).level,
-            Level::Urgent
-        );
-        for i in [
-            advisory_item("medium", Confidence::Confirmed),
-            advisory_item("critical", Confidence::Unverified),
+        let mut digest_watch = electron_watch();
+        digest_watch[0].urgent = false;
+        for (i, w) in [
+            (advisory_item("low", Confidence::Confirmed), vec![]),
+            (advisory_item("critical", Confidence::Unverified), vec![]),
+            (
+                advisory_item("critical", Confidence::Confirmed),
+                digest_watch,
+            ),
         ] {
             assert_eq!(
                 evaluate(&i, SourceMode::Filter, &r, &w).level,
@@ -646,7 +648,7 @@ mod tests {
     }
 
     #[test]
-    fn advisory_patched_package_does_not_hide_watch_match() {
+    fn advisory_with_patched_package_stays_urgent() {
         let inst = Installed::from_pairs("noble", &[("ca-certificates", "20260101")]);
         let im = InstalledMatch {
             installed: &inst,
@@ -657,7 +659,8 @@ mod tests {
         let d = evaluate_with(&i, SourceMode::Filter, &r, &electron_watch(), Some(&im));
         assert_eq!(d.level, Level::Urgent);
         let d = evaluate_with(&i, SourceMode::Filter, &r, &[], Some(&im));
-        assert_eq!(d.level, Level::Ignore);
+        assert_eq!(d.level, Level::Urgent);
+        assert!(d.reason.contains("適用済み"));
     }
 
     #[test]

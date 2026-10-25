@@ -72,10 +72,11 @@ Some problems never get a CVE but still mean "update this now" for many products
 | Condition | Result |
 |---|---|
 | A `deb` package of the advisory is installed and older than its fixed version | urgent |
-| Strong watch match, severity `high` or `critical`, confidence `likely` or `confirmed` | urgent |
-| Any other watch match | digest |
-| No match | digest, as reference |
+| Otherwise, severity `low` | digest |
+| Only match is a watch entry with `urgent = false` | digest |
+| Anything else, with or without a watch match | urgent |
 
+- Advisories are few and each one is merged by hand, so they are urgent by default. The reason shows the matching watch entry or installed package, if any.
 - Advisories with `confidence = "unverified"`, or without a `primary` reference, are never urgent.
 - Advisories past `expires`, and those with `status = "resolved"` or `"withdrawn"`, are skipped.
 - A new `revision` of an advisory is notified again; other edits are not.
