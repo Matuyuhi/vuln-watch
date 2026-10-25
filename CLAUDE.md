@@ -21,6 +21,7 @@
 4. 新規は 1 回 3 件まで。該当がなければ何も変更せず終わる（それが普通）。
 5. `python3 scripts/validate.py --online <変更したファイル>` を実行し、エラーがなくなるまで直す。
 6. `advisories` ブランチから `advisory/<日付>` ブランチを切って push し、`advisories` ブランチ宛てに PR を作る。PR 本文には各勧告の要点と、確度の根拠を 1 行ずつ書く。自分でマージしない。
+7. PR を作ったら `wont-ai-check` ラベルを付ける（既にリポジトリにある。GitHub の MCP ツールなら issue_write の update で labels に指定）。
 
 ## 形式
 
