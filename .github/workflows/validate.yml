@@ -1,0 +1,37 @@
+# Validates advisories before they reach vuln-watch, which reads this branch.
+# Offline checks run on every advisory; reference URLs, quotes and CVE ids are
+# checked online for the files a pull request adds or changes.
+name: Validate advisories
+
+on:
+  pull_request:
+    branches: [advisories]
+  push:
+    branches: [advisories]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - name: Format (all files and the example)
+        run: |
+          shopt -s globstar nullglob
+          python scripts/validate.py examples/*.toml advisories/**/*.toml
+      - name: Sources (changed files)
+        if: github.event_name == 'pull_request'
+        env:
+          BASE: ${{ github.event.pull_request.base.sha }}
+        run: |
+          mapfile -t files < <(git diff --name-only --diff-filter=AM "$BASE" HEAD -- 'advisories/*.toml' 'advisories/**/*.toml')
+          if [ ${#files[@]} -eq 0 ]; then echo "no changed advisories"; exit 0; fi
+          python scripts/validate.py --online "${files[@]}"

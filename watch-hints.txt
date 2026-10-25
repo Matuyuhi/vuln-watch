@@ -1,0 +1,22 @@
+# Software the vuln-watch owner cares about. Used only to prioritise research;
+# advisories are not limited to these. Keep machine details out of this file.
+nginx
+Linux kernel (Ubuntu)
+OpenSSH
+OpenSSL
+sudo
+glibc
+systemd
+fail2ban
+ca-certificates
+Android
+Samsung Mobile
+Apple iOS
+Chrome / Android WebView
+Electron apps (Slack, Discord, VS Code, ...)
+OkHttp
+Ktor
+Kotlin
+Gradle / Android Gradle Plugin
+tokio
+rustls

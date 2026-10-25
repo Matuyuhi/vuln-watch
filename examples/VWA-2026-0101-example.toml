@@ -1,0 +1,42 @@
+# Format reference only. Files under examples/ are never read by vuln-watch.
+# Real advisories live in advisories/<year>/<id>.toml and the file name must equal `id`.
+
+id = "VWA-2026-0101-example"         # VWA-<year>-<MMDD>-<slug>; never changes
+revision = 1                         # +1 on a material change (severity, affected, actions)
+status = "active"                    # active | resolved | withdrawn
+published = 2026-01-01
+updated = 2026-01-01                 # optional
+expires = 2026-01-31                 # required; default published + 30 days, at most + 90
+severity = "high"                    # critical | high | medium | low
+confidence = "confirmed"             # confirmed | likely | unverified
+title = "Example: apps bundling ExampleLib must be updated"
+summary = """
+What happened, why it reaches many products at once, and who has to act.
+Three to five sentences."""
+cves = []                            # only ids that appear in a source
+actions = [
+  "Update the apps that bundle ExampleLib to the versions listed by their vendors",
+  "(own suggestion) Until then, block the affected feature",
+]
+
+[[affects]]
+name = "ExampleLib"
+keywords = ["examplelib"]            # whole-word match against the vuln-watch watch list
+packages = ["npm:examplelib"]        # exact package names
+fixed_versions = ["2.0.1"]           # only versions stated by a source
+
+[[affects]]
+name = "example-certs (Ubuntu)"
+deb = [                              # compared with dpkg on the server
+  { package = "example-certs", fixed_version = "1.2-0ubuntu1", release = "noble" },
+]
+
+[[references]]
+url = "https://example.com/security/advisory-1"
+kind = "primary"                     # primary: vendor, CERT/CISA/JPCERT, NVD/cve.org, GHSA
+title = "ExampleLib security advisory"
+quote = "verbatim sentence copied from that page"
+
+[[references]]
+url = "https://example.com/news/examplelib"
+kind = "secondary"                   # news, blogs
