@@ -1,0 +1,81 @@
+id = "VWA-2026-1025-emudhra-ca"
+revision = 1
+status = "active"
+published = 2026-10-25
+expires = 2026-11-24
+severity = "high"
+confidence = "confirmed"
+title = "eMudhra の中間 CA 8 件の鍵が弱く失効、emSign ECC Root CA - G3 が各 CA ストアから削除"
+summary = """
+eMudhra（emSign）の Global TLS 中間 CA 8 件の秘密鍵が復元可能なほど弱いことが 2026-10-17 に報告され、eMudhra は翌日 8 件すべてを失効させた。
+Firefox は OneCRL で即日ブロックし、OneCRL を受け取れない環境向けに Firefox 158.0.1 / ESR 153.5.1 / ESR 115.43.1 を出した（CVE-2026-113470）。
+ブラウザ以外で OS や同梱の CA バンドルを使うソフトは自動では守られないため、Ubuntu は ca-certificates（USN-8944-1）と NSS（USN-8947-1）から emSign ECC Root CA - G3 を削除した（NSS では Comodo AAA Services root も削除）。
+同時期に Go 1.27.3 / 1.26.10 が crypto/x509 で特定 CA の中間証明書を拒否する修正（CVE-2026-111943）を出しているが、Go の告知は CA 名を明記していない。
+eMudhra によれば失効した中間 CA から発行された証明書はなく、悪用は確認されていない。"""
+cves = ["CVE-2026-113470", "CVE-2026-111943"]
+actions = [
+  "Ubuntu の ca-certificates と libnss3 を USN-8944-1 / USN-8947-1 の版以降に更新する",
+  "Firefox / Thunderbird を 158.0.1（ESR は 153.5.1 / 115.43.1）以降に更新する",
+  "Go を 1.27.3 / 1.26.10 以降に更新し、Go 製バイナリは再ビルドされた版に更新する",
+  "（独自提案）certifi や Electron 製アプリなど独自の CA バンドルを同梱するソフトも、配布元の更新を確認する",
+]
+
+[[affects]]
+name = "ca-certificates (Ubuntu)"
+keywords = ["ca-certificates"]
+deb = [
+  { package = "ca-certificates", fixed_version = "20260816ubuntu0.26.10.1", release = "stonking" },
+  { package = "ca-certificates", fixed_version = "20260816ubuntu0.26.04.1", release = "resolute" },
+  { package = "ca-certificates", fixed_version = "20260816ubuntu0.24.04.1", release = "noble" },
+  { package = "ca-certificates", fixed_version = "20260816ubuntu0.22.04.1", release = "jammy" },
+]
+
+[[affects]]
+name = "NSS (Ubuntu)"
+keywords = ["nss", "libnss3"]
+deb = [
+  { package = "libnss3", fixed_version = "2:3.127-1ubuntu0.1", release = "stonking" },
+  { package = "libnss3", fixed_version = "2:3.120-1ubuntu2.2", release = "resolute" },
+  { package = "libnss3", fixed_version = "2:3.98-1ubuntu0.3", release = "noble" },
+  { package = "libnss3", fixed_version = "2:3.98-0ubuntu0.22.04.5", release = "jammy" },
+]
+
+[[affects]]
+name = "Firefox / Thunderbird"
+keywords = ["firefox", "thunderbird"]
+fixed_versions = ["158.0.1", "153.5.1", "115.43.1"]
+
+[[affects]]
+name = "Go (crypto/x509)"
+keywords = ["golang"]
+fixed_versions = ["1.27.3", "1.26.10"]
+
+[[references]]
+url = "https://emudhra.com/en/post/certificate-security-incident"
+kind = "primary"
+title = "eMudhra Statement on Recent Certificate Security Incident"
+quote = "We revoked all eight intermediates the following day."
+
+[[references]]
+url = "https://www.mozilla.org/security/advisories/mfsa2026-111/"
+kind = "primary"
+title = "MFSA 2026-111: Security Vulnerabilities fixed in Firefox 158.0.1"
+quote = "Mozilla blocked compromised intermediate eMudhra certificates via OneCRL on the 17th of October"
+
+[[references]]
+url = "https://ubuntu.com/security/notices/USN-8944-1"
+kind = "primary"
+title = "USN-8944-1: ca-certificates update"
+quote = "This update removes the \"emSign ECC Root CA - G3\" CA certificate due to intermediate CA certificates being compromised."
+
+[[references]]
+url = "https://ubuntu.com/security/notices/USN-8947-1"
+kind = "primary"
+title = "USN-8947-1: NSS update"
+quote = "This update removes the \"emSign ECC Root CA - G3\" and \"Comodo AAA Services root\" CA certificate due to intermediate CA certificates being compromised."
+
+[[references]]
+url = "https://www.openwall.com/lists/oss-security/2026/10/20/29"
+kind = "primary"
+title = "Go 1.27.3 and Go 1.26.10 are released (golang-announce, oss-security 転載)"
+quote = "Verify will now filter out chains which contain these intermediates, preventing them from being returned to the caller."
