@@ -2,6 +2,23 @@
 
 [日本語](README.ja.md)
 
+## Table of Contents
+
+- [Sources](#sources)
+- [Rules](#rules)
+  - [Installed packages](#installed-packages)
+- [Reliability](#reliability)
+- [Setup](#setup)
+  - [Discord](#1-discord)
+  - [Install](#2-install)
+  - [Configure](#3-configure)
+  - [Start](#4-start)
+- [Usage](#usage)
+- [Operations](#operations)
+- [Development](#development)
+  - [Releasing](#releasing)
+- [License](#license)
+
 Polls vulnerability sources every two minutes and sends a Discord DM when something affects you: an exploited CVE, an advisory for a package you depend on, or an Ubuntu patch for a package installed on the host. Everything else is batched into a daily digest.
 
 Single Rust binary, run by a systemd timer. State is kept in SQLite.
