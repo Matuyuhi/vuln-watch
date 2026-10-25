@@ -209,10 +209,13 @@ fn evaluate_advisory(
     item: &Item,
     confidence: Confidence,
     mode: SourceMode,
-    m: Option<&WatchMatch>,
+    watches: &[Watch],
     installed: Option<&InstalledMatch>,
 ) -> Decision {
-    let d = advisory_decision(item, confidence, m, installed);
+    // An urgent watch entry wins over a digest-only one, whatever their order.
+    let urgent: Vec<Watch> = watches.iter().filter(|w| w.urgent).cloned().collect();
+    let m = match_watch(item, &urgent).or_else(|| match_watch(item, watches));
+    let d = advisory_decision(item, confidence, m.as_ref(), installed);
     let level = match mode {
         SourceMode::Urgent => Level::Urgent,
         SourceMode::Digest => d.level.min(Level::Digest),
@@ -275,7 +278,7 @@ pub fn evaluate_with(
 ) -> Decision {
     let m = match_watch(item, watches);
     if let Some(confidence) = item.confidence {
-        return evaluate_advisory(item, confidence, mode, m.as_ref(), installed);
+        return evaluate_advisory(item, confidence, mode, watches, installed);
     }
     let watch_note = m
         .as_ref()
@@ -603,6 +606,25 @@ mod tests {
                 evaluate(&i, SourceMode::Filter, &r, &w).level,
                 Level::Digest
             );
+        }
+    }
+
+    #[test]
+    fn advisory_urgent_watch_wins_over_digest_only_watch() {
+        let mut both = electron_watch();
+        both.push(Watch {
+            name: "CA bundles".into(),
+            keywords: vec!["ca-certificates".into()],
+            packages: vec![],
+            sources: vec![],
+            urgent: false,
+        });
+        let i = advisory_item("high", Confidence::Confirmed);
+        let r = Rules::default();
+        for w in [both.clone(), both.into_iter().rev().collect()] {
+            let d = evaluate(&i, SourceMode::Filter, &r, &w);
+            assert_eq!(d.level, Level::Urgent);
+            assert!(d.reason.contains("ウォッチ: Electron"));
         }
     }
 
