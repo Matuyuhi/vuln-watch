@@ -416,8 +416,23 @@ fn check_stale(
     let name = src.name();
     let last_new_key = format!("lastnew:{name}");
     let alert_key = format!("stalealert:{name}");
-    if got_new {
-        if db.get_kv(&alert_key)?.is_some() {
+    let hours = src.stale_after_hours();
+    if hours == 0 {
+        // Turned off: drop an earlier alert without a recovery message.
+        db.del_kv(&alert_key)?;
+        return Ok(());
+    }
+    let parse = |v: &str| chrono::DateTime::parse_from_rfc3339(v).ok();
+    let last = db.get_kv(&last_new_key)?.as_deref().and_then(parse);
+    let Some(last) = last else {
+        // Installs from before this check have no time yet: start counting now.
+        db.set_kv(&last_new_key, &now.to_rfc3339())?;
+        return Ok(());
+    };
+    if let Some(alerted) = db.get_kv(&alert_key)? {
+        // A new item since the alert, in this run or in one whose recovery message
+        // failed to send (its items are seen by now, so `got_new` alone would miss it).
+        if got_new || parse(&alerted).is_some_and(|at| last > at) {
             notifier.send(
                 db,
                 &Message::text(format!("✅ ソース `{name}` に新しい項目が届きました。")),
@@ -426,17 +441,7 @@ fn check_stale(
         }
         return Ok(());
     }
-    let last = db
-        .get_kv(&last_new_key)?
-        .and_then(|v| chrono::DateTime::parse_from_rfc3339(&v).ok());
-    let Some(last) = last else {
-        // Installs from before this check have no time yet: start counting now.
-        db.set_kv(&last_new_key, &now.to_rfc3339())?;
-        return Ok(());
-    };
-    let hours = src.stale_after_hours();
-    if hours == 0 {
-        db.del_kv(&alert_key)?;
+    if got_new {
         return Ok(());
     }
     let elapsed = now.signed_duration_since(last).num_hours();
@@ -1068,6 +1073,48 @@ stale_after_hours = 0
             sent[1].content
         );
         assert!(db.get_kv("stalealert:ghsa").unwrap().is_none());
+    }
+
+    #[test]
+    fn failed_recovery_message_is_retried_on_a_quiet_run() {
+        let cfg = Config::parse(STALE_CONFIG).unwrap();
+        let http = Http::new(5).unwrap();
+        let db = Db::open_in_memory().unwrap();
+        let ghsa = src(&cfg, "ghsa");
+        let now = chrono::Utc::now();
+        db.set_kv("lastnew:ghsa", &hours_before(now, 11)).unwrap();
+        let ok = recorder(&http, vec![]);
+        check_stale(&db, &ok, ghsa, false, false, now).unwrap();
+        assert_eq!(ok.sent().len(), 1);
+
+        // New items arrive an hour later, but the recovery message fails to send.
+        let later = now + chrono::Duration::hours(1);
+        db.set_kv("lastnew:ghsa", &later.to_rfc3339()).unwrap();
+        let failing = recorder(&http, vec![(0, Fail::Transient)]);
+        assert!(check_stale(&db, &failing, ghsa, true, false, later).is_err());
+        assert!(db.get_kv("stalealert:ghsa").unwrap().is_some());
+
+        // The next run has nothing new, but still sends the recovery message.
+        let ok = recorder(&http, vec![]);
+        check_stale(&db, &ok, ghsa, false, false, later).unwrap();
+        let sent = ok.sent();
+        assert_eq!(sent.len(), 1);
+        assert!(sent[0].content.contains("新しい項目が届きました"));
+        assert!(db.get_kv("stalealert:ghsa").unwrap().is_none());
+    }
+
+    #[test]
+    fn turning_the_check_off_clears_the_alert_without_a_message() {
+        let cfg = Config::parse(STALE_CONFIG).unwrap();
+        let http = Http::new(5).unwrap();
+        let notifier = recorder(&http, vec![]);
+        let db = Db::open_in_memory().unwrap();
+        let now = chrono::Utc::now();
+        db.set_kv("lastnew:kev", &now.to_rfc3339()).unwrap();
+        db.set_kv("stalealert:kev", &hours_before(now, 1)).unwrap();
+        check_stale(&db, &notifier, src(&cfg, "kev"), true, false, now).unwrap();
+        assert!(notifier.sent().is_empty());
+        assert!(db.get_kv("stalealert:kev").unwrap().is_none());
     }
 
     #[test]
