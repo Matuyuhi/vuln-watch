@@ -1,8 +1,8 @@
 id = "VWA-2026-1025-emudhra-ca"
-revision = 2
+revision = 3
 status = "active"
 published = 2026-10-25
-updated = 2026-10-25
+updated = 2026-10-26
 expires = 2026-11-24
 severity = "high"
 confidence = "confirmed"
@@ -12,6 +12,8 @@ eMudhra（emSign）の Global TLS 中間 CA 8 件の秘密鍵が復元可能な�
 Firefox は OneCRL で即日ブロックし、OneCRL を受け取れない環境向けに Firefox 158.0.1 / ESR 153.5.1 / ESR 115.43.1 を出した（CVE-2026-113470）。
 ブラウザ以外で OS や同梱の CA バンドルを使うソフトは自動では守られないため、Ubuntu は ca-certificates（USN-8944-1）と NSS（USN-8947-1）から emSign ECC Root CA - G3 を削除した（NSS では Comodo AAA Services root も削除）。
 Python は 10-20 の告知で、pip が同梱の certifi を常に読み込み無効化できないため、certifi 2026.10.19・pip 26.2.2・uv 0.13.4 など以降への即時更新と、キャッシュを使わないコンテナイメージの再ビルドを求めている。
+Electron は 44.9.1 / 43.8.1 / 42.11.16 に、侵害された eMudhra 中間証明書への対策（GHSA-jr5w-w6x2-84p9）を入れた。Electron 製アプリは同梱の Electron が更新されるまで守られない。
+Apple は 10-19 から中間 CA の証明書を、10-23 から emSign ECC Root CA - G3 を自動でブロックしているが、macOS の curl / git / python3 などの /etc/ssl/cert.pem を使うコマンドラインツールは今後の macOS アップデートまでこれらの証明書を受け入れ得るとしている。
 同時期に Go 1.27.3 / 1.26.10 が crypto/x509 で特定 CA の中間証明書を拒否する修正（CVE-2026-111943）を出しているが、Go の告知は CA 名を明記していない。
 eMudhra によれば失効した中間 CA から発行された証明書はなく、悪用は確認されていないが、Mozilla は失効情報を確実に確認しないクライアントに向けて、鍵の悪用は近いうちに起こり得ると警告している。"""
 cves = ["CVE-2026-113470", "CVE-2026-111943"]
@@ -20,7 +22,9 @@ actions = [
   "Firefox / Thunderbird を 158.0.1（ESR は 153.5.1 / 115.43.1）以降に更新する",
   "Go を 1.27.3 / 1.26.10 以降に更新し、Go 製バイナリは再ビルドされた版に更新する",
   "Python 環境では certifi 2026.10.19・pip 26.2.2・uv 0.13.4・sigstore 4.5.1・conda 26.9.4・pixi 0.82.1 以降に更新し、既存の各 venv の pip / uv も更新する。コンテナイメージはレイヤーキャッシュを無効にして再ビルドする（Python）",
-  "（独自提案）Electron 製アプリなど独自の CA バンドルを同梱するソフトも、配布元の更新を確認する",
+  "Electron 製アプリは Electron 44.9.1 / 43.8.1 / 42.11.16 以降を同梱した版に更新する。自作の Electron アプリは該当版に上げて再配布する",
+  "macOS でコマンドラインツール（curl、git、python3 など）を使う場合は、今後の macOS アップデートを適用する。待てない場合は Apple の手順に従い /etc/ssl/cert.pem から該当ルート CA を削除する（Apple）",
+  "（独自提案）その他、独自の CA バンドルを同梱するソフトも、配布元の更新を確認する",
 ]
 
 [[affects]]
@@ -53,6 +57,12 @@ name = "Python (certifi / pip / uv)"
 keywords = ["certifi", "pip", "uv"]
 packages = ["pypi:certifi", "pypi:pip", "pypi:uv"]
 fixed_versions = ["2026.10.19", "26.2.2", "0.13.4"]
+
+[[affects]]
+name = "Electron"
+keywords = ["electron"]
+packages = ["npm:electron"]
+fixed_versions = ["44.9.1", "43.8.1", "42.11.16"]
 
 [[affects]]
 name = "Go (crypto/x509)"
@@ -100,3 +110,15 @@ url = "https://www.openwall.com/lists/oss-security/2026/10/20/1"
 kind = "primary"
 title = "eMudhra Intermediates Compromise (Mozilla, oss-security)"
 quote = "we highlight that abuse of the compromised private keys is likely in the near future."
+
+[[references]]
+url = "https://releases.electronjs.org/release/v43.8.1"
+kind = "primary"
+title = "Electron v43.8.1 リリースノート（44.9.1 / 42.11.16 も同じ注記、GHSA-jr5w-w6x2-84p9）"
+quote = "This release contains the fix for https://github.com/electron/electron/security/advisories/GHSA-jr5w-w6x2-84p9, the mitigation for compromised eMudhra intermediate certificates"
+
+[[references]]
+url = "https://support.apple.com/en-us/149555"
+kind = "primary"
+title = "About the compromised eMudhra intermediate CAs (Apple Support, 2026-10-23)"
+quote = "On 23 October 2026, Apple also began blocking the emSign ECC Root CA - G3."
