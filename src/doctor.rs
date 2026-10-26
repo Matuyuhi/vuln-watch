@@ -649,9 +649,10 @@ fn check_state(r: &mut Report, db_path: &Path, cfg: Option<&Config>, root: bool)
         let failing = db.kv_with_prefix("fail:")?;
         let outbox = db.queue_len(Queue::Outbox)?;
         let digest = db.queue_len(Queue::Digest)?;
-        Ok((failing, outbox, digest))
+        let backfill = db.kv_with_prefix("ghsa:")?;
+        Ok((failing, outbox, digest, backfill))
     });
-    let (failing, outbox, digest) = match summary {
+    let (failing, outbox, digest, backfill) = match summary {
         Ok(s) => s,
         Err(e) => return r.fail("state", format!("{e:#}"), None),
     };
@@ -670,6 +671,19 @@ fn check_state(r: &mut Report, db_path: &Path, cfg: Option<&Config>, root: bool)
         } else {
             r.warn("source", detail, hint);
         }
+    }
+    for (key, window) in backfill {
+        let Some(name) = key
+            .strip_prefix("ghsa:")
+            .and_then(|k| k.strip_suffix(":backfill"))
+        else {
+            continue;
+        };
+        r.warn(
+            "source",
+            format!("source `{name}` has not read advisories updated in {window} yet (backfill in progress)"),
+            Some("filled a few pages per run; GITHUB_TOKEN makes it faster"),
+        );
     }
     if outbox > 0 {
         r.warn(
@@ -778,6 +792,29 @@ mod tests {
         let p = parse_show("Result=success\nExecMainExitTimestamp=\nExecMainStatus=0\n");
         assert_eq!(p["Result"], "success");
         assert_eq!(p["ExecMainExitTimestamp"], "");
+    }
+
+    #[test]
+    fn state_warns_about_backfill_window() {
+        let dir =
+            std::env::temp_dir().join(format!("vuln-watch-doctor-state-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("state.db");
+        let db = Db::open(&path).unwrap();
+        db.set_kv("ghsa:updated_cursor_unrelated", "x").unwrap();
+        let mut r = Report::default();
+        check_state(&mut r, &path, None, true);
+        assert_eq!(r.warns, 0);
+        db.set_kv(
+            &crate::sources::ghsa::backfill_key("ghsa"),
+            "2026-10-01T00:00:00Z..2026-10-10T00:00:00Z",
+        )
+        .unwrap();
+        let mut r = Report::default();
+        check_state(&mut r, &path, None, true);
+        drop(db);
+        fs::remove_dir_all(&dir).unwrap();
+        assert_eq!((r.warns, r.fails), (1, 0));
     }
 
     #[test]
