@@ -16,8 +16,11 @@ pub const DEFAULT_URL: &str =
     "https://api.github.com/advisories?type=reviewed&sort=updated&direction=desc&per_page=100";
 /// Upper bound of pages walked back to the previous position (100 advisories per page).
 const MAX_PAGES: usize = 20;
-/// Pages of a backfill window read per run with `GITHUB_TOKEN` (one without).
+/// Pages of a backfill window read per run.
 const BACKFILL_PAGES: usize = 5;
+/// Backfill only while more API requests than this remain in the rate-limit window: an hour
+/// of normal polling (every two minutes) without `GITHUB_TOKEN`, where the limit is 60.
+const RATE_RESERVE: u32 = 30;
 
 #[derive(Deserialize)]
 struct Advisory {
@@ -174,12 +177,7 @@ pub fn fetch(name: &str, url: Option<&str>, ctx: &Ctx) -> Result<Fetched> {
         window,
         // Without a cursor (first run / dry-run) one page is enough.
         one_page: ctx.bootstrap || ctx.limit.is_some(),
-        // Unauthenticated requests are limited to 60 per hour.
-        backfill_pages: if ctx.github_token.is_some() {
-            BACKFILL_PAGES
-        } else {
-            1
-        },
+        backfill_pages: BACKFILL_PAGES,
     };
     walk.run(|url, first| ctx.http.get(url, &headers, first.then_some(&validators)))
 }
@@ -200,6 +198,7 @@ impl Walk<'_> {
         let cursor = self.cursor;
         let mut fetched = Fetched::empty();
         let mut resp = get(self.first_url, true)?;
+        let mut remaining = resp.rate_remaining;
         let mut limit_hit = false;
         if !resp.not_modified() {
             fetched.commit = Validators::commit_pairs(self.first_url, &resp);
@@ -232,6 +231,7 @@ impl Walk<'_> {
                 }
                 page += 1;
                 resp = get(&next, false)?;
+                remaining = resp.rate_remaining;
             }
             if page > 1 {
                 tracing::info!("{name}: walked {page} pages to catch up");
@@ -239,6 +239,8 @@ impl Walk<'_> {
             if let Some(n) = newest {
                 fetched.commit.push((cursor_key(name), n.to_rfc3339()));
             }
+            // Written first: a run that stops part way through the commit must not leave
+            // the new cursor or ETag without the gap behind it.
             if let (true, Some(from), Some(to)) = (limit_hit, cursor, oldest) {
                 let gap = Window { from, to };
                 let window = self.window.map_or(gap, |w| w.merge(gap));
@@ -247,7 +249,9 @@ impl Walk<'_> {
                      advisories updated in {} will be read on later runs",
                     window.encode()
                 );
-                fetched.commit.push((backfill_key(name), window.encode()));
+                fetched
+                    .commit
+                    .insert(0, (backfill_key(name), window.encode()));
             }
         }
         // A new gap waits for the next run: this one already used its page budget.
@@ -255,7 +259,7 @@ impl Walk<'_> {
             return Ok(fetched);
         }
         if let Some(window) = self.window {
-            match self.backfill(window, &mut get, &mut fetched.items) {
+            match self.backfill(window, remaining, &mut get, &mut fetched.items) {
                 Ok(Some(rest)) => fetched.commit.push((backfill_key(name), rest.encode())),
                 Ok(None) => {
                     tracing::info!("{name}: backfill of {} complete", window.encode());
@@ -268,18 +272,28 @@ impl Walk<'_> {
         Ok(fetched)
     }
 
-    /// Read up to `backfill_pages` pages of `window`, oldest first. Returns the part still
-    /// unread, or `None` when the window is exhausted.
+    /// Read up to `backfill_pages` pages of `window`, oldest first, keeping `RATE_RESERVE`
+    /// requests for normal polling. Returns the part still unread, or `None` when the window
+    /// is exhausted.
     fn backfill(
         &self,
         window: Window,
+        mut remaining: Option<u32>,
         get: &mut impl FnMut(&str, bool) -> Result<Resp>,
         items: &mut Vec<Item>,
     ) -> Result<Option<Window>> {
         let mut url = backfill_url(self.first_url, window)?;
         let mut from = window.from;
         for _ in 0..self.backfill_pages {
+            if remaining.is_some_and(|r| r <= RATE_RESERVE) {
+                tracing::debug!(
+                    "{}: backfill paused, {remaining:?} API requests left",
+                    self.name
+                );
+                break;
+            }
             let resp = get(&url, false)?;
+            remaining = resp.rate_remaining;
             let parsed = parse_page(self.name, &resp.body)?;
             if parsed.is_empty() {
                 return Ok(None);
@@ -472,6 +486,7 @@ mod tests {
             etag: None,
             last_modified: None,
             link: next.then(|| r#"<https://api.github.com/next>; rel="next""#.to_string()),
+            rate_remaining: None,
         }
     }
 
@@ -517,6 +532,8 @@ mod tests {
             kv(&f, &backfill_key("ghsa")),
             Some("2026-10-01T00:00:00Z..2026-10-24T05:00:00Z")
         );
+        // Persisted before the cursor and validators.
+        assert_eq!(f.commit[0].0, backfill_key("ghsa"));
         assert_eq!(
             kv(&f, &cursor_key("ghsa")),
             Some(t("2026-10-25T00:00:00Z").to_rfc3339().as_str())
@@ -599,6 +616,46 @@ mod tests {
             .unwrap();
         assert_eq!(f.items.len(), 1);
         assert_eq!(f.remove, vec![backfill_key("ghsa")]);
+    }
+
+    #[test]
+    fn backfill_keeps_rate_limit_reserve() {
+        let window = Window::parse("2026-10-01T00:00:00Z..2026-10-10T00:00:00Z");
+        let mut calls = 0;
+        let f = walk("2026-10-20T00:00:00Z", window)
+            .run(|_, first| {
+                calls += 1;
+                let mut r = if first {
+                    resp(304, String::new(), false)
+                } else {
+                    resp(200, page(&[t("2026-10-02T00:00:00Z")]), true)
+                };
+                r.rate_remaining = Some(if first {
+                    RATE_RESERVE + 1
+                } else {
+                    RATE_RESERVE
+                });
+                Ok(r)
+            })
+            .unwrap();
+        // One backfill page, then it stops to leave the reserve for normal polling.
+        assert_eq!(calls, 2);
+        assert_eq!(
+            kv(&f, &backfill_key("ghsa")),
+            Some("2026-10-02T00:00:00Z..2026-10-10T00:00:00Z")
+        );
+
+        let f = walk("2026-10-20T00:00:00Z", window)
+            .run(|_, _| {
+                let mut r = resp(304, String::new(), false);
+                r.rate_remaining = Some(RATE_RESERVE);
+                Ok(r)
+            })
+            .unwrap();
+        assert_eq!(
+            kv(&f, &backfill_key("ghsa")),
+            Some("2026-10-01T00:00:00Z..2026-10-10T00:00:00Z")
+        );
     }
 
     #[test]
