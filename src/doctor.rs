@@ -679,9 +679,11 @@ fn check_state(r: &mut Report, db_path: &Path, cfg: Option<&Config>, root: bool)
         else {
             continue;
         };
+        // The value may carry the next page URL after the range.
+        let range = window.split(' ').next().unwrap_or_default();
         r.warn(
             "source",
-            format!("source `{name}` has not read advisories updated in {window} yet (backfill in progress)"),
+            format!("source `{name}` has not read advisories updated in {range} yet (backfill in progress)"),
             Some("filled a few pages per run; GITHUB_TOKEN makes it faster"),
         );
     }

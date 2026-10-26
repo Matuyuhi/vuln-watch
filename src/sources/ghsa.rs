@@ -98,38 +98,59 @@ fn parse_time(s: &str) -> Option<DateTime<Utc>> {
 }
 
 /// `updated_at` range a walk stopped by `MAX_PAGES` did not read (both ends inclusive).
-/// Stored as `<from>..<to>` and filled in ascending order on later runs.
-#[derive(Debug, Clone, Copy, PartialEq)]
+/// Stored as `<from>..<to>[ <next page URL>]` and filled in ascending order on later runs.
+#[derive(Debug, Clone, PartialEq)]
 struct Window {
     from: DateTime<Utc>,
     to: DateTime<Utc>,
+    /// Where the previous run stopped, so a run of advisories sharing one `updated_at`
+    /// longer than a run's page budget cannot hold `from` in place forever.
+    next: Option<String>,
 }
 
 impl Window {
+    fn new(from: DateTime<Utc>, to: DateTime<Utc>) -> Self {
+        Self {
+            from,
+            to,
+            next: None,
+        }
+    }
+
     fn parse(s: &str) -> Option<Self> {
-        let (from, to) = s.split_once("..")?;
+        let (range, next) = match s.split_once(' ') {
+            Some((range, next)) => (range, Some(next.to_string())),
+            None => (s, None),
+        };
+        let (from, to) = range.split_once("..")?;
         Some(Self {
             from: parse_time(from)?,
             to: parse_time(to)?,
+            next,
         })
     }
 
-    /// Also the API's `updated` range filter syntax.
-    fn encode(&self) -> String {
+    /// The API's `updated` range filter syntax.
+    fn range(&self) -> String {
         let f = |t: DateTime<Utc>| t.to_rfc3339_opts(SecondsFormat::Secs, true);
         format!("{}..{}", f(self.from), f(self.to))
     }
 
-    fn merge(self, other: Self) -> Self {
-        Self {
-            from: self.from.min(other.from),
-            to: self.to.max(other.to),
+    fn encode(&self) -> String {
+        match &self.next {
+            Some(next) => format!("{} {next}", self.range()),
+            None => self.range(),
         }
+    }
+
+    /// The page link belongs to the old range, so the merged range starts over.
+    fn merge(&self, other: &Self) -> Self {
+        Self::new(self.from.min(other.from), self.to.max(other.to))
     }
 }
 
 /// The configured list URL turned into an ascending query over `window`.
-fn backfill_url(base: &str, window: Window) -> Result<String> {
+fn backfill_url(base: &str, window: &Window) -> Result<String> {
     let mut url = reqwest::Url::parse(base).with_context(|| format!("parsing {base}"))?;
     let keep: Vec<(String, String)> = url
         .query_pairs()
@@ -146,7 +167,7 @@ fn backfill_url(base: &str, window: Window) -> Result<String> {
         .extend_pairs(keep)
         .append_pair("sort", "updated")
         .append_pair("direction", "asc")
-        .append_pair("updated", &window.encode());
+        .append_pair("updated", &window.range());
     Ok(url.into())
 }
 
@@ -242,12 +263,12 @@ impl Walk<'_> {
             // Written first: a run that stops part way through the commit must not leave
             // the new cursor or ETag without the gap behind it.
             if let (true, Some(from), Some(to)) = (limit_hit, cursor, oldest) {
-                let gap = Window { from, to };
-                let window = self.window.map_or(gap, |w| w.merge(gap));
+                let gap = Window::new(from, to);
+                let window = self.window.as_ref().map_or(gap.clone(), |w| w.merge(&gap));
                 tracing::warn!(
                     "{name}: stopped after {MAX_PAGES} pages without reaching the previous position; \
                      advisories updated in {} will be read on later runs",
-                    window.encode()
+                    window.range()
                 );
                 fetched
                     .commit
@@ -258,15 +279,22 @@ impl Walk<'_> {
         if self.one_page || limit_hit {
             return Ok(fetched);
         }
-        if let Some(window) = self.window {
+        if let Some(window) = &self.window {
             match self.backfill(window, remaining, &mut get, &mut fetched.items) {
                 Ok(Some(rest)) => fetched.commit.push((backfill_key(name), rest.encode())),
                 Ok(None) => {
-                    tracing::info!("{name}: backfill of {} complete", window.encode());
+                    tracing::info!("{name}: backfill of {} complete", window.range());
                     fetched.remove.push(backfill_key(name));
                 }
-                // Keep the window; the next run tries again.
-                Err(e) => tracing::warn!("{name}: backfill of {} failed: {e:#}", window.encode()),
+                Err(e) => {
+                    tracing::warn!("{name}: backfill of {} failed: {e:#}", window.range());
+                    // Keep the range for the next run, but query it afresh in case the
+                    // stored page link is what fails.
+                    if window.next.is_some() {
+                        let fresh = Window::new(window.from, window.to);
+                        fetched.commit.push((backfill_key(name), fresh.encode()));
+                    }
+                }
             }
         }
         Ok(fetched)
@@ -277,12 +305,16 @@ impl Walk<'_> {
     /// is exhausted.
     fn backfill(
         &self,
-        window: Window,
+        window: &Window,
         mut remaining: Option<u32>,
         get: &mut impl FnMut(&str, bool) -> Result<Resp>,
         items: &mut Vec<Item>,
     ) -> Result<Option<Window>> {
-        let mut url = backfill_url(self.first_url, window)?;
+        let mut next = window.next.clone();
+        let mut url = match &next {
+            Some(next) => next.clone(),
+            None => backfill_url(self.first_url, window)?,
+        };
         let mut from = window.from;
         for _ in 0..self.backfill_pages {
             if remaining.is_some_and(|r| r <= RATE_RESERVE) {
@@ -307,13 +339,17 @@ impl Walk<'_> {
                 }
             }
             match resp.link.as_deref().and_then(next_link) {
-                Some(next) => url = next,
+                Some(link) => {
+                    url = link.clone();
+                    next = Some(link);
+                }
                 None => return Ok(None),
             }
         }
         Ok(Some(Window {
             from: from.min(window.to),
             to: window.to,
+            next,
         }))
     }
 }
@@ -579,7 +615,7 @@ mod tests {
         assert_eq!(f.items.len(), 4);
         assert_eq!(
             kv(&f, &backfill_key("ghsa")),
-            Some("2026-10-01T02:00:00Z..2026-10-10T00:00:00Z")
+            Some("2026-10-01T02:00:00Z..2026-10-10T00:00:00Z https://api.github.com/next")
         );
         assert_eq!(kv(&f, &cursor_key("ghsa")), None);
         assert!(f.remove.is_empty());
@@ -622,7 +658,7 @@ mod tests {
     fn backfill_keeps_rate_limit_reserve() {
         let window = Window::parse("2026-10-01T00:00:00Z..2026-10-10T00:00:00Z");
         let mut calls = 0;
-        let f = walk("2026-10-20T00:00:00Z", window)
+        let f = walk("2026-10-20T00:00:00Z", window.clone())
             .run(|_, first| {
                 calls += 1;
                 let mut r = if first {
@@ -642,7 +678,7 @@ mod tests {
         assert_eq!(calls, 2);
         assert_eq!(
             kv(&f, &backfill_key("ghsa")),
-            Some("2026-10-02T00:00:00Z..2026-10-10T00:00:00Z")
+            Some("2026-10-02T00:00:00Z..2026-10-10T00:00:00Z https://api.github.com/next")
         );
 
         let f = walk("2026-10-20T00:00:00Z", window)
@@ -655,6 +691,61 @@ mod tests {
         assert_eq!(
             kv(&f, &backfill_key("ghsa")),
             Some("2026-10-01T00:00:00Z..2026-10-10T00:00:00Z")
+        );
+    }
+
+    #[test]
+    fn backfill_continues_from_stored_page_link() {
+        // All advisories of the window share one timestamp: `from` cannot move, the page
+        // link does.
+        let window = Window::parse(
+            "2026-10-01T00:00:00Z..2026-10-10T00:00:00Z https://api.github.com/stored",
+        );
+        let mut urls = Vec::new();
+        let f = walk("2026-10-20T00:00:00Z", window)
+            .run(|url, first| {
+                urls.push(url.to_string());
+                Ok(if first {
+                    resp(304, String::new(), false)
+                } else {
+                    resp(200, page(&[t("2026-10-01T00:00:00Z")]), true)
+                })
+            })
+            .unwrap();
+        assert_eq!(urls[1], "https://api.github.com/stored");
+        assert_eq!(
+            kv(&f, &backfill_key("ghsa")),
+            Some("2026-10-01T00:00:00Z..2026-10-10T00:00:00Z https://api.github.com/next")
+        );
+    }
+
+    #[test]
+    fn failed_stored_page_link_falls_back_to_range() {
+        let window = Window::parse(
+            "2026-10-01T00:00:00Z..2026-10-10T00:00:00Z https://api.github.com/stored",
+        );
+        let f = walk("2026-10-20T00:00:00Z", window)
+            .run(|_, first| {
+                if first {
+                    Ok(resp(304, String::new(), false))
+                } else {
+                    anyhow::bail!("HTTP 422")
+                }
+            })
+            .unwrap();
+        assert_eq!(
+            kv(&f, &backfill_key("ghsa")),
+            Some("2026-10-01T00:00:00Z..2026-10-10T00:00:00Z")
+        );
+    }
+
+    #[test]
+    fn merge_drops_page_link() {
+        let old = Window::parse("2026-09-01T00:00:00Z..2026-09-05T00:00:00Z https://x").unwrap();
+        let new = Window::parse("2026-10-01T00:00:00Z..2026-10-02T00:00:00Z").unwrap();
+        assert_eq!(
+            old.merge(&new).encode(),
+            "2026-09-01T00:00:00Z..2026-10-02T00:00:00Z"
         );
     }
 
@@ -689,7 +780,7 @@ mod tests {
     #[test]
     fn backfill_url_replaces_order_and_range() {
         let window = Window::parse("2026-10-01T00:00:00Z..2026-10-10T00:00:00Z").unwrap();
-        let url = backfill_url(DEFAULT_URL, window).unwrap();
+        let url = backfill_url(DEFAULT_URL, &window).unwrap();
         assert_eq!(
             url,
             "https://api.github.com/advisories?type=reviewed&per_page=100&sort=updated\
