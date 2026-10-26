@@ -108,6 +108,7 @@ CVE が付かないまま多くの製品に「今すぐ更新」が必要にな�
 - 新しい CVE ID はキューに積み、`cvelist_max_records` 件ずつ処理します。同期の取りこぼしは経過時間（`GITHUB_TOKEN` 設定時はコミット履歴も）で検知し、約 30 日分の `deltaLog.json` から補完します。`deltaLog.json` を読めない場合は `delta.json` にフォールバックし、取りこぼした同期分の CVE が抜けている可能性を警告ログに出します。
 - USN は前回の位置までページを遡ります。
 - RSS は最新の数件しか配信されないため、長時間停止すると RSS の情報源では取りこぼすことがあります。`HEARTBEAT_URL` を設定すると、実行が止まったことに気づけます。
+- 取得に失敗し続けるソースは `alert_after_failures` 回連続で失敗した時点で通知します。取得は成功するのに新しい項目が `stale_after_hours`（`[[source]]` ごと。既定は `cvelist` 12、`ghsa` 72、`usn` 168、`kev` 720、`feed` / `advisory` 0 = 無効）時間届かないソースは「新しい項目がありません」と一度だけ通知し、新しい項目が届いたら「新しい項目が届きました」と通知します。API のフィールド名の変更やフィードの移転など、黙って壊れたソースに気づくためのものです。USN の `notices` と cvelist の delta の `new` は必須フィールドとして扱い、形式が変わったら空として読まずに取得失敗にします。
 
 ## セットアップ
 
@@ -226,7 +227,7 @@ dpkg のない環境では `installed.enabled = false` にしてください。
 
 ## 運用
 
-- **診断**: `sudo vuln-watch doctor` でインストール状態を項目ごとに ok / warn / FAIL で表示します。PATH 上で先に見つかる古い `vuln-watch`、新しいリリースの有無、パースできなくなった設定、`/etc/vuln-watch/env` の認証情報の不足や例のままの値、systemd が無視する行や使われない変数、パーミッション、unit ファイルと `daemon-reload` の要否、タイマーが有効か、直近の実行が成功したか、連続して失敗しているソース、未送信の緊急通知、中断された upgrade の残骸を確認します。Discord には何も送りません。FAIL があれば終了コード 1 で終わり、`--offline` でリリース確認を省きます。インストール後や upgrade 後に実行してください。
+- **診断**: `sudo vuln-watch doctor` でインストール状態を項目ごとに ok / warn / FAIL で表示します。PATH 上で先に見つかる古い `vuln-watch`、新しいリリースの有無、パースできなくなった設定、`/etc/vuln-watch/env` の認証情報の不足や例のままの値、systemd が無視する行や使われない変数、パーミッション、unit ファイルと `daemon-reload` の要否、タイマーが有効か、直近の実行が成功したか、連続して失敗しているソース、各ソースに最後に新しい項目が届いた時刻（`stale_after_hours` を超えていれば警告）、未送信の緊急通知、中断された upgrade の残骸を確認します。Discord には何も送りません。FAIL があれば終了コード 1 で終わり、`--offline` でリリース確認を省きます。インストール後や upgrade 後に実行してください。
 - **更新**: `sudo vuln-watch upgrade` で最新リリースを `install.sh` と同じ手順で入れ直します（`--check` は確認のみ、`--version 1.2.0` でバージョン指定、`--pre` でプレリリースも対象）。設定と状態はそのまま残ります。`config.example.toml` の変更は [CHANGELOG.md](CHANGELOG.md) で確認してください。ソースから入れた場合は `git pull && sudo ./deploy/install.sh`。
 - **サンドボックス**: ユニットは `DynamicUser`、`ProtectSystem=strict`、syscall フィルタを使います。プロセスができるのは外向き通信と状態ディレクトリへの書き込みだけです。
 - **アンインストール**:

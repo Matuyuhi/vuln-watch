@@ -5,6 +5,15 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 
 ## [Unreleased]
 
+### Added
+
+- Alert when a source keeps succeeding but returns nothing new for too long. Each `[[source]]` takes `stale_after_hours` (default: `cvelist` 12, `ghsa` 72, `usn` 168, `kev` 720, `feed` / `advisory` 0 = off). When it is exceeded, one "⚠️ ソース `name` から N時間、新しい項目がありません（取得は成功）" message is sent; the next new item sends "✅ ソース `name` に新しい項目が届きました。". The time of the last new item is kept in `lastnew:<name>` (set on bootstrap and whenever a fetch returns an unseen item; existing installs start counting at the first run after the upgrade, without an alert). Nothing is sent in `--dry-run`.
+- `vuln-watch doctor` shows when each source last returned something new and warns when it is over `stale_after_hours`.
+
+### Changed
+
+- The USN `notices` field and the cvelist delta `new` field are now required. If the format changes, the fetch fails and the usual source failure alert fires, instead of every page silently reading as empty.
+
 ### Fixed
 
 - GitHub advisories (`kind = "ghsa"`) are no longer skipped when a catch-up walk stops at its 20-page limit (2,000 advisories, e.g. after several days of downtime or a bulk update by GitHub). Previously the cursor moved to the newest advisory anyway, so those updated between the old position and the oldest one read were never read and only a log line remained. The unread range is now stored (`ghsa:<name>:backfill`, committed after the items are queued) and read on later runs in ascending `updated` order, up to 5 pages per run while more than 30 GitHub API requests remain in the rate-limit window, so normal polling keeps its quota without `GITHUB_TOKEN`; a second limit hit widens the range. Backfilled advisories go through the usual seen / rules / de-duplication path. `vuln-watch doctor` warns while a range is unread. Bootstrap and `--dry-run` still read one page and never store a range.

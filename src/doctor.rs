@@ -647,12 +647,13 @@ fn check_state(r: &mut Report, db_path: &Path, cfg: Option<&Config>, root: bool)
     }
     let summary = Db::open_read_only(db_path).and_then(|db| {
         let failing = db.kv_with_prefix("fail:")?;
+        let last_new = db.kv_with_prefix("lastnew:")?;
         let outbox = db.queue_len(Queue::Outbox)?;
         let digest = db.queue_len(Queue::Digest)?;
         let backfill = db.kv_with_prefix("ghsa:")?;
-        Ok((failing, outbox, digest, backfill))
+        Ok((failing, last_new, outbox, digest, backfill))
     });
-    let (failing, outbox, digest, backfill) = match summary {
+    let (failing, last_new, outbox, digest, backfill) = match summary {
         Ok(s) => s,
         Err(e) => return r.fail("state", format!("{e:#}"), None),
     };
@@ -670,6 +671,28 @@ fn check_state(r: &mut Report, db_path: &Path, cfg: Option<&Config>, root: bool)
             r.fail("source", detail, hint);
         } else {
             r.warn("source", detail, hint);
+        }
+    }
+    let now = chrono::Utc::now();
+    for (key, value) in last_new {
+        let name = key.trim_start_matches("lastnew:");
+        // Without a config every recorded source is listed, without a staleness limit.
+        let limit = match cfg {
+            Some(c) => match c.sources.iter().find(|s| s.enabled && s.name() == name) {
+                Some(s) => s.stale_after_hours(),
+                None => continue,
+            },
+            None => 0,
+        };
+        let (stale, detail) = freshness(name, &value, limit, now);
+        if stale {
+            r.warn(
+                "freshness",
+                detail,
+                Some("fetches succeed but return nothing new; check the source URL and sudo journalctl -u vuln-watch@run -n 100"),
+            );
+        } else {
+            r.ok("freshness", detail);
         }
     }
     for (key, window) in backfill {
@@ -694,6 +717,32 @@ fn check_state(r: &mut Report, db_path: &Path, cfg: Option<&Config>, root: bool)
             Some("check the Discord credentials, then sudo vuln-watch test-notify"),
         );
     }
+}
+
+/// Describe when a source last returned something new; true when it is over `limit`
+/// hours (0 = no limit).
+fn freshness(
+    name: &str,
+    last_new: &str,
+    limit: u64,
+    now: chrono::DateTime<chrono::Utc>,
+) -> (bool, String) {
+    let Ok(t) = chrono::DateTime::parse_from_rfc3339(last_new) else {
+        return (
+            false,
+            format!("source `{name}`: unreadable last-new time {last_new:?}"),
+        );
+    };
+    let hours = now.signed_duration_since(t).num_hours();
+    let mut detail = format!(
+        "source `{name}`: last new item {} ({hours} h ago)",
+        t.with_timezone(&chrono::Utc).format("%Y-%m-%d %H:%M UTC")
+    );
+    let stale = limit > 0 && hours >= 0 && hours as u64 >= limit;
+    if stale {
+        detail.push_str(&format!(", over stale_after_hours = {limit}"));
+    }
+    (stale, detail)
 }
 
 fn check_upgrade_leftovers(r: &mut Report) {
@@ -725,6 +774,27 @@ fn check_upgrade_leftovers(r: &mut Report) {
 mod tests {
     use super::*;
     use std::ffi::OsString;
+
+    #[test]
+    fn freshness_warns_only_over_the_limit() {
+        let now = chrono::DateTime::parse_from_rfc3339("2026-10-26T12:00:00Z")
+            .unwrap()
+            .with_timezone(&chrono::Utc);
+        let (stale, detail) = freshness("ghsa", "2026-10-26T00:00:00+00:00", 72, now);
+        assert!(!stale);
+        assert_eq!(
+            detail,
+            "source `ghsa`: last new item 2026-10-26 00:00 UTC (12 h ago)"
+        );
+        let (stale, detail) = freshness("ghsa", "2026-10-22T00:00:00+00:00", 72, now);
+        assert!(stale);
+        assert!(
+            detail.ends_with("(108 h ago), over stale_after_hours = 72"),
+            "{detail}"
+        );
+        assert!(!freshness("feed", "2020-01-01T00:00:00+00:00", 0, now).0);
+        assert!(!freshness("x", "garbage", 1, now).0);
+    }
 
     #[test]
     fn parses_env_file() {

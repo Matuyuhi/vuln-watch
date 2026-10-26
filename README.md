@@ -108,6 +108,7 @@ Some problems never get a CVE but still mean "update this now" for many products
 - New CVE ids are queued and processed in batches of `cvelist_max_records`. A missed sync (detected from elapsed time, or from commit history when `GITHUB_TOKEN` is set) is filled from `deltaLog.json`, which covers about 30 days. If that file cannot be read, the source falls back to `delta.json` and logs a warning that CVEs from the missed syncs may be skipped.
 - USN is paged back to the last seen notice.
 - Plain RSS feeds only expose their latest entries; long downtime can drop items from those feeds. Set `HEARTBEAT_URL` to be alerted when runs stop.
+- A source that fails is reported after `alert_after_failures` failures in a row. A source whose fetches succeed but return nothing new for `stale_after_hours` (per `[[source]]`; default `cvelist` 12, `ghsa` 72, `usn` 168, `kev` 720, `feed` / `advisory` 0 = off) is reported once with "新しい項目がありません", and again with "新しい項目が届きました" when new items arrive. This catches a source that breaks silently, such as an API field rename or a feed that moved. The USN `notices` field and the cvelist delta `new` field are required, so a format change there fails loudly instead of reading as empty.
 
 ## Setup
 
@@ -226,7 +227,7 @@ Set `installed.enabled = false` on machines without dpkg.
 
 ## Operations
 
-- **Diagnose**: `sudo vuln-watch doctor` checks the installation and prints ok / warn / FAIL per item: a stale `vuln-watch` earlier on PATH, a newer release, a config that no longer parses, missing or example credentials in `/etc/vuln-watch/env`, lines in it that systemd ignores or that vuln-watch does not read, and its permissions, unit files and `daemon-reload`, whether the timers are enabled and the last run succeeded, sources failing repeatedly, undelivered urgent messages, and leftovers of an interrupted upgrade. It sends nothing to Discord and exits with 1 when something fails; `--offline` skips the release check. Run it after installing or upgrading.
+- **Diagnose**: `sudo vuln-watch doctor` checks the installation and prints ok / warn / FAIL per item: a stale `vuln-watch` earlier on PATH, a newer release, a config that no longer parses, missing or example credentials in `/etc/vuln-watch/env`, lines in it that systemd ignores or that vuln-watch does not read, and its permissions, unit files and `daemon-reload`, whether the timers are enabled and the last run succeeded, sources failing repeatedly, when each source last returned something new (warning when it is over `stale_after_hours`), undelivered urgent messages, and leftovers of an interrupted upgrade. It sends nothing to Discord and exits with 1 when something fails; `--offline` skips the release check. Run it after installing or upgrading.
 - **Update**: `sudo vuln-watch upgrade` installs the latest release the same way as `install.sh` (`--check` only reports, `--version 1.2.0` picks a version, `--pre` includes pre-releases). Config and state are kept; check [CHANGELOG.md](CHANGELOG.md) for changes to `config.example.toml`. From source: `git pull && sudo ./deploy/install.sh`.
 - **Sandbox**: the unit uses `DynamicUser`, `ProtectSystem=strict` and a syscall filter; the process can only make outbound connections and write its state directory.
 - **Uninstall**:

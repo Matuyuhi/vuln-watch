@@ -136,6 +136,9 @@ packages = ["rustls"]
 # Sources
 #   kind  kev | ghsa | cvelist | usn | feed | advisory
 #   mode  filter (apply rules, default) | urgent | digest
+#   stale_after_hours  warn once when fetches succeed but nothing new arrives for this
+#         many hours; 0 = off. Default: cvelist 12, ghsa 72, usn 168, kev 720,
+#         feed / advisory 0.
 # Without any [[source]], kev, ghsa and cvelist are enabled.
 
 [[source]]
@@ -157,6 +160,8 @@ kind = "feed"
 name = "oss-security"
 url = "https://seclists.org/rss/oss-sec.rss"
 ignore_title_prefixes = ["Re:"]
+# Busy list: two days without posts means the feed is broken or moved.
+stale_after_hours = 48
 
 [[source]]
 kind = "feed"

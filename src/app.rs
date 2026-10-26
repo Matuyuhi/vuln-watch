@@ -165,7 +165,10 @@ fn locked_run(
         );
         renew_run_lock(db, &mut lock)?;
         match result {
-            Ok(()) => source_succeeded(db, notifier, &name, opts.dry_run)?,
+            Ok(got_new) => {
+                source_succeeded(db, notifier, &name, opts.dry_run)?;
+                check_stale(db, notifier, src, got_new, opts.dry_run, chrono::Utc::now())?;
+            }
             Err(e) => {
                 tracing::warn!("source {name} failed: {e:#}");
                 summary.failed_sources.push(name.clone());
@@ -283,7 +286,7 @@ fn process_source(
     src: &SourceConfig,
     installed: Option<&InstalledMatch>,
     summary: &mut RunSummary,
-) -> Result<()> {
+) -> Result<bool> {
     let bootstrap = !opts.dry_run && db.get_kv(&format!("init:{}", src.name()))?.is_none();
 
     let fetched = {
@@ -303,6 +306,7 @@ fn process_source(
 }
 
 /// Decide and enqueue the items of one fetch, then persist its commit pairs.
+/// Returns whether anything new arrived (always true on bootstrap).
 #[allow(clippy::too_many_arguments)]
 fn handle_fetched(
     cfg: &Config,
@@ -313,16 +317,19 @@ fn handle_fetched(
     opts: &RunOptions,
     installed: Option<&InstalledMatch>,
     summary: &mut RunSummary,
-) -> Result<()> {
+) -> Result<bool> {
     let name = src.name();
+    let last_new_key = format!("lastnew:{name}");
 
     if bootstrap {
         let n = db.mark_seen_many(&name, fetched.items.iter().map(|i| i.id.as_str()))?;
         commit(db, &fetched)?;
-        db.set_kv(&format!("init:{name}"), &chrono::Utc::now().to_rfc3339())?;
+        let now = chrono::Utc::now().to_rfc3339();
+        db.set_kv(&format!("init:{name}"), &now)?;
+        db.set_kv(&last_new_key, &now)?;
         tracing::info!("{name}: first run, recorded {n} existing items without notifying");
         summary.bootstrapped += n;
-        return Ok(());
+        return Ok(true);
     }
 
     let total = fetched.items.len();
@@ -367,8 +374,11 @@ fn handle_fetched(
         }
     }
     commit(db, &fetched)?;
+    if new > 0 {
+        db.set_kv(&last_new_key, &chrono::Utc::now().to_rfc3339())?;
+    }
     tracing::info!("{name}: {total} fetched, {new} new");
-    Ok(())
+    Ok(new > 0)
 }
 
 fn commit(db: &Db, fetched: &Fetched) -> Result<()> {
@@ -392,6 +402,64 @@ fn source_succeeded(db: &Db, notifier: &Notifier, name: &str, dry_run: bool) -> 
     }
     db.del_kv(&fail_key)?;
     db.del_kv(&alert_key)?;
+    Ok(())
+}
+
+/// After a successful fetch: warn once when a source has returned nothing new for longer
+/// than its `stale_after_hours` (e.g. an API field was renamed, a feed moved), and say so
+/// when new items arrive again. `lastnew:<name>` is written by `handle_fetched`.
+fn check_stale(
+    db: &Db,
+    notifier: &Notifier,
+    src: &SourceConfig,
+    got_new: bool,
+    dry_run: bool,
+    now: chrono::DateTime<chrono::Utc>,
+) -> Result<()> {
+    if dry_run {
+        return Ok(());
+    }
+    let name = src.name();
+    let last_new_key = format!("lastnew:{name}");
+    let alert_key = format!("stalealert:{name}");
+    let hours = src.stale_after_hours();
+    if hours == 0 {
+        // Turned off: drop an earlier alert without a recovery message.
+        db.del_kv(&alert_key)?;
+        return Ok(());
+    }
+    let parse = |v: &str| chrono::DateTime::parse_from_rfc3339(v).ok();
+    let last = db.get_kv(&last_new_key)?.as_deref().and_then(parse);
+    let Some(last) = last else {
+        // Installs from before this check have no time yet: start counting now.
+        db.set_kv(&last_new_key, &now.to_rfc3339())?;
+        return Ok(());
+    };
+    if let Some(alerted) = db.get_kv(&alert_key)? {
+        // A new item since the alert, in this run or in one whose recovery message
+        // failed to send (its items are seen by now, so `got_new` alone would miss it).
+        if got_new || parse(&alerted).is_some_and(|at| last > at) {
+            notifier.send(
+                db,
+                &Message::text(format!("✅ ソース `{name}` に新しい項目が届きました。")),
+            )?;
+            db.del_kv(&alert_key)?;
+        }
+        return Ok(());
+    }
+    if got_new {
+        return Ok(());
+    }
+    let elapsed = now.signed_duration_since(last).num_hours();
+    if elapsed >= 0 && elapsed as u64 >= hours && db.get_kv(&alert_key)?.is_none() {
+        notifier.send(
+            db,
+            &Message::text(format!(
+                "⚠️ ソース `{name}` から{elapsed}時間、新しい項目がありません（取得は成功）。URL や形式の変更を確認してください。"
+            )),
+        )?;
+        db.set_kv(&alert_key, &now.to_rfc3339())?;
+    }
     Ok(())
 }
 
@@ -908,6 +976,200 @@ kind = "ghsa"
         assert!(sent[1].content.contains("復旧"), "{}", sent[1].content);
         assert_eq!(db.get_kv("fail:kev").unwrap(), None);
         assert_eq!(db.get_kv("failalert:kev").unwrap(), None);
+    }
+
+    fn hours_before(now: chrono::DateTime<chrono::Utc>, h: i64) -> String {
+        (now - chrono::Duration::hours(h)).to_rfc3339()
+    }
+
+    fn hours_ago(h: i64) -> String {
+        (chrono::Utc::now() - chrono::Duration::hours(h)).to_rfc3339()
+    }
+
+    #[test]
+    fn new_items_and_bootstrap_record_lastnew() {
+        let cfg = cfg();
+        let mut db = Db::open_in_memory().unwrap();
+        let mut s = RunSummary::default();
+        let got = handle_fetched(
+            &cfg,
+            &mut db,
+            src(&cfg, "kev"),
+            fetched(vec![], "c0"),
+            true,
+            &opts(),
+            None,
+            &mut s,
+        )
+        .unwrap();
+        assert!(got, "bootstrap counts as new");
+        assert!(db.get_kv("lastnew:kev").unwrap().is_some());
+
+        let old = hours_ago(100);
+        db.set_kv("lastnew:kev", &old).unwrap();
+        let got = handle_fetched(
+            &cfg,
+            &mut db,
+            src(&cfg, "kev"),
+            fetched(vec![], "c1"),
+            false,
+            &opts(),
+            None,
+            &mut s,
+        )
+        .unwrap();
+        assert!(!got);
+        assert_eq!(db.get_kv("lastnew:kev").unwrap(), Some(old.clone()));
+
+        let got = handle_fetched(
+            &cfg,
+            &mut db,
+            src(&cfg, "kev"),
+            fetched(vec![digest_item("kev", "CVE-2026-0001")], "c2"),
+            false,
+            &opts(),
+            None,
+            &mut s,
+        )
+        .unwrap();
+        assert!(got);
+        assert_ne!(db.get_kv("lastnew:kev").unwrap(), Some(old.clone()));
+
+        // Already seen: not new, lastnew unchanged.
+        db.set_kv("lastnew:kev", &old).unwrap();
+        let got = handle_fetched(
+            &cfg,
+            &mut db,
+            src(&cfg, "kev"),
+            fetched(vec![digest_item("kev", "CVE-2026-0001")], "c3"),
+            false,
+            &opts(),
+            None,
+            &mut s,
+        )
+        .unwrap();
+        assert!(!got);
+        assert_eq!(db.get_kv("lastnew:kev").unwrap(), Some(old));
+    }
+
+    const STALE_CONFIG: &str = r#"
+[[source]]
+kind = "ghsa"
+stale_after_hours = 10
+
+[[source]]
+kind = "kev"
+stale_after_hours = 0
+"#;
+
+    #[test]
+    fn stale_source_alerts_once_and_recovers() {
+        let cfg = Config::parse(STALE_CONFIG).unwrap();
+        let http = Http::new(5).unwrap();
+        let notifier = recorder(&http, vec![]);
+        let db = Db::open_in_memory().unwrap();
+        let ghsa = src(&cfg, "ghsa");
+        let now = chrono::Utc::now();
+
+        db.set_kv("lastnew:ghsa", &hours_before(now, 9)).unwrap();
+        check_stale(&db, &notifier, ghsa, false, false, now).unwrap();
+        assert!(notifier.sent().is_empty(), "not stale yet");
+
+        db.set_kv("lastnew:ghsa", &hours_before(now, 11)).unwrap();
+        check_stale(&db, &notifier, ghsa, false, false, now).unwrap();
+        let sent = notifier.sent();
+        assert_eq!(sent.len(), 1);
+        assert!(
+            sent[0]
+                .content
+                .contains("`ghsa` から11時間、新しい項目がありません"),
+            "{}",
+            sent[0].content
+        );
+        assert!(db.get_kv("stalealert:ghsa").unwrap().is_some());
+
+        // Still stale on the next run: no second message.
+        check_stale(&db, &notifier, ghsa, false, false, now).unwrap();
+        assert_eq!(notifier.sent().len(), 1);
+
+        // A new item: one recovery message, alert cleared.
+        check_stale(&db, &notifier, ghsa, true, false, now).unwrap();
+        check_stale(&db, &notifier, ghsa, true, false, now).unwrap();
+        let sent = notifier.sent();
+        assert_eq!(sent.len(), 2);
+        assert!(
+            sent[1].content.contains("新しい項目が届きました"),
+            "{}",
+            sent[1].content
+        );
+        assert!(db.get_kv("stalealert:ghsa").unwrap().is_none());
+    }
+
+    #[test]
+    fn failed_recovery_message_is_retried_on_a_quiet_run() {
+        let cfg = Config::parse(STALE_CONFIG).unwrap();
+        let http = Http::new(5).unwrap();
+        let db = Db::open_in_memory().unwrap();
+        let ghsa = src(&cfg, "ghsa");
+        let now = chrono::Utc::now();
+        db.set_kv("lastnew:ghsa", &hours_before(now, 11)).unwrap();
+        let ok = recorder(&http, vec![]);
+        check_stale(&db, &ok, ghsa, false, false, now).unwrap();
+        assert_eq!(ok.sent().len(), 1);
+
+        // New items arrive an hour later, but the recovery message fails to send.
+        let later = now + chrono::Duration::hours(1);
+        db.set_kv("lastnew:ghsa", &later.to_rfc3339()).unwrap();
+        let failing = recorder(&http, vec![(0, Fail::Transient)]);
+        assert!(check_stale(&db, &failing, ghsa, true, false, later).is_err());
+        assert!(db.get_kv("stalealert:ghsa").unwrap().is_some());
+
+        // The next run has nothing new, but still sends the recovery message.
+        let ok = recorder(&http, vec![]);
+        check_stale(&db, &ok, ghsa, false, false, later).unwrap();
+        let sent = ok.sent();
+        assert_eq!(sent.len(), 1);
+        assert!(sent[0].content.contains("新しい項目が届きました"));
+        assert!(db.get_kv("stalealert:ghsa").unwrap().is_none());
+    }
+
+    #[test]
+    fn turning_the_check_off_clears_the_alert_without_a_message() {
+        let cfg = Config::parse(STALE_CONFIG).unwrap();
+        let http = Http::new(5).unwrap();
+        let notifier = recorder(&http, vec![]);
+        let db = Db::open_in_memory().unwrap();
+        let now = chrono::Utc::now();
+        db.set_kv("lastnew:kev", &now.to_rfc3339()).unwrap();
+        db.set_kv("stalealert:kev", &hours_before(now, 1)).unwrap();
+        check_stale(&db, &notifier, src(&cfg, "kev"), true, false, now).unwrap();
+        assert!(notifier.sent().is_empty());
+        assert!(db.get_kv("stalealert:kev").unwrap().is_none());
+    }
+
+    #[test]
+    fn stale_check_off_missing_key_or_dry_run_never_alerts() {
+        let cfg = Config::parse(STALE_CONFIG).unwrap();
+        let http = Http::new(5).unwrap();
+        let notifier = recorder(&http, vec![]);
+        let db = Db::open_in_memory().unwrap();
+        let now = chrono::Utc::now();
+
+        // stale_after_hours = 0
+        db.set_kv("lastnew:kev", &hours_ago(10_000)).unwrap();
+        check_stale(&db, &notifier, src(&cfg, "kev"), false, false, now).unwrap();
+        assert!(db.get_kv("stalealert:kev").unwrap().is_none());
+
+        // Dry run
+        db.set_kv("lastnew:ghsa", &hours_ago(100)).unwrap();
+        check_stale(&db, &notifier, src(&cfg, "ghsa"), false, true, now).unwrap();
+        assert!(db.get_kv("stalealert:ghsa").unwrap().is_none());
+
+        // First run after an upgrade: no key yet, so start counting instead of alerting.
+        db.del_kv("lastnew:ghsa").unwrap();
+        check_stale(&db, &notifier, src(&cfg, "ghsa"), false, false, now).unwrap();
+        assert_eq!(db.get_kv("lastnew:ghsa").unwrap(), Some(now.to_rfc3339()));
+        assert!(notifier.sent().is_empty());
     }
 
     fn config() -> Config {
