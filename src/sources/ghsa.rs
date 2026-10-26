@@ -720,6 +720,45 @@ mod tests {
     }
 
     #[test]
+    fn equal_timestamps_beyond_page_budget_do_not_stall_backfill() {
+        // Four full pages share one `updated_at`, the fifth holds a newer advisory.
+        let tie = t("2026-10-01T00:00:00Z");
+        let newer = t("2026-10-02T00:00:00Z");
+        let serve = |url: &str| {
+            let n: usize = url
+                .strip_prefix("https://api.github.com/p")
+                .map_or(0, |n| n.parse().unwrap());
+            let time = if n < 4 { tie } else { newer };
+            let mut r = resp(200, page(&[time]), n < 4);
+            r.link = r
+                .link
+                .map(|_| format!(r#"<https://api.github.com/p{}>; rel="next""#, n + 1));
+            r
+        };
+        let mut stored = Window::parse("2026-10-01T00:00:00Z..2026-10-10T00:00:00Z");
+        let mut read = Vec::new();
+        for _ in 0..3 {
+            let f = walk("2026-10-20T00:00:00Z", stored.clone())
+                .run(|url, first| {
+                    Ok(if first {
+                        resp(304, String::new(), false)
+                    } else {
+                        serve(url)
+                    })
+                })
+                .unwrap();
+            read.extend(f.items.iter().map(|i| i.id.clone()));
+            stored = kv(&f, &backfill_key("ghsa")).and_then(Window::parse);
+            if f.remove.contains(&backfill_key("ghsa")) {
+                break;
+            }
+        }
+        assert_eq!(read.len(), 5);
+        assert_eq!(read.last().unwrap(), "GHSA-2026-10-02T00:00:00Z");
+        assert_eq!(stored, None);
+    }
+
+    #[test]
     fn failed_stored_page_link_falls_back_to_range() {
         let window = Window::parse(
             "2026-10-01T00:00:00Z..2026-10-10T00:00:00Z https://api.github.com/stored",
