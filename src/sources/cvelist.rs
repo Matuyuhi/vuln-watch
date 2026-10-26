@@ -31,7 +31,7 @@ const MAX_RECORD_ATTEMPTS: i64 = 10;
 #[serde(rename_all = "camelCase")]
 pub struct Delta {
     pub fetch_time: String,
-    #[serde(default)]
+    // Required (present even when empty): a format change must fail, not read as "no CVEs".
     pub new: Vec<DeltaEntry>,
 }
 
@@ -448,6 +448,9 @@ mod tests {
             assert!(parse_deltas(body).is_err(), "accepted {body:?}");
         }
         assert!(parse_deltas("[{\"fetchTime\": 1}]").is_err());
+        // `new` is always present (also when empty); a missing field means the format changed.
+        assert!(parse_deltas(r#"{"fetchTime": "2026-10-24T06:00:00.000Z"}"#).is_err());
+        assert!(parse_deltas(r#"{"fetchTime": "2026-10-24T06:00:00.000Z", "new": []}"#).is_ok());
         assert_eq!(parse_deltas(" \n[]").unwrap().len(), 0);
     }
 

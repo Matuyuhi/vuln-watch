@@ -248,6 +248,10 @@ pub struct SourceConfig {
     /// `advisory` only: branch of the repository to read. Default: "advisories".
     #[serde(default)]
     pub branch: Option<String>,
+    /// Warn once when fetches succeed but nothing new arrived for this many hours.
+    /// 0 = off. Default depends on the kind (see `default_stale_after_hours`).
+    #[serde(default)]
+    pub stale_after_hours: Option<u64>,
 }
 
 impl SourceConfig {
@@ -255,6 +259,24 @@ impl SourceConfig {
         self.name
             .clone()
             .unwrap_or_else(|| self.kind.as_str().to_string())
+    }
+
+    /// 0 = staleness check off.
+    pub fn stale_after_hours(&self) -> u64 {
+        self.stale_after_hours
+            .unwrap_or_else(|| default_stale_after_hours(self.kind))
+    }
+}
+
+/// How long a source may go without new items before it looks broken. Feeds and
+/// advisories can be quiet for weeks, so they are off unless set.
+fn default_stale_after_hours(kind: SourceKind) -> u64 {
+    match kind {
+        SourceKind::Cvelist => 12,
+        SourceKind::Ghsa => 72,
+        SourceKind::Usn => 168,
+        SourceKind::Kev => 720,
+        SourceKind::Feed | SourceKind::Advisory => 0,
     }
 }
 
@@ -333,6 +355,7 @@ pub fn default_sources() -> Vec<SourceConfig> {
             ignore_title_prefixes: Vec::new(),
             release: None,
             branch: None,
+            stale_after_hours: None,
         })
         .collect()
 }
@@ -368,6 +391,26 @@ mod tests {
         let err =
             Config::parse("[[source]]\nkind = \"kev\"\n[[source]]\nkind = \"kev\"\n").unwrap_err();
         assert!(format!("{err:#}").contains("duplicate"));
+    }
+
+    #[test]
+    fn stale_after_hours_defaults_by_kind_and_can_be_off() {
+        let cfg = Config::parse(
+            "[[source]]\nkind = \"cvelist\"\n\
+             [[source]]\nkind = \"feed\"\nurl = \"https://example.com/rss\"\n\
+             [[source]]\nkind = \"kev\"\nstale_after_hours = 0\n\
+             [[source]]\nkind = \"usn\"\nstale_after_hours = 24\n",
+        )
+        .unwrap();
+        let hours: Vec<u64> = cfg.sources.iter().map(|s| s.stale_after_hours()).collect();
+        assert_eq!(hours, [12, 0, 0, 24]);
+        let defaults = Config::parse("").unwrap();
+        let hours: Vec<u64> = defaults
+            .sources
+            .iter()
+            .map(|s| s.stale_after_hours())
+            .collect();
+        assert_eq!(hours, [720, 72, 12]);
     }
 
     #[test]

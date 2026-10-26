@@ -21,7 +21,7 @@ const MAX_PAGES: usize = 25;
 
 #[derive(Deserialize)]
 struct Page {
-    #[serde(default)]
+    // Required: if the API renames the field, fail loudly instead of reading empty pages.
     notices: Vec<Notice>,
 }
 
@@ -249,6 +249,15 @@ mod tests {
         let (items, _) = parse("usn", SAMPLE, None).unwrap();
         assert_eq!(items[0].packages, vec!["zlib1g", "zlib1g-dev"]);
         assert!(items[0].fixed.is_empty());
+    }
+
+    #[test]
+    fn page_without_notices_field_is_an_error() {
+        assert!(parse("usn", r#"{"offset": 0, "limit": 20}"#, None).is_err());
+        assert!(parse("usn", r#"{"items": [{"id": "USN-1-1"}]}"#, None).is_err());
+        let (items, raw) = parse("usn", r#"{"notices": []}"#, None).unwrap();
+        assert!(items.is_empty());
+        assert_eq!(raw, 0);
     }
 
     #[test]

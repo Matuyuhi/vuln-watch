@@ -5,6 +5,15 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 
 ## [Unreleased]
 
+### Added
+
+- Alert when a source keeps succeeding but returns nothing new for too long. Each `[[source]]` takes `stale_after_hours` (default: `cvelist` 12, `ghsa` 72, `usn` 168, `kev` 720, `feed` / `advisory` 0 = off). When it is exceeded, one "⚠️ ソース `name` から N時間、新しい項目がありません（取得は成功）" message is sent; the next new item sends "✅ ソース `name` に新しい項目が届きました。". The time of the last new item is kept in `lastnew:<name>` (set on bootstrap and whenever a fetch returns an unseen item; existing installs start counting at the first run after the upgrade, without an alert). Nothing is sent in `--dry-run`.
+- `vuln-watch doctor` shows when each source last returned something new and warns when it is over `stale_after_hours`.
+
+### Changed
+
+- The USN `notices` field and the cvelist delta `new` field are now required. If the format changes, the fetch fails and the usual source failure alert fires, instead of every page silently reading as empty.
+
 ## [1.1.3] - 2026-10-25
 
 ### Changed
