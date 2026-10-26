@@ -223,7 +223,11 @@ pub fn fetch(name: &str, url: Option<&str>, branch: Option<&str>, ctx: &Ctx) -> 
         }
         commit.push((sha_key(name, &e.path), e.sha));
     }
-    Ok(Fetched { items, commit })
+    Ok(Fetched {
+        items,
+        commit,
+        ..Fetched::default()
+    })
 }
 
 fn to_date(d: &toml::value::Datetime) -> Result<NaiveDate> {

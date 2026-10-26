@@ -47,7 +47,11 @@ pub fn fetch(name: &str, url: Option<&str>, ctx: &Ctx) -> Result<Fetched> {
         return Ok(Fetched::empty());
     }
     let items = parse(name, &resp.body)?;
-    Ok(Fetched { items, commit })
+    Ok(Fetched {
+        items,
+        commit,
+        ..Fetched::default()
+    })
 }
 
 pub fn parse(source: &str, body: &str) -> Result<Vec<Item>> {

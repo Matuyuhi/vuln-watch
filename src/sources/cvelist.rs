@@ -215,6 +215,7 @@ pub fn fetch(name: &str, base_override: Option<&str>, ctx: &Ctx) -> Result<Fetch
         return Ok(Fetched {
             items: Vec::new(),
             commit,
+            ..Fetched::default()
         });
     }
 
@@ -259,7 +260,11 @@ pub fn fetch(name: &str, base_override: Option<&str>, ctx: &Ctx) -> Result<Fetch
             }
         }
     }
-    Ok(Fetched { items, commit })
+    Ok(Fetched {
+        items,
+        commit,
+        ..Fetched::default()
+    })
 }
 
 /// Fallback URL: cves/<year>/<bucket>xxx/CVE-<year>-<num>.json

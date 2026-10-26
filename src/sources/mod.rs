@@ -30,6 +30,8 @@ pub struct Fetched {
     pub items: Vec<Item>,
     /// kv pairs (cursors, ETags) to persist after the items have been handled.
     pub commit: Vec<(String, String)>,
+    /// kv keys to delete together with `commit`.
+    pub remove: Vec<String>,
 }
 
 impl Fetched {

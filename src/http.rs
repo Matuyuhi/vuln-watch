@@ -2,7 +2,7 @@ use std::time::Duration;
 
 use anyhow::{bail, Context, Result};
 use reqwest::blocking::{Client, RequestBuilder};
-use reqwest::header::{ETAG, IF_MODIFIED_SINCE, IF_NONE_MATCH, LAST_MODIFIED, LINK};
+use reqwest::header::{HeaderName, ETAG, IF_MODIFIED_SINCE, IF_NONE_MATCH, LAST_MODIFIED, LINK};
 
 use crate::db::Db;
 
@@ -26,6 +26,8 @@ pub struct Resp {
     pub last_modified: Option<String>,
     /// RFC 8288 Link header (pagination).
     pub link: Option<String>,
+    /// `X-RateLimit-Remaining` (GitHub API).
+    pub rate_remaining: Option<u32>,
 }
 
 impl Resp {
@@ -132,6 +134,8 @@ impl Http {
         let etag = header(ETAG);
         let last_modified = header(LAST_MODIFIED);
         let link = header(LINK);
+        let rate_remaining = header(HeaderName::from_static("x-ratelimit-remaining"))
+            .and_then(|v| v.trim().parse().ok());
         if status == 304 {
             return Ok(Resp {
                 status,
@@ -139,6 +143,7 @@ impl Http {
                 etag,
                 last_modified,
                 link,
+                rate_remaining,
             });
         }
         let body = read_capped(resp).with_context(|| format!("reading body of {url}"))?;
@@ -154,6 +159,7 @@ impl Http {
             etag,
             last_modified,
             link,
+            rate_remaining,
         })
     }
 }
