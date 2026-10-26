@@ -103,7 +103,11 @@ pub fn fetch(name: &str, url: Option<&str>, release: Option<&str>, ctx: &Ctx) ->
     if page > 0 {
         tracing::info!("{name}: walked {} pages to catch up", page + 1);
     }
-    Ok(Fetched { items, commit })
+    Ok(Fetched {
+        items,
+        commit,
+        ..Fetched::default()
+    })
 }
 
 /// Parse one page. Returns the items (hidden notices skipped) and the raw notice count.

@@ -308,7 +308,7 @@ fn handle_fetched(
     cfg: &Config,
     db: &mut Db,
     src: &SourceConfig,
-    fetched: Fetched,
+    mut fetched: Fetched,
     bootstrap: bool,
     opts: &RunOptions,
     installed: Option<&InstalledMatch>,
@@ -318,9 +318,7 @@ fn handle_fetched(
 
     if bootstrap {
         let n = db.mark_seen_many(&name, fetched.items.iter().map(|i| i.id.as_str()))?;
-        for (k, v) in &fetched.commit {
-            db.set_kv(k, v)?;
-        }
+        commit(db, &fetched)?;
         db.set_kv(&format!("init:{name}"), &chrono::Utc::now().to_rfc3339())?;
         tracing::info!("{name}: first run, recorded {n} existing items without notifying");
         summary.bootstrapped += n;
@@ -329,7 +327,7 @@ fn handle_fetched(
 
     let total = fetched.items.len();
     let mut new = 0;
-    for item in fetched.items {
+    for item in std::mem::take(&mut fetched.items) {
         if db.is_seen(&name, &item.id)? {
             continue;
         }
@@ -368,10 +366,18 @@ fn handle_fetched(
             }
         }
     }
+    commit(db, &fetched)?;
+    tracing::info!("{name}: {total} fetched, {new} new");
+    Ok(())
+}
+
+fn commit(db: &Db, fetched: &Fetched) -> Result<()> {
     for (k, v) in &fetched.commit {
         db.set_kv(k, v)?;
     }
-    tracing::info!("{name}: {total} fetched, {new} new");
+    for k in &fetched.remove {
+        db.del_kv(k)?;
+    }
     Ok(())
 }
 
@@ -592,6 +598,7 @@ kind = "ghsa"
         Fetched {
             items,
             commit: vec![("cursor:test".into(), cursor.into())],
+            ..Fetched::default()
         }
     }
 
@@ -666,6 +673,29 @@ kind = "ghsa"
         db.dequeue(Queue::Outbox, "CVE-2026-0001#kev").unwrap();
         db.del_kv("cursor:test").unwrap();
         assert!(db.set_kv("cursor:test", "c2").is_err());
+    }
+
+    #[test]
+    fn remove_deletes_keys_and_reread_item_is_not_queued_again() {
+        let cfg = cfg();
+        let mut db = Db::open_in_memory().unwrap();
+        let mut s = RunSummary::default();
+        handle(
+            &cfg,
+            &mut db,
+            "ghsa",
+            fetched(vec![kev_item("ghsa", "CVE-2026-0001")], "c1"),
+            &mut s,
+        );
+        db.dequeue(Queue::Outbox, "CVE-2026-0001#kev").unwrap();
+        db.set_kv("backfill:test", "w").unwrap();
+        // A backfill page returns the same advisory again and exhausts the window.
+        let mut f = fetched(vec![kev_item("ghsa", "CVE-2026-0001")], "c2");
+        f.remove.push("backfill:test".into());
+        handle(&cfg, &mut db, "ghsa", f, &mut s);
+        assert_eq!(db.queue_len(Queue::Outbox).unwrap(), 0);
+        assert_eq!(db.get_kv("backfill:test").unwrap(), None);
+        assert_eq!(db.get_kv("cursor:test").unwrap().as_deref(), Some("c2"));
     }
 
     #[test]
