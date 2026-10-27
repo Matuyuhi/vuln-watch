@@ -1,8 +1,8 @@
 id = "VWA-2026-1025-emudhra-ca"
-revision = 3
+revision = 4
 status = "active"
 published = 2026-10-25
-updated = 2026-10-26
+updated = 2026-10-27
 expires = 2026-11-24
 severity = "high"
 confidence = "confirmed"
@@ -14,15 +14,20 @@ Firefox は OneCRL で即日ブロックし、OneCRL を受け取れない環境
 Python は 10-20 の告知で、pip が同梱の certifi を常に読み込み無効化できないため、certifi 2026.10.19・pip 26.2.2・uv 0.13.4 など以降への即時更新と、キャッシュを使わないコンテナイメージの再ビルドを求めている。
 Electron は 44.9.1 / 43.8.1 / 42.11.16 に、侵害された eMudhra 中間証明書への対策（GHSA-jr5w-w6x2-84p9）を入れた。Electron 製アプリは同梱の Electron が更新されるまで守られない。
 Apple は 10-19 から中間 CA の証明書を、10-23 から emSign ECC Root CA - G3 を自動でブロックしているが、macOS の curl / git / python3 などの /etc/ssl/cert.pem を使うコマンドラインツールは今後の macOS アップデートまでこれらの証明書を受け入れ得るとしている。
+Java は独自の CA ストア（cacerts）を持つため、Oracle は 10-21 に影響する中間 CA を不信頼にする Java 更新（CVE-2026-91403）を、10-24 に影響するルート CA を削除する Java 更新（CVE-2026-114820）を出した。Node.js も同梱の CA 証明書を 22.23.4 / 24.22.1 / 26.12.1（10-21）で更新している。
+Chrome は CRLSet で中間 CA を即日ブロックしたうえで、emSign ECC Root CA - G3 を Chrome Root Store から削除し、全デバイスへの反映は 2026-10-27 朝（米太平洋時間）の予定としている。このルートにつながる正規の証明書も Chrome で使えなくなるため、該当するサイト運営者は直ちに別の CA の証明書に入れ替える必要がある。
 同時期に Go 1.27.3 / 1.26.10 が crypto/x509 で特定 CA の中間証明書を拒否する修正（CVE-2026-111943）を出しているが、Go の告知は CA 名を明記していない。
 eMudhra によれば失効した中間 CA から発行された証明書はなく、悪用は確認されていないが、Mozilla は失効情報を確実に確認しないクライアントに向けて、鍵の悪用は近いうちに起こり得ると警告している。"""
-cves = ["CVE-2026-113470", "CVE-2026-111943"]
+cves = ["CVE-2026-113470", "CVE-2026-111943", "CVE-2026-91403", "CVE-2026-114820"]
 actions = [
   "Ubuntu の ca-certificates と libnss3 を USN-8944-1 / USN-8947-1 の版以降に更新する",
   "Firefox / Thunderbird を 158.0.1（ESR は 153.5.1 / 115.43.1）以降に更新する",
   "Go を 1.27.3 / 1.26.10 以降に更新し、Go 製バイナリは再ビルドされた版に更新する",
   "Python 環境では certifi 2026.10.19・pip 26.2.2・uv 0.13.4・sigstore 4.5.1・conda 26.9.4・pixi 0.82.1 以降に更新し、既存の各 venv の pip / uv も更新する。コンテナイメージはレイヤーキャッシュを無効にして再ビルドする（Python）",
   "Electron 製アプリは Electron 44.9.1 / 43.8.1 / 42.11.16 以降を同梱した版に更新する。自作の Electron アプリは該当版に上げて再配布する",
+  "Oracle Java SE / GraalVM を最新の版に更新する。10-21 の更新（CVE-2026-91403）を適用済みでも、10-24 のルート CA 削除（CVE-2026-114820）を含む版まで上げる（Oracle）",
+  "Node.js を 22.23.4 / 24.22.1 / 26.12.1 以降に更新する。サポート終了した版は更新されないので、サポート中の版へ移行する",
+  "emSign ECC Root CA - G3 につながる TLS 証明書を使っているサイトは、Chrome Root Store に含まれる別の PKI の証明書を直ちに取得して入れ替える（Google）",
   "macOS でコマンドラインツール（curl、git、python3 など）を使う場合は、今後の macOS アップデートを適用する。待てない場合は Apple の手順に従い /etc/ssl/cert.pem から該当ルート CA を削除する（Apple）",
   "（独自提案）その他、独自の CA バンドルを同梱するソフトも、配布元の更新を確認する",
 ]
@@ -63,6 +68,15 @@ name = "Electron"
 keywords = ["electron"]
 packages = ["npm:electron"]
 fixed_versions = ["44.9.1", "43.8.1", "42.11.16"]
+
+[[affects]]
+name = "Oracle Java SE / GraalVM"
+keywords = ["java", "graalvm"]
+
+[[affects]]
+name = "Node.js"
+keywords = ["nodejs"]
+fixed_versions = ["22.23.4", "24.22.1", "26.12.1"]
 
 [[affects]]
 name = "Go (crypto/x509)"
@@ -122,3 +136,27 @@ url = "https://support.apple.com/en-us/149555"
 kind = "primary"
 title = "About the compromised eMudhra intermediate CAs (Apple Support, 2026-10-23)"
 quote = "On 23 October 2026, Apple also began blocking the emSign ECC Root CA - G3."
+
+[[references]]
+url = "https://www.oracle.com/security-alerts/alert-CVE-2026-91403.html"
+kind = "primary"
+title = "Oracle Security Alert Advisory - CVE-2026-91403 (2026-10-21)"
+quote = "This Security Alert addresses CVE-2026-91403 by providing Java updates which distrusts the set of impacted intermediate CA certificates related to eMudhra."
+
+[[references]]
+url = "https://www.oracle.com/security-alerts/alert-CVE-2026-114820.html"
+kind = "primary"
+title = "Oracle Security Alert Advisory - CVE-2026-114820 (2026-10-24)"
+quote = "This Security Alert addresses CVE-2026-114820 by providing Java updates which removes the set of impacted root CA certificates related to eMudhra."
+
+[[references]]
+url = "https://nodejs.org/en/blog/vulnerability/october-2026-security-releases"
+kind = "primary"
+title = "Wednesday, October 21, 2026 Security Releases (Node.js)"
+quote = "ca-cert (eMudhra intermediate CA compromise) on 26.x, 24.x, 22.x"
+
+[[references]]
+url = "https://blog.google/security/protecting-chrome-and-android-users-from-compromised-emudhra-intermediate-ca-certificates/"
+kind = "primary"
+title = "Protecting Chrome and Android users from compromised eMudhra intermediate CA certificates (Google, 2026-10-20)"
+quote = "This root removal is expected to be released for all devices relying on the Chrome Root Store Tuesday morning, October 27, 2026 PDT"
