@@ -18,6 +18,11 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 
 - GitHub advisories (`kind = "ghsa"`) are no longer skipped when a catch-up walk stops at its 20-page limit (2,000 advisories, e.g. after several days of downtime or a bulk update by GitHub). Previously the cursor moved to the newest advisory anyway, so those updated between the old position and the oldest one read were never read and only a log line remained. The unread range is now stored (`ghsa:<name>:backfill`, committed after the items are queued) and read on later runs in ascending `updated` order, up to 5 pages per run while more than 30 GitHub API requests remain in the rate-limit window, so normal polling keeps its quota without `GITHUB_TOKEN`; a second limit hit widens the range. Backfilled advisories go through the usual seen / rules / de-duplication path. `vuln-watch doctor` warns while a range is unread. Bootstrap and `--dry-run` still read one page and never store a range.
 
+### Security
+
+- `GITHUB_TOKEN` is now sent only to `https://api.github.com`. Previously `ghsa` and `advisory` sources added it to every request, so an `http://` or mirror `url`, a typo in the host, or a `rel="next"` link to another host sent the token in clear text or to a third party. Such requests now go without it and log one warning per run (`<source>: GITHUB_TOKEN not sent to <origin> (only https://api.github.com)`; the token is never logged). An `advisory` source pointed at a GitHub Enterprise API base no longer sends the token.
+- `check-config` (and every command that loads the config) now rejects a `url` that does not start with `https://` for `kev`, `ghsa`, `cvelist`, `usn` and `advisory` sources. `feed` sources may still use `http://`.
+
 ## [1.1.3] - 2026-10-25
 
 ### Changed

@@ -4,7 +4,7 @@ use anyhow::{Context, Result};
 use chrono::{DateTime, SecondsFormat, Utc};
 use serde::Deserialize;
 
-use super::{severity_to_score, Ctx, Fetched};
+use super::{severity_to_score, Ctx, Fetched, GithubAuth};
 use crate::http::{next_link, Resp, Validators};
 use crate::model::Item;
 use crate::text::{collapse_ws, truncate};
@@ -173,13 +173,12 @@ fn backfill_url(base: &str, window: &Window) -> Result<String> {
 
 pub fn fetch(name: &str, url: Option<&str>, ctx: &Ctx) -> Result<Fetched> {
     let first_url = url.unwrap_or(DEFAULT_URL);
-    let mut headers = vec![
+    let headers = [
         ("Accept", "application/vnd.github+json".to_string()),
         ("X-GitHub-Api-Version", "2022-11-28".to_string()),
     ];
-    if let Some(token) = &ctx.github_token {
-        headers.push(("Authorization", format!("Bearer {token}")));
-    }
+    // Per request: a `next` link may point anywhere the server likes.
+    let auth = GithubAuth::new(name, ctx.github_token.as_deref());
     let cursor = ctx
         .db
         .get_kv(&cursor_key(name))?
@@ -200,7 +199,10 @@ pub fn fetch(name: &str, url: Option<&str>, ctx: &Ctx) -> Result<Fetched> {
         one_page: ctx.bootstrap || ctx.limit.is_some(),
         backfill_pages: BACKFILL_PAGES,
     };
-    walk.run(|url, first| ctx.http.get(url, &headers, first.then_some(&validators)))
+    walk.run(|url, first| {
+        let headers = auth.headers(url, &headers);
+        ctx.http.get(url, &headers, first.then_some(&validators))
+    })
 }
 
 struct Walk<'a> {
@@ -557,6 +559,35 @@ mod tests {
             })
             .unwrap();
         (f, urls)
+    }
+
+    #[test]
+    fn next_link_to_another_host_gets_no_token() {
+        let auth = GithubAuth::new("ghsa", Some("secret"));
+        let mut sent = Vec::new();
+        let mut n = 0;
+        walk("2026-10-01T00:00:00Z", None)
+            .run(|url, _| {
+                let headers = auth.headers(url, &[]);
+                sent.push((
+                    url.to_string(),
+                    headers.iter().any(|(k, _)| *k == "Authorization"),
+                ));
+                n += 1;
+                let mut r = resp(200, page(&[t("2026-10-25T00:00:00Z")]), n == 1);
+                if n == 1 {
+                    r.link = Some(r#"<https://evil.example/advisories?page=2>; rel="next""#.into());
+                }
+                Ok(r)
+            })
+            .unwrap();
+        assert_eq!(
+            sent,
+            vec![
+                (DEFAULT_URL.to_string(), true),
+                ("https://evil.example/advisories?page=2".to_string(), false),
+            ]
+        );
     }
 
     #[test]

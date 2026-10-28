@@ -170,10 +170,10 @@ sudo ./deploy/install.sh
 | `DISCORD_BOT_TOKEN` | DM 送信に必須 |
 | `DISCORD_USER_ID` | 送信先。`discord.user_id` より優先 |
 | `DISCORD_WEBHOOK_URL` | Webhook 送信に必須 |
-| `GITHUB_TOKEN` | 推奨。権限なしの fine-grained token で十分です。API 制限が 60 → 5,000 回/時になり、CVE List を CDN ではなく API から読むため最大 5 分速くなります。 |
+| `GITHUB_TOKEN` | 推奨。権限なしの fine-grained token で十分です。API 制限が 60 → 5,000 回/時になり、CVE List を CDN ではなく API から読むため最大 5 分速くなります。`https://api.github.com` にだけ送ります。`ghsa` / `advisory` の `url`（や次ページのリンク）が別のホストのときはトークンなしで読み、実行ごとに 1 回警告します。 |
 | `HEARTBEAT_URL` | 任意。実行成功ごとに ping します（healthchecks.io など） |
 
-`/etc/vuln-watch/config.toml` でウォッチリストと情報源を調整します。ウォッチリストは `vuln-watch watch` でも編集できます（[使い方](#使い方)を参照）。
+`/etc/vuln-watch/config.toml` でウォッチリストと情報源を調整します。ウォッチリストは `vuln-watch watch` でも編集できます（[使い方](#使い方)を参照）。情報源の `url` は `https://` で始める必要があります（`http://` を使えるのは `kind = "feed"` だけです）。
 
 ### 4. 起動
 
