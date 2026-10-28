@@ -5,6 +5,8 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 
 ## [Unreleased]
 
+## [1.1.4] - 2026-10-28
+
 ### Added
 
 - Alert when a source keeps succeeding but returns nothing new for too long. Each `[[source]]` takes `stale_after_hours` (default: `cvelist` 12, `ghsa` 72, `usn` 168, `kev` 720, `feed` / `advisory` 0 = off). When it is exceeded, one "⚠️ ソース `name` から N時間、新しい項目がありません（取得は成功）" message is sent; the next new item sends "✅ ソース `name` に新しい項目が届きました。". The time of the last new item is kept in `lastnew:<name>` (set on bootstrap and whenever a fetch returns an unseen item; existing installs start counting at the first run after the upgrade, without an alert). Nothing is sent in `--dry-run`.
@@ -114,7 +116,8 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 - systemd units (`vuln-watch@.service`, run and digest timers) and `deploy/install.sh`.
 - Release archives for x86_64 and aarch64 Linux with SHA256 checksums and build provenance attestations.
 
-[Unreleased]: https://github.com/Matuyuhi/vuln-watch/compare/v1.1.3...HEAD
+[Unreleased]: https://github.com/Matuyuhi/vuln-watch/compare/v1.1.4...HEAD
+[1.1.4]: https://github.com/Matuyuhi/vuln-watch/compare/v1.1.3...v1.1.4
 [1.1.3]: https://github.com/Matuyuhi/vuln-watch/compare/v1.1.2...v1.1.3
 [1.1.2]: https://github.com/Matuyuhi/vuln-watch/compare/v1.1.1...v1.1.2
 [1.1.1]: https://github.com/Matuyuhi/vuln-watch/compare/v1.1.0...v1.1.1
