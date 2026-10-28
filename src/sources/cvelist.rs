@@ -12,7 +12,8 @@ use serde::Deserialize;
 use serde_json::Value;
 
 use super::{Ctx, Fetched};
-use crate::http::Validators;
+use crate::db::Queue;
+use crate::http::{StatusError, Validators};
 use crate::model::Item;
 use crate::text::{collapse_ws, truncate};
 
@@ -24,8 +25,10 @@ const KEY_LAST_OK: &str = "cvelist:last_ok_at";
 const COMMITS_URL: &str = "https://api.github.com/repos/CVEProject/cvelistV5/commits";
 /// delta.json is regenerated roughly every 7 minutes; older gaps need deltaLog.json.
 const MAX_GAP_MINUTES: i64 = 10;
-/// A record that keeps failing to download is dropped after this many runs.
+/// A record that keeps failing to download is given up after this many runs...
 const MAX_RECORD_ATTEMPTS: i64 = 10;
+/// ...and only once it has been queued this long, so a short outage only delays it.
+const MAX_RECORD_AGE_HOURS: i64 = 48;
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -239,7 +242,9 @@ pub fn fetch(name: &str, base_override: Option<&str>, ctx: &Ctx) -> Result<Fetch
     }
 
     let mut items = Vec::new();
+    let (mut tried, mut failed) = (0, 0);
     for row in ctx.db.pending(name, max)? {
+        tried += 1;
         let result = ctx.http.get(&row.data, &[], None).and_then(|resp| {
             serde_json::from_str::<Value>(&resp.body).context("parsing CVE record")
         });
@@ -251,20 +256,54 @@ pub fn fetch(name: &str, base_override: Option<&str>, ctx: &Ctx) -> Result<Fetch
             },
             Err(e) => {
                 tracing::warn!("{name}: fetching {} failed: {e:#}", row.id);
-                if row.attempts + 1 >= MAX_RECORD_ATTEMPTS {
-                    tracing::warn!("{name}: giving up on {}", row.id);
-                    ctx.db.remove_pending(name, &row.id)?;
+                let not_found = e
+                    .downcast_ref::<StatusError>()
+                    .is_some_and(|s| s.status == 404);
+                if !not_found {
+                    failed += 1;
+                }
+                let old = parse_time(&row.queued_at)
+                    .is_none_or(|t| now - t >= Duration::hours(MAX_RECORD_AGE_HOURS));
+                if row.attempts + 1 >= MAX_RECORD_ATTEMPTS && old {
+                    tracing::warn!("{name}: giving up on {}, listing it in the digest", row.id);
+                    give_up(name, &row.id, ctx)?;
                 } else {
                     ctx.db.bump_pending_attempt(name, &row.id)?;
                 }
             }
         }
     }
+    // Every download failed (and not because a record is missing): the record host is
+    // broken, so report the source as failing. The ids stay in `pending` and the delta
+    // cursor is saved here, since `fetch` returning Err skips the usual commit.
+    if tried > 0 && failed == tried {
+        for (k, v) in &commit {
+            ctx.db.set_kv(k, v)?;
+        }
+        bail!("all {tried} CVE record downloads failed");
+    }
     Ok(Fetched {
         items,
         commit,
         ..Fetched::default()
     })
+}
+
+/// Stop retrying a record and put a placeholder for it into the digest, so the CVE is
+/// never dropped without a message. Marked seen so it is not queued again.
+fn give_up(name: &str, cve: &str, ctx: &Ctx) -> Result<()> {
+    let mut item = Item::new(name, cve);
+    item.cve = Some(cve.to_string());
+    item.title =
+        "CVE レコードを取得できませんでした。内容は cve.org で確認してください".to_string();
+    item.url = format!("https://www.cve.org/CVERecord?id={cve}");
+    let reason = format!("レコード取得に失敗（{MAX_RECORD_AGE_HOURS}時間）");
+    // Own key, not the CVE id: this placeholder must not stand in for (or suppress) the
+    // real record arriving from another source.
+    ctx.db
+        .enqueue(Queue::Digest, &format!("{name}:{cve}"), &item, &reason)?;
+    ctx.db.mark_seen(name, cve)?;
+    ctx.db.remove_pending(name, cve)
 }
 
 /// Fallback URL: cves/<year>/<bucket>xxx/CVE-<year>-<num>.json
@@ -528,6 +567,140 @@ mod tests {
         assert!(commit.contains_key(&format!("etag:{base}/delta.json")));
         // The unusable deltaLog.json body must not be cached behind a 304.
         assert!(!commit.contains_key(&format!("etag:{base}/deltaLog.json")));
+    }
+
+    const OLD: &str = "2000-01-01T00:00:00+00:00";
+
+    /// Run `fetch` with nothing new in delta.json, working only through `pending`.
+    fn fetch_pending(base: &str, db: &Db) -> Result<Fetched> {
+        let cfg = crate::config::Config::parse("").unwrap();
+        let http = crate::http::Http::new(5).unwrap();
+        let ctx = Ctx {
+            http: &http,
+            db,
+            cfg: &cfg,
+            github_token: None,
+            bootstrap: false,
+            limit: None,
+            release: None,
+        };
+        fetch("cvelist", Some(base), &ctx)
+    }
+
+    fn record_server(extra: Vec<(&'static str, u16, String)>) -> String {
+        let delta = r#"{"fetchTime": "2026-10-24T06:00:00.000Z", "new": []}"#;
+        let mut routes = vec![("/delta.json", 200, delta.to_string())];
+        routes.extend(extra);
+        serve(routes)
+    }
+
+    fn record(id: &str) -> String {
+        format!(
+            r#"{{"cveMetadata": {{"cveId": "{id}", "state": "PUBLISHED"}}, "containers": {{"cna": {{"title": "t"}}}}}}"#
+        )
+    }
+
+    fn pending_db(base: &str, ids: &[&str]) -> Db {
+        let db = Db::open_in_memory().unwrap();
+        db.set_kv(KEY_CURSOR, "2026-10-24T06:00:00.000Z").unwrap();
+        db.set_kv(KEY_LAST_OK, &Utc::now().to_rfc3339()).unwrap();
+        for id in ids {
+            db.add_pending("cvelist", id, &format!("{base}/r/{id}.json"))
+                .unwrap();
+        }
+        db
+    }
+
+    #[test]
+    fn young_failing_record_is_kept_and_all_failing_run_errs() {
+        let base = record_server(vec![("/CVE-2026-1.json", 500, "boom".to_string())]);
+        let db = pending_db(&base, &["CVE-2026-1"]);
+        // Already failed many times, but only queued recently.
+        db.execute_batch("UPDATE pending SET attempts = 20")
+            .unwrap();
+        db.set_kv(KEY_CURSOR, "2026-10-01T00:00:00.000Z").unwrap();
+
+        let Err(err) = fetch_pending(&base, &db) else {
+            panic!("expected an error");
+        };
+        assert!(format!("{err:#}").contains("all 1 CVE record downloads failed"));
+        let rows = db.pending("cvelist", 10).unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].attempts, 21);
+        assert!(!db.is_seen("cvelist", "CVE-2026-1").unwrap());
+        assert_eq!(db.queue_len(Queue::Digest).unwrap(), 0);
+        // The delta cursor still moves, so the next run does not re-read the same delta.
+        assert_eq!(
+            db.get_kv(KEY_CURSOR).unwrap().as_deref(),
+            Some("2026-10-24T06:00:00.000Z")
+        );
+    }
+
+    #[test]
+    fn old_failing_record_goes_to_the_digest() {
+        let base = record_server(vec![
+            ("/CVE-2026-1.json", 500, "boom".to_string()),
+            ("/CVE-2026-2.json", 200, record("CVE-2026-2")),
+        ]);
+        let db = pending_db(&base, &["CVE-2026-1", "CVE-2026-2"]);
+        db.execute_batch(&format!(
+            "UPDATE pending SET attempts = {}, queued_at = '{OLD}' WHERE id = 'CVE-2026-1'",
+            MAX_RECORD_ATTEMPTS - 1
+        ))
+        .unwrap();
+
+        let fetched = fetch_pending(&base, &db).unwrap();
+        let ids: Vec<_> = fetched.items.iter().map(|i| i.id.as_str()).collect();
+        assert_eq!(ids, ["CVE-2026-2"]);
+        assert!(db.is_seen("cvelist", "CVE-2026-1").unwrap());
+        let pending: Vec<_> = db
+            .pending("cvelist", 10)
+            .unwrap()
+            .into_iter()
+            .map(|r| r.id)
+            .collect();
+        assert_eq!(pending, ["CVE-2026-2"]);
+        let digest = db.queue_entries(Queue::Digest).unwrap();
+        assert_eq!(digest.len(), 1);
+        assert_eq!(digest[0].key, "cvelist:CVE-2026-1");
+        assert_eq!(digest[0].item.cve.as_deref(), Some("CVE-2026-1"));
+        assert_eq!(
+            digest[0].item.url,
+            "https://www.cve.org/CVERecord?id=CVE-2026-1"
+        );
+        assert_eq!(digest[0].reason, "レコード取得に失敗（48時間）");
+    }
+
+    #[test]
+    fn old_record_with_few_attempts_is_retried() {
+        let base = record_server(vec![
+            ("/CVE-2026-1.json", 500, "boom".to_string()),
+            ("/CVE-2026-2.json", 200, record("CVE-2026-2")),
+        ]);
+        let db = pending_db(&base, &["CVE-2026-1", "CVE-2026-2"]);
+        db.execute_batch(&format!("UPDATE pending SET queued_at = '{OLD}'"))
+            .unwrap();
+
+        fetch_pending(&base, &db).unwrap();
+        let rows = db.pending("cvelist", 10).unwrap();
+        assert_eq!(rows[0].id, "CVE-2026-1");
+        assert_eq!(rows[0].attempts, 1);
+        assert_eq!(db.queue_len(Queue::Digest).unwrap(), 0);
+    }
+
+    #[test]
+    fn missing_records_do_not_fail_the_source() {
+        // One 404 among successes.
+        let base = record_server(vec![("/CVE-2026-2.json", 200, record("CVE-2026-2"))]);
+        let db = pending_db(&base, &["CVE-2026-1", "CVE-2026-2"]);
+        let fetched = fetch_pending(&base, &db).unwrap();
+        assert_eq!(fetched.items.len(), 1);
+        assert_eq!(db.pending("cvelist", 10).unwrap()[0].attempts, 1);
+
+        // Only 404s.
+        let base = record_server(Vec::new());
+        let db = pending_db(&base, &["CVE-2026-1"]);
+        assert!(fetch_pending(&base, &db).unwrap().items.is_empty());
     }
 
     #[test]

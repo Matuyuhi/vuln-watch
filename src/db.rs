@@ -79,6 +79,8 @@ pub struct PendingRow {
     pub id: String,
     pub data: String,
     pub attempts: i64,
+    /// RFC 3339 time the row was first queued.
+    pub queued_at: String,
 }
 
 fn now() -> String {
@@ -313,7 +315,7 @@ impl Db {
     /// Oldest pending rows first.
     pub fn pending(&self, source: &str, limit: usize) -> Result<Vec<PendingRow>> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, data, attempts FROM pending WHERE source = ?1
+            "SELECT id, data, attempts, queued_at FROM pending WHERE source = ?1
              ORDER BY queued_at, rowid LIMIT ?2",
         )?;
         let rows = stmt.query_map(params![source, limit as i64], |r| {
@@ -321,6 +323,7 @@ impl Db {
                 id: r.get(0)?,
                 data: r.get(1)?,
                 attempts: r.get(2)?,
+                queued_at: r.get(3)?,
             })
         })?;
         Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)

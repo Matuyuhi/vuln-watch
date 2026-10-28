@@ -30,6 +30,27 @@ pub struct Resp {
     pub rate_remaining: Option<u32>,
 }
 
+/// A response with a status other than 2xx / 304. Callers can tell e.g. a 404 apart with
+/// `err.downcast_ref::<StatusError>()`.
+#[derive(Debug)]
+pub struct StatusError {
+    pub url: String,
+    pub status: u16,
+    pub body: String,
+}
+
+impl std::fmt::Display for StatusError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "GET {} returned HTTP {}: {}",
+            self.url, self.status, self.body
+        )
+    }
+}
+
+impl std::error::Error for StatusError {}
+
 impl Resp {
     pub fn not_modified(&self) -> bool {
         self.status == 304
@@ -148,10 +169,12 @@ impl Http {
         }
         let body = read_capped(resp).with_context(|| format!("reading body of {url}"))?;
         if !(200..300).contains(&status) {
-            bail!(
-                "GET {url} returned HTTP {status}: {}",
-                crate::text::truncate(&body, 300)
-            );
+            return Err(StatusError {
+                url: url.to_string(),
+                status,
+                body: crate::text::truncate(&body, 300),
+            }
+            .into());
         }
         Ok(Resp {
             status,
