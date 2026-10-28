@@ -573,7 +573,11 @@ mod tests {
 
     /// Run `fetch` with nothing new in delta.json, working only through `pending`.
     fn fetch_pending(base: &str, db: &Db) -> Result<Fetched> {
-        let cfg = crate::config::Config::parse("").unwrap();
+        fetch_pending_with(base, db, "")
+    }
+
+    fn fetch_pending_with(base: &str, db: &Db, config: &str) -> Result<Fetched> {
+        let cfg = crate::config::Config::parse(config).unwrap();
         let http = crate::http::Http::new(5).unwrap();
         let ctx = Ctx {
             http: &http,
@@ -609,6 +613,14 @@ mod tests {
                 .unwrap();
         }
         db
+    }
+
+    fn attempts(db: &Db, id: &str) -> Option<i64> {
+        db.pending("cvelist", 10)
+            .unwrap()
+            .into_iter()
+            .find(|r| r.id == id)
+            .map(|r| r.attempts)
     }
 
     #[test]
@@ -682,10 +694,21 @@ mod tests {
             .unwrap();
 
         fetch_pending(&base, &db).unwrap();
-        let rows = db.pending("cvelist", 10).unwrap();
-        assert_eq!(rows[0].id, "CVE-2026-1");
-        assert_eq!(rows[0].attempts, 1);
+        assert_eq!(attempts(&db, "CVE-2026-1"), Some(1));
         assert_eq!(db.queue_len(Queue::Digest).unwrap(), 0);
+    }
+
+    #[test]
+    fn failing_records_do_not_hold_back_newer_ones() {
+        let base = record_server(vec![("/CVE-2026-2.json", 200, record("CVE-2026-2"))]);
+        // CVE-2026-1 is older but its record is missing; the batch has room for one.
+        let db = pending_db(&base, &["CVE-2026-1", "CVE-2026-2"]);
+        let one = "[runtime]\ncvelist_max_records = 1\n";
+        let first = fetch_pending_with(&base, &db, one).unwrap();
+        assert!(first.items.is_empty());
+        let second = fetch_pending_with(&base, &db, one).unwrap();
+        let ids: Vec<_> = second.items.iter().map(|i| i.id.as_str()).collect();
+        assert_eq!(ids, ["CVE-2026-2"]);
     }
 
     #[test]
@@ -695,7 +718,7 @@ mod tests {
         let db = pending_db(&base, &["CVE-2026-1", "CVE-2026-2"]);
         let fetched = fetch_pending(&base, &db).unwrap();
         assert_eq!(fetched.items.len(), 1);
-        assert_eq!(db.pending("cvelist", 10).unwrap()[0].attempts, 1);
+        assert_eq!(attempts(&db, "CVE-2026-1"), Some(1));
 
         // Only 404s.
         let base = record_server(Vec::new());
