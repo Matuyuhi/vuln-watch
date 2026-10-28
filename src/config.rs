@@ -328,6 +328,17 @@ impl Config {
             if s.kind == SourceKind::Feed && s.url.is_none() {
                 bail!("source `{name}` (kind = \"feed\") needs `url`");
             }
+            // Only feeds may be plain http: the other sources are HTTPS APIs, and ghsa /
+            // advisory would send GITHUB_TOKEN to the first request.
+            if let (false, Some(url)) = (s.kind == SourceKind::Feed, &s.url) {
+                if !url
+                    .trim_start()
+                    .to_ascii_lowercase()
+                    .starts_with("https://")
+                {
+                    bail!("source `{name}`: `url` must start with https:// (got {url})");
+                }
+            }
         }
         for w in &self.watches {
             if w.name.trim().is_empty() {
@@ -370,6 +381,20 @@ mod tests {
         assert_eq!(cfg.sources.len(), 3);
         assert!(cfg.rules.kev_urgent);
         assert_eq!(cfg.discord.mode, DeliveryMode::Dm);
+    }
+
+    #[test]
+    fn rejects_non_https_url_except_for_feed() {
+        for kind in ["ghsa", "advisory", "kev", "usn", "cvelist"] {
+            let text =
+                format!("[[source]]\nkind = \"{kind}\"\nurl = \"http://api.github.com/x\"\n");
+            let err = Config::parse(&text).unwrap_err().to_string();
+            assert!(err.contains("must start with https://"), "{kind}: {err}");
+            let text = text.replace("http://", "https://");
+            assert!(Config::parse(&text).is_ok(), "{kind}");
+        }
+        let feed = "[[source]]\nkind = \"feed\"\nurl = \"http://example.com/rss\"\n";
+        assert!(Config::parse(feed).is_ok());
     }
 
     #[test]

@@ -6,7 +6,7 @@ use anyhow::{bail, Context, Result};
 use chrono::NaiveDate;
 use serde::Deserialize;
 
-use super::{Ctx, Fetched};
+use super::{Ctx, Fetched, GithubAuth};
 use crate::http::Validators;
 use crate::model::{Confidence, Item};
 use crate::text::{collapse_ws, truncate};
@@ -130,7 +130,8 @@ struct Reference {
 
 /// API base and web base of a repository URL:
 /// `https://github.com/o/r` -> (`https://api.github.com/repos/o/r`, `https://github.com/o/r`).
-/// Any other URL is taken as the API base itself (GitHub Enterprise, tests).
+/// Any other URL is taken as the API base itself (GitHub Enterprise, tests); `GITHUB_TOKEN`
+/// is not sent there.
 fn repo_urls(url: &str) -> Result<(String, String)> {
     let url = url.trim_end_matches('/').trim_end_matches(".git");
     if let Some(rest) = url.strip_prefix("https://github.com/") {
@@ -155,15 +156,14 @@ fn sha_key(name: &str, path: &str) -> String {
 pub fn fetch(name: &str, url: Option<&str>, branch: Option<&str>, ctx: &Ctx) -> Result<Fetched> {
     let (api, web) = repo_urls(url.unwrap_or(DEFAULT_URL))?;
     let branch = branch.unwrap_or(DEFAULT_BRANCH);
-    let mut headers = vec![
+    let base = [
         ("Accept", "application/vnd.github+json".to_string()),
         ("X-GitHub-Api-Version", "2022-11-28".to_string()),
     ];
-    if let Some(token) = &ctx.github_token {
-        headers.push(("Authorization", format!("Bearer {token}")));
-    }
+    let auth = GithubAuth::new(name, ctx.github_token.as_deref());
 
     let tree_url = format!("{api}/git/trees/{branch}?recursive=1");
+    let headers = auth.headers(&tree_url, &base);
     // Validators are per source: the processed blob SHAs are, too.
     let validators_key = format!("{tree_url}#{name}");
     let validators = Validators::load(ctx.db, &validators_key)?;
@@ -199,14 +199,15 @@ pub fn fetch(name: &str, url: Option<&str>, branch: Option<&str>, ctx: &Ctx) -> 
         Vec::new()
     };
 
-    let mut raw_headers = headers.clone();
-    raw_headers[0].1 = "application/vnd.github.raw+json".to_string();
+    let mut raw_base = base.clone();
+    raw_base[0].1 = "application/vnd.github.raw+json".to_string();
     let today = chrono::Utc::now().date_naive();
     let mut items = Vec::new();
     for e in changed {
+        let blob_url = format!("{api}/git/blobs/{}", e.sha);
         let blob = ctx
             .http
-            .get(&format!("{api}/git/blobs/{}", e.sha), &raw_headers, None)?;
+            .get(&blob_url, &auth.headers(&blob_url, &raw_base), None)?;
         let html_url = format!("{web}/blob/{branch}/{}", e.path);
         // A broken file is skipped, not retried: fixing it changes its SHA.
         match parse(

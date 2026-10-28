@@ -170,10 +170,10 @@ sudo ./deploy/install.sh
 | `DISCORD_BOT_TOKEN` | required for DM delivery |
 | `DISCORD_USER_ID` | recipient; overrides `discord.user_id` |
 | `DISCORD_WEBHOOK_URL` | required for webhook delivery |
-| `GITHUB_TOKEN` | recommended; a fine-grained token with no permissions is enough. Raises the API limit from 60 to 5,000 requests/hour and reads the CVE List through the API instead of the CDN (up to 5 min faster). |
+| `GITHUB_TOKEN` | recommended; a fine-grained token with no permissions is enough. Raises the API limit from 60 to 5,000 requests/hour and reads the CVE List through the API instead of the CDN (up to 5 min faster). Only sent to `https://api.github.com`: a `ghsa` / `advisory` `url` (or a `next` page link) on another host is read without it, with one warning per run. |
 | `HEARTBEAT_URL` | optional; pinged after every successful run (e.g. healthchecks.io) |
 
-`/etc/vuln-watch/config.toml`: adjust the watch list and sources. The watch list can also be edited with `vuln-watch watch` (see [Usage](#usage)).
+`/etc/vuln-watch/config.toml`: adjust the watch list and sources. The watch list can also be edited with `vuln-watch watch` (see [Usage](#usage)). A source `url` must start with `https://` (only `kind = "feed"` may use `http://`).
 
 ### 4. Start
 
