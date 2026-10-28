@@ -79,6 +79,8 @@ pub struct PendingRow {
     pub id: String,
     pub data: String,
     pub attempts: i64,
+    /// RFC 3339 time the row was first queued.
+    pub queued_at: String,
 }
 
 fn now() -> String {
@@ -310,17 +312,19 @@ impl Db {
         Ok(())
     }
 
-    /// Oldest pending rows first.
+    /// Rows that failed least often first, then oldest first: rows that keep failing are
+    /// still retried when there is room, but never hold back newer ones.
     pub fn pending(&self, source: &str, limit: usize) -> Result<Vec<PendingRow>> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, data, attempts FROM pending WHERE source = ?1
-             ORDER BY queued_at, rowid LIMIT ?2",
+            "SELECT id, data, attempts, queued_at FROM pending WHERE source = ?1
+             ORDER BY attempts, queued_at, rowid LIMIT ?2",
         )?;
         let rows = stmt.query_map(params![source, limit as i64], |r| {
             Ok(PendingRow {
                 id: r.get(0)?,
                 data: r.get(1)?,
                 attempts: r.get(2)?,
+                queued_at: r.get(3)?,
             })
         })?;
         Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
@@ -476,7 +480,10 @@ mod tests {
         assert_eq!(rows[0].id, "CVE-1");
         assert_eq!(rows[0].data, "l1");
         db.bump_pending_attempt("cvelist", "CVE-1").unwrap();
-        assert_eq!(db.pending("cvelist", 5).unwrap()[0].attempts, 1);
+        // A row that failed goes behind the ones that did not.
+        let rows = db.pending("cvelist", 5).unwrap();
+        assert_eq!(rows[0].id, "CVE-2");
+        assert_eq!(rows[1].attempts, 1);
         db.mark_seen("cvelist", "CVE-1").unwrap();
         assert_eq!(db.prune_pending_seen("cvelist").unwrap(), 1);
         db.remove_pending("cvelist", "CVE-2").unwrap();
