@@ -1,7 +1,8 @@
 id = "VWA-2026-1028-brotli"
-revision = 1
+revision = 2
 status = "active"
 published = 2026-10-28
+updated = 2026-10-29
 expires = 2026-11-27
 severity = "high"
 confidence = "confirmed"
@@ -9,6 +10,8 @@ title = "Google Brotli デコーダの境界外書き込み（CVE-2026-111497、
 summary = """
 Google Brotli 1.0.3〜1.2.0 のデコーダに、細工した Brotli 圧縮データを展開させるだけで内部バッファの外に書き込める欠陥（CVE-2026-111497）があり、メモリ漏えい・サービス停止・任意コード実行につながり得る。修正版は Brotli 1.0.10 / 1.1.1 / 1.2.1。
 Node.js は 10-21 に同梱の Brotli を直した 26.12.1 / 24.22.1 / 22.23.4 を出しており（node:zlib や fetch() での展開が対象）、PHP は 10-26 に Brotli 1.2.1 を入れた Windows 版ビルド（8.5.12-1 など）を出した。
+Microsoft は 10-25 に .NET 8 / 9 / 10 の帯域外更新（8.0.33 / 9.0.22 / 10.0.14、.NET 11 は RC3）を出し、ASP.NET Core のリクエスト展開、HttpClient の自動展開、System.IO.Compression の Brotli API で Brotli データを扱うアプリが影響を受けるとした（.NET Framework は影響なし）。自己完結型アプリとコンテナはホストのランタイム更新では直らず、再ビルドが必要。
+Python では PyPI の Brotli 1.2.1 と brotlicffi 1.2.1.0 が修正版で、brotlicffi が入っていると urllib3 / requests・httpx・aiohttp などが Brotli 応答を自動で展開する。
 Red Hat は影響を受けるものとして Firefox / Thunderbird、Node.js、br エンコーディングを使う Web サーバーなど、Brotli ライブラリにリンクして外部データを扱うあらゆるサービスを挙げ、.NET 8.0 も Brotli を同梱しているとしている。Ubuntu は brotli / libbrotli1 / python3-brotli を USN-8956-1（10-26）で更新した。
 CISA は 10-27 に KEV（悪用が確認された脆弱性のカタログ）に追加し、対応期限を 11-10 としている。報道では公開 PoC を使った攻撃通信が観測されている。
 システムの libbrotli を更新しても、Brotli を自前で同梱するランタイム・アプリ・コンテナイメージはそれぞれの更新が必要になる。"""
@@ -17,6 +20,8 @@ actions = [
   "Ubuntu の brotli / libbrotli1 / python3-brotli を USN-8956-1 の版以降に更新し、libbrotli を使うサービスを再起動する",
   "Node.js を 26.12.1 / 24.22.1 / 22.23.4 以降に更新する（Node.js）。サポート終了した版は修正されないので、サポート中の版へ移行する",
   "Brotli を直接または同梱で使うソフトは Brotli 1.0.10 / 1.1.1 / 1.2.1 以降を含む版に更新する",
+  ".NET を 8.0.33 / 9.0.22 / 10.0.14（.NET 11 は RC3）に更新し、自己完結型アプリは再ビルド・再発行し、コンテナは更新済みイメージで再ビルド・再デプロイする（Microsoft）",
+  "Python 環境では Brotli を 1.2.1、brotlicffi を 1.2.1.0 以降に更新する",
   "Windows 版 PHP は 8.5.12-1 / 8.4.27-1 / 8.3.36-1 / 8.2.35-1 のビルドに入れ替える（PHP）",
   "更新までは、信頼できない相手からの Brotli データ（Content-Encoding: br など）を受け入れたり自動展開したりしないようにし、そうしたサービスへのネットワーク到達を絞る（Red Hat）",
   "Node.js アプリでは、更新まで信頼できないデータに zlib.brotliDecompress() / zlib.createBrotliDecompress() を使わない（Red Hat）",
@@ -51,6 +56,17 @@ deb = [
 name = "Node.js"
 keywords = ["nodejs"]
 fixed_versions = ["26.12.1", "24.22.1", "22.23.4"]
+
+[[affects]]
+name = "Python brotlicffi"
+keywords = ["brotlicffi"]
+packages = ["pypi:brotlicffi"]
+fixed_versions = ["1.2.1.0"]
+
+[[affects]]
+name = ".NET"
+keywords = ["dotnet", ".net"]
+fixed_versions = ["8.0.33", "9.0.22", "10.0.14"]
 
 [[affects]]
 name = "PHP (Windows builds)"
@@ -98,6 +114,24 @@ url = "https://www.php.net/"
 kind = "primary"
 title = "PHP: Updated PHP Windows builds for Brotli security fix (2026-10-26)"
 quote = "These builds include Brotli 1.2.1, which fixes CVE-2026-111497 , an out-of-bounds write vulnerability in Brotli decompression."
+
+[[references]]
+url = "https://devblogs.microsoft.com/dotnet/dotnet-october-2026-oob-security-updates/"
+kind = "primary"
+title = ".NET October 2026 Out-of-Band Security Updates (Microsoft .NET Blog, 2026-10-25)"
+quote = "Self-contained applications: Rebuild and republish with the updated runtime."
+
+[[references]]
+url = "https://api.osv.dev/v1/vulns/PYSEC-2026-4323"
+kind = "primary"
+title = "PYSEC-2026-4323: brotlicffi（PyPA Advisory Database / OSV、修正版 1.2.1.0）"
+quote = "`brotlicffi` installed, common HTTP clients decode Brotli responses automatically"
+
+[[references]]
+url = "https://api.osv.dev/v1/vulns/GHSA-9v8h-qqgm-4m35"
+kind = "primary"
+title = "GHSA-9v8h-qqgm-4m35: Out-of-bounds write in the Brotli decoder (PyPI brotli < 1.2.1 / brotlicffi < 1.2.1.0, OSV 経由)"
+quote = "Users need to update any Brotli libraries or binaries between 1.0.3 through 1.2.0 to the latest available version: 1.0.10 or 1.1.1 or 1.2.1."
 
 [[references]]
 url = "https://www.helpnetsecurity.com/2026/10/27/node2shell-broccoli2shell-vulnerability-cve-2026-111497/"
