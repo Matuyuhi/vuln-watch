@@ -1,0 +1,30 @@
+id = "VWA-2026-1030-drupal-commerce"
+revision = 1
+status = "active"
+published = 2026-10-30
+expires = 2026-11-29
+severity = "high"
+confidence = "confirmed"
+title = "Drupal の EC モジュール Commerce Core のアクセス制御回避（CVE-2026-118539）が悪用中、3.3.13 / 8.x-2.41 へ更新が必要"
+summary = """
+2026-10-28、Drupal セキュリティチームが Commerce Core（commerce）モジュールの SA-CONTRIB-2026-254 を公開した。リスクは Highly critical（21/25）。
+一部のルートとエンティティのフィールドが十分に保護されておらず、アクセス制御を回避して販売者に金銭的な影響を与えうる。勧告には、すでに実際の攻撃で悪用されていると明記されている。
+影響するのは 2.41 未満と 3.0.0 以上 3.3.13 未満。Drupal で EC サイトを運営している場合は、すぐに更新し、注文データに不整合がないか確認する必要がある。
+2026-10-30 時点で CISA KEV と GitHub Advisory Database には載っていない（OSV には DRUPAL-CONTRIB-2026-254 として登録済み）。"""
+cves = ["CVE-2026-118539"]
+actions = [
+  "3.x を使っている場合は Commerce Core 3.3.13 に、それより前の版を使っている場合は Commerce Core 8.x-2.41 に更新する",
+  "悪用が確認されているため、注文データに不整合がないか確認する",
+]
+
+[[affects]]
+name = "Drupal Commerce Core"
+keywords = ["drupal commerce", "commerce core"]
+packages = ["composer:drupal/commerce"]
+fixed_versions = ["3.3.13", "8.x-2.41"]
+
+[[references]]
+url = "https://www.drupal.org/sa-contrib-2026-254"
+kind = "primary"
+title = "Commerce Core - Highly critical - Access bypass - SA-CONTRIB-2026-254"
+quote = "This vulnerability is being actively exploited in the wild."
