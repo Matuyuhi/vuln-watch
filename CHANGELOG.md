@@ -9,6 +9,10 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 
 - When several `[[watch]]` entries match the same item, the result no longer depends on their order. Previously the first entry with a strong match decided, so an earlier `urgent = false` entry (e.g. Chrome with keyword `chromium`) sent an item to the digest even when a later `urgent = true` entry matched it by exact package name (e.g. Electron). Entries added by `vuln-watch watch add` go to the end of the list, so this was easy to hit. The match is now chosen by rank: a strong match from an `urgent = true` entry, then a strong match from an `urgent = false` entry, then a description-only match; config order only breaks ties within a rank. Claude advisories use the same rule; for them, a description-only match from an `urgent = true` entry no longer wins over a strong match from an `urgent = false` entry. `watch_urgent_cvss` still applies to the chosen urgent match.
 
+### Security
+
+- Minor revisions
+
 ## [1.1.4] - 2026-10-28
 
 ### Added

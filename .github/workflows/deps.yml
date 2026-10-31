@@ -28,6 +28,8 @@ jobs:
           - bans licenses sources
     steps:
       - uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
       - uses: EmbarkStudios/cargo-deny-action@v2.1.1
         with:
           command: check ${{ matrix.checks }}
