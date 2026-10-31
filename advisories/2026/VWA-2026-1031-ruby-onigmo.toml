@@ -1,0 +1,65 @@
+id = "VWA-2026-1031-ruby-onigmo"
+revision = 1
+status = "active"
+published = 2026-10-31
+expires = 2026-11-30
+severity = "high"
+confidence = "confirmed"
+title = "Ruby の正規表現エンジン Onigmo のメモリ破壊（GitLab の CVE-2026-97229 ほか 4 件の原因）、GitLab の悪用で KEV 入り、Ruby 4.0.9 / 3.4.12 / 3.3.13 へ更新が必要"
+summary = """
+GitLab が利用者の正規表現（CI 設定など）を Regexp.new でコンパイルする際、細工したパターンで Ruby の正規表現エンジン Onigmo のメモリが破壊され、GitLab サーバーで任意コード実行に至る問題が見つかった。GitLab は CVE-2026-89078 / 93577 / 97229 / 110264 を採番し、CVE-2026-97229 は 2026-10-29 に CISA KEV に追加された。
+根本原因は Ruby 本体にあり、2026-10-23 に Ruby 4.0.9 / 3.4.12 / 3.3.13 で修正された。Ruby 側は CVE を採番していないため、Ruby 単体の脆弱性としてはスキャナに出てこない可能性がある。
+攻撃者が制御する文字列から正規表現をコンパイルする（Regexp.new / Regexp.union / /#{input}/ など）Ruby アプリはすべて影響を受け、Regexp.timeout やパターン長の制限では防げない。
+Alpine Linux は、自前の Ruby で GitLab を動かしていたため GitLab を更新しても塞がらず、攻撃を受けたと報告している。"""
+cves = ["CVE-2026-89078", "CVE-2026-93577", "CVE-2026-97229", "CVE-2026-110264"]
+actions = [
+  "Ruby を 4.0.9 / 3.4.12 / 3.3.13 以降に更新する",
+  "更新できない場合は、信頼できない入力から正規表現をコンパイルしない",
+  "GitLab（セルフマネージド）は 19.5.1 / 19.4.3 / 19.3.6 / 19.2.9 / 19.1.9 / 19.0.10 / 18.11.13 以降に更新する。ソースビルドや独自コンテナなど自前の Ruby を使う場合は Ruby 自体も更新する",
+  "（独自提案）Ruby を同梱するアプリやコンテナイメージ（Ruby 製の Web アプリ、CI ランナー等）も、同梱 Ruby の版を確認して再ビルドする",
+]
+
+[[affects]]
+name = "Ruby"
+keywords = ["ruby", "onigmo"]
+fixed_versions = ["4.0.9", "3.4.12", "3.3.13"]
+
+[[affects]]
+name = "GitLab CE/EE"
+keywords = ["gitlab"]
+fixed_versions = ["19.5.1", "19.4.3", "19.3.6", "19.2.9", "19.1.9", "19.0.10", "18.11.13"]
+
+[[references]]
+url = "https://www.ruby-lang.org/en/news/2026/10/23/regexp-fixes-for-gitlab-cves/"
+kind = "primary"
+title = "Regexp compilation fixes related to GitLab's CVE-2026-89078, CVE-2026-93577, CVE-2026-97229 and CVE-2026-110264 (ruby-lang.org, 2026-10-23)"
+quote = "We recommend upgrading to Ruby 4.0.9, 3.4.12 or 3.3.13 or later."
+
+[[references]]
+url = "https://docs.gitlab.com/releases/patches/patch-release-gitlab-19-5-1-released/"
+kind = "primary"
+title = "GitLab Critical Patch Release: 19.5.1, 19.4.3, 19.3.6, 19.2.9, 19.1.9, 19.0.10, 18.11.13（CVE-2026-110264）"
+quote = "we strongly recommend that all self-managed GitLab installations be upgraded to one of these versions immediately"
+
+[[references]]
+url = "https://docs.gitlab.com/releases/patches/patch-release-gitlab-19-4-2-released/"
+kind = "primary"
+title = "GitLab Patch Release 19.4.2（CVE-2026-97229）"
+quote = "CVE-2026-97229 - Integer Overflow issue in CI/CD Regular Expression Compiler impacts GitLab CE/EE"
+
+[[references]]
+url = "https://www.cisa.gov/sites/default/files/feeds/known_exploited_vulnerabilities.json"
+kind = "primary"
+title = "CISA Known Exploited Vulnerabilities Catalog（JSON、CVE-2026-97229 は dateAdded 2026-10-29・dueDate 2026-11-01）"
+quote = "CVE-2026-97229"
+
+[[references]]
+url = "https://alpinelinux.org/posts/GitLab-security-incident-CVE-2026-97229.html"
+kind = "primary"
+title = "Alpine Linux: GitLab security incident (CVE-2026-97229)（2026-10-28、10-30 更新）"
+quote = "The underlying bug is in Onigmo, the regular expression engine built into Ruby."
+
+[[references]]
+url = "https://www.securityweek.com/max-severity-gitlab-vulnerability-exploited-against-alpine-linux/"
+kind = "secondary"
+title = "Max-Severity GitLab Vulnerability Exploited Against Alpine Linux (SecurityWeek)"
