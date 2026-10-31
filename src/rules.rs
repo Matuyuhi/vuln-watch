@@ -476,7 +476,10 @@ mod tests {
         let mut i = item("Heap buffer overflow in Chromium", Some(8.8));
         i.summary = "Electron apps bundle Chromium.".into();
         let r = Rules::default();
-        let w = chrome_and_electron();
+        let mut w = chrome_and_electron();
+        // Without a keyword, a watch with packages never matches the description.
+        w[1].keywords = vec!["electron".into()];
+        assert!(!match_watch(&i, &w[1..]).unwrap().strong);
         for w in [w.clone(), w.into_iter().rev().collect()] {
             let d = evaluate(&i, SourceMode::Filter, &r, &w);
             assert_eq!(d.level, Level::Digest);
