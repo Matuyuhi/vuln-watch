@@ -1,0 +1,34 @@
+id = "VWA-2026-1031-wordpress-7-1-4"
+revision = 1
+status = "active"
+published = 2026-10-31
+expires = 2026-11-30
+severity = "high"
+confidence = "likely"
+title = "WordPress 本体の更新処理に RCE の弱点、7.1.4 で修正され公開直後から攻撃の試行が報告、すぐに更新が必要"
+summary = """
+2026-10-28、WordPress 7.1.4 がセキュリティリリースとして公開された。修正には、アップグレード処理中にリモートコード実行につながりうる弱点が含まれ、WordPress は直ちに更新するよう推奨している。修正はセキュリティ修正の対象となる 4.7 までの全ブランチにバックポートされている。
+SecurityWeek（Wordfence の観測を引用）によると、パッチ公開から数時間で攻撃の試行が始まったが、成功した侵害はまだ報告されていない（攻撃の観測は二次情報のみのため確度は likely）。
+2026-10-31 時点で CVE は採番されておらず、CISA KEV や GitHub Advisory Database 経由では検知できない。
+7.1.4 には eMudhra の失効に伴う同梱ルート証明書の更新も含まれる。"""
+cves = []
+actions = [
+  "WordPress を 7.1.4 に更新する（旧ブランチは各ブランチの最新セキュリティリリースに更新する）",
+  "（独自提案）自動バックグラウンド更新が有効か確認し、無効なサイトは手動で更新する",
+]
+
+[[affects]]
+name = "WordPress"
+keywords = ["wordpress"]
+fixed_versions = ["7.1.4"]
+
+[[references]]
+url = "https://wordpress.org/news/2026/10/wordpress-7-1-4/"
+kind = "primary"
+title = "WordPress 7.1.4（2026-10-28）"
+quote = "Because this is a security release, it is recommended that you update your sites immediately."
+
+[[references]]
+url = "https://www.securityweek.com/fresh-wordpress-vulnerability-in-attackers-crosshairs/"
+kind = "secondary"
+title = "Fresh WordPress Vulnerability in Attackers' Crosshairs (SecurityWeek, 2026-10-30)"
