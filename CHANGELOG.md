@@ -9,6 +9,10 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 
 - `rust-version` in `Cargo.toml` is now `1.89`, the oldest Rust that builds the locked dependencies (`uuid` 1.29 needs 1.89; `sha2` 0.11 needs 1.88). It said `1.82`, so a source install with Rust 1.82–1.88 failed in `cargo build --locked` without warning. CI has a new `msrv` job that runs `cargo check --locked --all-targets` with the version read from `Cargo.toml`, so a dependency bump that needs a newer Rust fails CI. The README states the minimum for source builds.
 
+### Security
+
+- Minor revisions
+
 ## [1.1.4] - 2026-10-28
 
 ### Added

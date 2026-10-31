@@ -16,6 +16,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
       - run: rustup toolchain install stable --profile minimal --component rustfmt,clippy && rustup default stable
       - uses: Swatinem/rust-cache@v2.9.3
       - run: cargo fmt --all --check
@@ -31,6 +33,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
       - name: Install rust-version from Cargo.toml
         run: |
           msrv=$(cargo metadata --no-deps --format-version 1 | jq -er '.packages[] | select(.name == "vuln-watch") | .rust_version')
