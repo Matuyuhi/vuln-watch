@@ -65,6 +65,7 @@ oss-security often carries a disclosure before a CVE record exists.
 | Anything else | ignored |
 
 - Watch entries with `urgent = false` only go to the digest.
+- When several watch entries match, the order in the config does not matter: a strong match from an `urgent = true` entry wins, then a strong match from an `urgent = false` entry, then a description-only match.
 - The digest lists items that match a watch entry or an installed package first; items included only for their CVSS score follow under a separate heading.
 - Messages name the affected product when the title does not.
 - Each notification shows which field and term matched.
