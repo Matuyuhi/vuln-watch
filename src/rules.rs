@@ -698,6 +698,37 @@ mod tests {
     }
 
     #[test]
+    fn advisory_strong_digest_only_watch_wins_over_weak_urgent_watch() {
+        let mut i = advisory_item("high", Confidence::Confirmed);
+        i.summary = "Check your OpenSSL builds too.".into();
+        let both = vec![
+            Watch {
+                name: "OpenSSL".into(),
+                keywords: vec!["openssl".into()],
+                packages: vec![],
+                sources: vec![],
+                urgent: true,
+            },
+            Watch {
+                name: "Electron".into(),
+                keywords: vec![],
+                packages: vec![],
+                sources: vec![],
+                urgent: false,
+            },
+        ];
+        let r = Rules::default();
+        for w in [both.clone(), both.into_iter().rev().collect()] {
+            let d = evaluate(&i, SourceMode::Filter, &r, &w);
+            assert_eq!(d.level, Level::Digest);
+            assert_eq!(
+                d.reason,
+                "Claude 調査（一次情報で確認済み） ウォッチ: Electron（製品: electron）"
+            );
+        }
+    }
+
+    #[test]
     fn advisory_with_outdated_installed_package() {
         let inst = Installed::from_pairs("noble", &[("ca-certificates", "20240203")]);
         let im = InstalledMatch {
