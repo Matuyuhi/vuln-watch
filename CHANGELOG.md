@@ -8,6 +8,7 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 ### Fixed
 
 - When several `[[watch]]` entries matched the same item, the first one in the config decided, so an earlier `urgent = false` entry (e.g. Chrome with keyword `chromium`) sent an item that a later `urgent = true` entry matched by exact package name (e.g. Electron) to the digest instead of an urgent DM. `vuln-watch watch add` appends entries at the end, so new urgent entries were always affected. The match is now chosen by rank, whatever the order: a strong match from an `urgent = true` entry, then a strong match from an `urgent = false` entry, then a description-only match. `watch_urgent_cvss` still applies to the chosen match. Claude advisories use the same rule; a description-only match from an urgent entry no longer outranks a strong match from a digest-only entry there.
+- `rust-version` in `Cargo.toml` is now `1.89`, the oldest Rust that builds the locked dependencies (`uuid` 1.29 needs 1.89; `sha2` 0.11 needs 1.88). It said `1.82`, so a source install with Rust 1.82–1.88 failed in `cargo build --locked` without warning. CI has a new `msrv` job that runs `cargo check --locked --all-targets` with the version read from `Cargo.toml`, so a dependency bump that needs a newer Rust fails CI. The README states the minimum for source builds.
 
 ### Security
 

@@ -152,7 +152,7 @@ sudo ./$NAME/deploy/install.sh
 <details>
 <summary>ソースからビルドする</summary>
 
-Rust ツールチェーンが必要です。
+Rust 1.89 以降が必要です（`Cargo.toml` の `rust-version`。`rustc --version` で確認し、古ければ `rustup update` で更新してください）。
 
 ```bash
 git clone https://github.com/Matuyuhi/vuln-watch.git
