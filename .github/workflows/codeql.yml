@@ -28,12 +28,12 @@ jobs:
         # Both extract from source; no cargo build is needed.
         language: [rust, actions]
     steps:
-      - uses: actions/checkout@v7
-      - uses: github/codeql-action/init@v4
+      - uses: actions/checkout@v7.0.1
+      - uses: github/codeql-action/init@v4.39.1
         with:
           languages: ${{ matrix.language }}
           build-mode: none
           queries: security-and-quality
-      - uses: github/codeql-action/analyze@v4
+      - uses: github/codeql-action/analyze@v4.39.1
         with:
           category: "/language:${{ matrix.language }}"
