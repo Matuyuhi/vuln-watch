@@ -16,7 +16,9 @@ pub struct WatchMatch<'a> {
     pub evidence: String,
 }
 
-/// Find the best watch match: strong matches win over description-only matches.
+/// Find the best watch match, whatever the order of the entries: a strong match from an
+/// `urgent = true` entry wins, then a strong match from a digest-only entry, then a
+/// description-only match. Within the same rank the first entry in config order wins.
 pub fn match_watch<'a>(item: &Item, watches: &'a [Watch]) -> Option<WatchMatch<'a>> {
     let packages: Vec<String> = item.packages.iter().map(|p| p.to_lowercase()).collect();
     let title = item.title.to_lowercase();
@@ -29,36 +31,45 @@ pub fn match_watch<'a>(item: &Item, watches: &'a [Watch]) -> Option<WatchMatch<'
         .join("\n");
     let summary = item.summary.to_lowercase();
 
-    let mut weak: Option<WatchMatch<'a>> = None;
-    for w in watches.iter().filter(|w| w.applies_to(&item.source)) {
+    let strong_evidence = |w: &Watch| -> Option<String> {
         if let Some(p) = w
             .packages
             .iter()
             .find(|p| packages.contains(&p.to_lowercase()))
         {
-            return Some(WatchMatch {
-                watch: w,
-                strong: true,
-                evidence: format!("パッケージ: {p}"),
-            });
+            return Some(format!("パッケージ: {p}"));
         }
         let keywords = w.effective_keywords();
         if let Some(k) = keywords.iter().find(|k| contains_word(&products, k)) {
-            return Some(WatchMatch {
-                watch: w,
-                strong: true,
-                evidence: format!("製品: {k}"),
-            });
+            return Some(format!("製品: {k}"));
         }
-        if let Some(k) = keywords.iter().find(|k| contains_word(&title, k)) {
-            return Some(WatchMatch {
+        keywords
+            .iter()
+            .find(|k| contains_word(&title, k))
+            .map(|k| format!("タイトル: {k}"))
+    };
+
+    let mut digest_only: Option<WatchMatch<'a>> = None;
+    let mut weak: Option<WatchMatch<'a>> = None;
+    for w in watches.iter().filter(|w| w.applies_to(&item.source)) {
+        if let Some(evidence) = strong_evidence(w) {
+            let m = WatchMatch {
                 watch: w,
                 strong: true,
-                evidence: format!("タイトル: {k}"),
-            });
+                evidence,
+            };
+            if w.urgent {
+                return Some(m);
+            }
+            digest_only.get_or_insert(m);
+            continue;
         }
         if weak.is_none() {
-            if let Some(k) = keywords.iter().find(|k| contains_word(&summary, k)) {
+            if let Some(k) = w
+                .effective_keywords()
+                .iter()
+                .find(|k| contains_word(&summary, k))
+            {
                 weak = Some(WatchMatch {
                     watch: w,
                     strong: false,
@@ -67,7 +78,7 @@ pub fn match_watch<'a>(item: &Item, watches: &'a [Watch]) -> Option<WatchMatch<'
             }
         }
     }
-    weak
+    digest_only.or(weak)
 }
 
 /// Prefix of reasons for items matched only by CVSS score (nothing ties them to you).
@@ -212,9 +223,7 @@ fn evaluate_advisory(
     watches: &[Watch],
     installed: Option<&InstalledMatch>,
 ) -> Decision {
-    // An urgent watch entry wins over a digest-only one, whatever their order.
-    let urgent: Vec<Watch> = watches.iter().filter(|w| w.urgent).cloned().collect();
-    let m = match_watch(item, &urgent).or_else(|| match_watch(item, watches));
+    let m = match_watch(item, watches);
     let d = advisory_decision(item, confidence, m.as_ref(), installed);
     let level = match mode {
         SourceMode::Urgent => Level::Urgent,
@@ -276,10 +285,10 @@ pub fn evaluate_with(
     watches: &[Watch],
     installed: Option<&InstalledMatch>,
 ) -> Decision {
-    let m = match_watch(item, watches);
     if let Some(confidence) = item.confidence {
         return evaluate_advisory(item, confidence, mode, watches, installed);
     }
+    let m = match_watch(item, watches);
     let watch_note = m
         .as_ref()
         .map(|m| format!(" / ウォッチ: {}（{}）", m.watch.name, m.evidence))
@@ -424,6 +433,66 @@ mod tests {
         let d = evaluate(&i, SourceMode::Filter, &Rules::default(), &watches());
         assert_eq!(d.level, Level::Urgent);
         assert!(d.reason.contains("OkHttp"));
+    }
+
+    fn chrome_and_electron() -> Vec<Watch> {
+        vec![
+            Watch {
+                name: "Chrome".into(),
+                keywords: vec!["chromium".into()],
+                packages: vec![],
+                sources: vec![],
+                urgent: false,
+            },
+            Watch {
+                name: "Electron".into(),
+                keywords: vec![],
+                packages: vec!["electron".into()],
+                sources: vec![],
+                urgent: true,
+            },
+        ]
+    }
+
+    #[test]
+    fn urgent_watch_wins_over_earlier_digest_only_watch() {
+        let mut i = item("Heap buffer overflow in Chromium", Some(8.8));
+        i.source = "ghsa".into();
+        i.packages = vec!["electron".into()];
+        let both = chrome_and_electron();
+        for w in [both.clone(), both.into_iter().rev().collect()] {
+            let d = evaluate(&i, SourceMode::Filter, &Rules::default(), &w);
+            assert_eq!(d.level, Level::Urgent);
+            assert_eq!(d.reason, "ウォッチ: Electron（パッケージ: electron）");
+        }
+    }
+
+    #[test]
+    fn digest_only_strong_match_wins_over_earlier_weak_match() {
+        let mut w = chrome_and_electron();
+        w[1].packages = vec![];
+        w[1].keywords = vec!["electron".into()];
+        let mut i = item("Heap buffer overflow in Chromium", Some(8.8));
+        i.summary = "Electron apps bundle the affected code.".into();
+        for w in [w.clone(), w.into_iter().rev().collect()] {
+            let d = evaluate(&i, SourceMode::Filter, &Rules::default(), &w);
+            assert_eq!(d.level, Level::Digest);
+            assert_eq!(d.reason, "ウォッチ: Chrome（タイトル: chromium）");
+        }
+    }
+
+    #[test]
+    fn urgent_watch_below_watch_urgent_cvss_still_goes_to_digest() {
+        let mut i = item("Heap buffer overflow in Chromium", Some(5.0));
+        i.packages = vec!["electron".into()];
+        let d = evaluate(
+            &i,
+            SourceMode::Filter,
+            &Rules::default(),
+            &chrome_and_electron(),
+        );
+        assert_eq!(d.level, Level::Digest);
+        assert!(d.reason.starts_with("ウォッチ: Electron"), "{}", d.reason);
     }
 
     #[test]
@@ -625,6 +694,37 @@ mod tests {
             let d = evaluate(&i, SourceMode::Filter, &r, &w);
             assert_eq!(d.level, Level::Urgent);
             assert!(d.reason.contains("ウォッチ: Electron"));
+        }
+    }
+
+    #[test]
+    fn advisory_strong_digest_only_watch_wins_over_weak_urgent_watch() {
+        let mut i = advisory_item("high", Confidence::Confirmed);
+        i.summary = "Check your OpenSSL builds too.".into();
+        let both = vec![
+            Watch {
+                name: "OpenSSL".into(),
+                keywords: vec!["openssl".into()],
+                packages: vec![],
+                sources: vec![],
+                urgent: true,
+            },
+            Watch {
+                name: "Electron".into(),
+                keywords: vec![],
+                packages: vec![],
+                sources: vec![],
+                urgent: false,
+            },
+        ];
+        let r = Rules::default();
+        for w in [both.clone(), both.into_iter().rev().collect()] {
+            let d = evaluate(&i, SourceMode::Filter, &r, &w);
+            assert_eq!(d.level, Level::Digest);
+            assert_eq!(
+                d.reason,
+                "Claude 調査（一次情報で確認済み） ウォッチ: Electron（製品: electron）"
+            );
         }
     }
 
