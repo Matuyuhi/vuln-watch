@@ -7,11 +7,16 @@ on:
   schedule:
     - cron: "17 21 * * 0" # weekly, Monday 06:17 JST
 
+permissions:
+  contents: read
+
 jobs:
   smoke:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
       - run: rustup toolchain install stable --profile minimal && rustup default stable
       - uses: Swatinem/rust-cache@v2.9.3
       - run: cargo build --release
