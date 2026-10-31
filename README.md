@@ -151,7 +151,7 @@ sudo ./$NAME/deploy/install.sh
 <details>
 <summary>Build from source</summary>
 
-Requires a Rust toolchain.
+Requires Rust 1.89 or newer (`rust-version` in `Cargo.toml`; check with `rustc --version`, update with `rustup update`).
 
 ```bash
 git clone https://github.com/Matuyuhi/vuln-watch.git

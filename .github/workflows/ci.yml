@@ -22,3 +22,17 @@ jobs:
         run: |
           python3 scripts/changelog-release.py --self-test
           for f in scripts/*.sh; do bash -n "$f"; done
+
+  # Builds with the oldest Rust that Cargo.toml claims to support (`rust-version`).
+  msrv:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - name: Install rust-version from Cargo.toml
+        run: |
+          msrv=$(cargo metadata --no-deps --format-version 1 | jq -er '.packages[] | select(.name == "vuln-watch") | .rust_version')
+          echo "rust-version: $msrv"
+          rustup toolchain install "$msrv" --profile minimal
+          rustup default "$msrv"
+      - uses: Swatinem/rust-cache@v2.9.3
+      - run: cargo check --locked --all-targets
