@@ -1,0 +1,30 @@
+id = "VWA-2026-1102-cursor-claude-code-extension"
+revision = 1
+status = "active"
+published = 2026-11-02
+expires = 2026-12-02
+severity = "high"
+confidence = "confirmed"
+title = "Cursor の拡張マーケットプレイスで Claude Code 拡張 2.1.312 / 2.1.313 が改ざんされ SSH バックドアを設置（2026-10-29）"
+summary = """
+2026-10-29 の約 2:27〜13:35（米太平洋時間）、Cursor の VS Code 拡張マーケットプレイスで Anthropic.claude-code 拡張の改ざん版 2.1.312 / 2.1.313（Windows / macOS 向け）が配布された。Cursor によるとこの版は Anthropic が開発したものではない。
+改ざん版はホスト・ユーザー情報を攻撃者に送信し、攻撃者の SSH 鍵（コメント svc-telemetry）を authorized_keys に追加、SSH サービスを有効化して逆 SSH トンネルを張り、LaunchAgent / スケジュールタスクで永続化を試みる。
+Cursor は改ざん版を削除し、マーケットプレイスを再構築したうえで攻撃者サーバーを停止させたが、拡張をアンインストールしても永続化スクリプトは残りうるとしている。
+該当期間に Cursor でこの拡張をインストール・更新した開発者は、侵害の有無を確認し、必要に応じて認証情報を入れ替える必要がある。"""
+cves = []
+actions = [
+  "該当期間に Cursor で Anthropic.claude-code 2.1.312 / 2.1.313 を入れた macOS / Windows 端末で、Cursor の告知にある確認スクリプトを実行し、authorized_keys に svc-telemetry の鍵がないか確認する",
+  "痕跡があれば端末を隔離し、不正な SSH 鍵・永続化の仕組み・トンネルのプロセスを削除し、端末の再構築を検討する（拡張のアンインストールだけでは不十分）",
+  "影響を受けた端末からアクセスできた認証情報やセッションを、信頼できる別の端末から入れ替える",
+  "（独自提案）開発者端末の外向き SSH（TCP 22）と告知にある攻撃者 IP 宛ての通信をログで確認する",
+]
+
+[[affects]]
+name = "Claude Code 拡張（Cursor の VS Code Extension Marketplace 配布分）"
+keywords = ["cursor", "claude code", "claude-code"]
+
+[[references]]
+url = "https://cursor.com/blog/claude-code-extension-security-notice"
+kind = "primary"
+title = "Security notice — malicious version of Anthropic.claude-code (2.1.312 and 2.1.313) identified in the Cursor VS Code Extension Marketplace（Cursor, 2026-10-29、10-30 更新）"
+quote = "Uninstalling the extension may not be sufficient — the payload drops standalone persistence scripts that keep running."

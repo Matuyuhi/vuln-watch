@@ -1,0 +1,53 @@
+id = "VWA-2026-1102-linux-tcp-uaf"
+revision = 1
+status = "active"
+published = 2026-11-02
+expires = 2026-12-02
+severity = "critical"
+confidence = "confirmed"
+title = "Linux カーネルの IPv4 TCP 処理の use-after-free（CVE-2026-98432）で認証不要のリモートコード実行、全ディストリのカーネル更新が必要（Ubuntu は未修正）"
+summary = """
+Linux カーネルの IPv4 TCP 接続要求処理に use-after-free（CVE-2026-98432）があり、Red Hat は 2026-10-30 に「Critical」の速報（RHSB-2026-016）を出した。認証不要のリモート攻撃者が競合状態を突いてリモートコード実行に至りうる。
+発見者側が示した攻撃は MPTCP のリスナーを前提とするが、Go チームと AlmaLinux はいずれも、バグ自体は通常の IPv4 TCP コードにあり MPTCP を使わないシステムも修正が必要だとしている。Go 1.24 以降のプログラムは Linux で既定で MPTCP リスナーを開くため、Go 製サーバーが動く環境は特に露出しやすい。
+Ubuntu の CVE トラッカーでは linux パッケージの修正は全リリースで「work in progress」（2026-11-02 時点で未公開）。修正カーネルが出るまでは、IP オプション付き IPv4 TCP パケットを落とす nftables ルールで露出を減らせるが完全な対策ではない。
+2026-11-02 時点で実環境での悪用は確認されておらず、CISA KEV にも未掲載。"""
+cves = ["CVE-2026-98432"]
+actions = [
+  "各ディストリビューションが修正カーネルを公開したら速やかに適用し、再起動する（Ubuntu は USN の公開を待つ）",
+  "修正カーネルの適用まで、Red Hat / AlmaLinux が示す nftables ルール（IP オプション付きの IPv4 TCP パケットを破棄）で露出を減らす。適用後はルールを外す",
+  "Go 製サーバーでは GODEBUG=multipathtcp=0（または go.mod に godebug multipathtcp=0）で MPTCP を既定で無効化できる（Go チームの案内）",
+  "（独自提案）MPTCP を使っていなければ sysctl net.mptcp.enabled=0 を設定し、ss -Mlnp で MPTCP リスナーが残っていないか確認する",
+]
+
+[[affects]]
+name = "Linux kernel"
+keywords = ["linux kernel"]
+
+[[references]]
+url = "https://access.redhat.com/security/vulnerabilities/RHSB-2026-016"
+kind = "primary"
+title = "RHSB-2026-016 Use-after-free - kernel IPv4 (CVE-2026-98432)（Red Hat, 2026-10-30）"
+quote = "A remote, unauthenticated attacker could exploit a race condition during TCP connection request processing to trigger remote code execution."
+
+[[references]]
+url = "https://ubuntu.com/security/CVE-2026-98432"
+kind = "primary"
+title = "CVE-2026-98432 (Ubuntu)"
+quote = "inet_sock_destruct() frees inet_opt with a plain kfree(), leading to a use-after-free in ip_options_build()"
+
+[[references]]
+url = "https://groups.google.com/g/golang-announce/c/PCoQcdxoScw"
+kind = "primary"
+title = "golang-announce: CVE-2026-98432 と Go の MPTCP 既定有効化について（Go Security Team）"
+quote = "While the demonstrated exploit requires the target system to expose an MPTCP listener, the underlying bug is not specific to MPTCP."
+
+[[references]]
+url = "https://almalinux.org/blog/2026-10-30-cve-2026-98432/"
+kind = "primary"
+title = "CVE-2026-98432: Patched kernels available in testing (AlmaLinux, 2026-10-30)"
+quote = "The bug itself is in the regular IPv4 TCP code, so systems without MPTCP still need the fix."
+
+[[references]]
+url = "https://ma.ttias.be/linux-cve-2026-98432-vulnerable-kernels/"
+kind = "secondary"
+title = "CVE-2026-98432: which Linux kernels are still vulnerable (ma.ttias.be, 2026-11-01 / 11-02 更新)"
