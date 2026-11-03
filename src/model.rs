@@ -33,6 +33,10 @@ pub struct Item {
     /// they are decided by their own rule instead of KEV / CVSS.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub confidence: Option<Confidence>,
+    /// A fix or mitigation is published: a patched version, a distro update, KEV's required
+    /// action or the advisory's actions. Used by `rules.require_remedy`.
+    #[serde(default)]
+    pub remedy: bool,
 }
 
 /// How well an advisory is backed by primary sources.
@@ -129,6 +133,9 @@ impl Level {
 pub struct Decision {
     pub level: Level,
     pub reason: String,
+    /// Ignored only because no fix is published yet (`rules.require_remedy`); the item is
+    /// decided again when a later fetch brings it with a fix.
+    pub awaiting_remedy: bool,
 }
 
 impl Decision {
@@ -136,6 +143,7 @@ impl Decision {
         Self {
             level,
             reason: reason.into(),
+            awaiting_remedy: false,
         }
     }
 }

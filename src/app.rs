@@ -252,6 +252,9 @@ fn flush_outbox(
             db.dequeue(Queue::Digest, &e.key)?;
             db.dequeue(Queue::Digest, &e.item.dedupe_key())?;
             summary.urgent += 1;
+        } else if !cfg.rules.digest {
+            // No digest to fall back to: keep it in the outbox for the next run.
+            continue;
         } else {
             db.enqueue(
                 Queue::Digest,
@@ -265,11 +268,16 @@ fn flush_outbox(
         db.dequeue(Queue::Outbox, &e.key)?;
     }
     if overflow > 0 {
+        let rest = if cfg.rules.digest {
+            "ダイジェストに回しました"
+        } else {
+            "次回の実行で送ります"
+        };
         renew_run_lock(db, lock)?;
         notifier.send(
             db,
             &Message::text(format!(
-                "⚠️ 即時通知が上限（{max}件/回）を超えたため、残り{overflow}件はダイジェストに回しました。"
+                "⚠️ 即時通知が上限（{max}件/回）を超えたため、残り{overflow}件は{rest}。"
             )),
         )?;
     }
@@ -335,7 +343,9 @@ fn handle_fetched(
     let total = fetched.items.len();
     let mut new = 0;
     for item in std::mem::take(&mut fetched.items) {
-        if db.is_seen(&name, &item.id)? {
+        // An item held back for lack of a fix is only decided again once it has one.
+        let awaiting_key = format!("{}#awaiting-remedy", item.id);
+        if db.is_seen(&name, &item.id)? || (!item.remedy && db.is_seen(&name, &awaiting_key)?) {
             continue;
         }
         new += 1;
@@ -352,6 +362,10 @@ fn handle_fetched(
         let key = item.alert_key();
         let already = db.alerted_level(&key)?;
         match decision.level {
+            Level::Ignore if decision.awaiting_remedy => {
+                summary.ignored += 1;
+                db.mark_seen(&name, &awaiting_key)?;
+            }
             Level::Ignore => {
                 summary.ignored += 1;
                 db.mark_seen(&name, &item.id)?;
@@ -506,6 +520,10 @@ const DIGEST_LOCK_MINUTES: i64 = 10;
 /// Send the queued digest. Each message's entries are dequeued once it is sent, so a
 /// failure part way leaves only the unsent entries queued, and `run` resends them.
 pub fn digest(cfg: &Config, db: &Db, notifier: &Notifier) -> Result<usize> {
+    if !cfg.rules.digest {
+        tracing::info!("digest: disabled by rules.digest = false");
+        return Ok(0);
+    }
     let Some(lock) = db.try_lease(
         DIGEST_LOCK_KEY,
         chrono::Duration::minutes(DIGEST_LOCK_MINUTES),
@@ -841,6 +859,72 @@ kind = "ghsa"
             Some(Level::Urgent)
         );
         assert!(keys(&db, Queue::Digest).is_empty());
+    }
+
+    #[test]
+    fn overflow_without_digest_waits_for_next_run() {
+        let mut cfg = cfg();
+        cfg.rules.digest = false;
+        let http = Http::new(5).unwrap();
+        let notifier = recorder(&http, vec![]);
+        let mut db = Db::open_in_memory().unwrap();
+        let mut s = RunSummary::default();
+        let items = (1..=3)
+            .map(|i| kev_item("kev", &format!("CVE-2026-000{i}")))
+            .collect();
+        handle(&cfg, &mut db, "kev", fetched(items, "c1"), &mut s);
+        flush_outbox(&cfg, &db, &notifier, &mut s, &mut None).unwrap();
+        assert!(notifier.sent()[2].content.contains("次回の実行で送ります"));
+        assert_eq!(keys(&db, Queue::Outbox), ["CVE-2026-0003#kev"]);
+        assert!(keys(&db, Queue::Digest).is_empty());
+
+        flush_outbox(&cfg, &db, &notifier, &mut s, &mut None).unwrap();
+        assert!(notifier.sent()[3].content.contains("CVE-2026-0003"));
+        assert_eq!(db.queue_len(Queue::Outbox).unwrap(), 0);
+    }
+
+    #[test]
+    fn cve_dropped_for_no_fix_is_sent_when_a_fix_arrives() {
+        let mut cfg = cfg();
+        cfg.rules.require_remedy = true;
+        cfg.rules.urgent_cvss = Some(9.0);
+        let mut db = Db::open_in_memory().unwrap();
+        let mut s = RunSummary::default();
+        let no_fix = digest_item("ghsa", "CVE-2026-0001");
+        handle(&cfg, &mut db, "ghsa", fetched(vec![no_fix], "c1"), &mut s);
+        assert_eq!(db.queue_len(Queue::Outbox).unwrap(), 0);
+
+        // The same advisory fetched again without a fix stays held back.
+        let no_fix = digest_item("ghsa", "CVE-2026-0001");
+        handle(&cfg, &mut db, "ghsa", fetched(vec![no_fix], "c2"), &mut s);
+        assert_eq!(db.queue_len(Queue::Outbox).unwrap(), 0);
+
+        // Updated with a patched version, same id.
+        let mut fixed = digest_item("ghsa", "CVE-2026-0001");
+        fixed.remedy = true;
+        handle(&cfg, &mut db, "ghsa", fetched(vec![fixed], "c3"), &mut s);
+        assert_eq!(keys(&db, Queue::Outbox), ["CVE-2026-0001"]);
+    }
+
+    #[test]
+    fn disabled_digest_is_not_sent_or_retried() {
+        let mut cfg = cfg();
+        let http = Http::new(5).unwrap();
+        let notifier = recorder(&http, vec![]);
+        let db = Db::open_in_memory().unwrap();
+        db.enqueue(
+            Queue::Digest,
+            "k",
+            &digest_item("ghsa", "CVE-2026-0001"),
+            "r",
+        )
+        .unwrap();
+        db.set_kv(DIGEST_RETRY_KEY, "2000-01-01T00:00:00Z").unwrap();
+        cfg.rules.digest = false;
+        assert_eq!(digest(&cfg, &db, &notifier).unwrap(), 0);
+        retry_digest(&cfg, &db, &notifier);
+        assert!(notifier.sent().is_empty());
+        assert_eq!(db.queue_len(Queue::Digest).unwrap(), 1);
     }
 
     #[test]

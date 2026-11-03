@@ -62,6 +62,15 @@ pub struct Rules {
     /// unless they are in KEV or match the watch list.
     #[serde(default)]
     pub exclude_keywords: Vec<String>,
+    /// false = items that would go to the digest are dropped, and urgent messages over
+    /// `max_urgent_per_run` wait for the next run instead.
+    #[serde(default = "default_true")]
+    pub digest: bool,
+    /// true = urgent only when a fix or mitigation is published; the rest is dropped and
+    /// reported when a source with the fix (USN, GHSA, ...) brings the same CVE again.
+    /// Sources with `mode = "urgent"` are not affected.
+    #[serde(default)]
+    pub require_remedy: bool,
 }
 
 impl Default for Rules {
@@ -72,6 +81,8 @@ impl Default for Rules {
             urgent_cvss: None,
             digest_cvss: default_digest_cvss(),
             exclude_keywords: Vec::new(),
+            digest: true,
+            require_remedy: false,
         }
     }
 }

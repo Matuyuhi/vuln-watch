@@ -85,6 +85,7 @@ pub fn parse(source: &str, body: &str) -> Result<Vec<Item>> {
                     .push(("ランサムウェア".into(), "悪用が確認されている".into()));
             }
             if !e.required_action.is_empty() {
+                item.remedy = true;
                 item.extra.push((
                     "推奨対応".into(),
                     crate::text::truncate(&e.required_action, 300),

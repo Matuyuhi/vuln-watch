@@ -300,6 +300,7 @@ fn parse(
         }
     }
 
+    item.remedy = !a.actions.is_empty() || !fixed_versions.is_empty() || !item.fixed.is_empty();
     if !a.actions.is_empty() {
         let actions: Vec<String> = a
             .actions

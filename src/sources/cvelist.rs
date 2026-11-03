@@ -298,10 +298,14 @@ fn give_up(name: &str, cve: &str, ctx: &Ctx) -> Result<()> {
         "CVE レコードを取得できませんでした。内容は cve.org で確認してください".to_string();
     item.url = format!("https://www.cve.org/CVERecord?id={cve}");
     let reason = format!("レコード取得に失敗（{MAX_RECORD_AGE_HOURS}時間）");
-    // Own key, not the CVE id: this placeholder must not stand in for (or suppress) the
-    // real record arriving from another source.
-    ctx.db
-        .enqueue(Queue::Digest, &format!("{name}:{cve}"), &item, &reason)?;
+    if ctx.cfg.rules.digest {
+        // Own key, not the CVE id: this placeholder must not stand in for (or suppress) the
+        // real record arriving from another source.
+        ctx.db
+            .enqueue(Queue::Digest, &format!("{name}:{cve}"), &item, &reason)?;
+    } else {
+        tracing::warn!("{name}: gave up on {cve} ({reason}); the digest is disabled");
+    }
     ctx.db.mark_seen(name, cve)?;
     ctx.db.remove_pending(name, cve)
 }

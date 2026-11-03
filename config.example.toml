@@ -20,6 +20,12 @@ urgent_cvss = 0
 digest_cvss = 9.0
 # Ignore items containing these words, unless they are in KEV or match a watch entry.
 exclude_keywords = ["wordpress", "plugin for wordpress", "sourcecodester", "code-projects"]
+# true = urgent only when a fix or mitigation is published (patched version, USN, KEV
+# required action, advisory actions). Items without one are dropped until a source brings
+# the fix. Sources with mode = "urgent" are not affected.
+require_remedy = false
+# false = drop what would go to the digest (also disable vuln-watch-digest.timer).
+digest = true
 
 [runtime]
 # Urgent messages per run; the rest go to the digest.

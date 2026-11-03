@@ -285,6 +285,28 @@ pub fn evaluate_with(
     watches: &[Watch],
     installed: Option<&InstalledMatch>,
 ) -> Decision {
+    let d = decide(item, mode, rules, watches, installed);
+    match d.level {
+        Level::Urgent if rules.require_remedy && !item.remedy && mode != SourceMode::Urgent => {
+            Decision {
+                awaiting_remedy: true,
+                ..Decision::new(Level::Ignore, format!("対処未公開: {}", d.reason))
+            }
+        }
+        Level::Digest if !rules.digest => {
+            Decision::new(Level::Ignore, format!("ダイジェスト無効: {}", d.reason))
+        }
+        _ => d,
+    }
+}
+
+fn decide(
+    item: &Item,
+    mode: SourceMode,
+    rules: &Rules,
+    watches: &[Watch],
+    installed: Option<&InstalledMatch>,
+) -> Decision {
     if let Some(confidence) = item.confidence {
         return evaluate_advisory(item, confidence, mode, watches, installed);
     }
@@ -578,6 +600,58 @@ mod tests {
             .level,
             Level::Ignore
         );
+    }
+
+    #[test]
+    fn require_remedy_drops_urgent_without_a_fix() {
+        let rules = Rules {
+            require_remedy: true,
+            ..Rules::default()
+        };
+        let mut i = item("nginx: buffer overflow in resolver", Some(9.1));
+        let d = evaluate(&i, SourceMode::Filter, &rules, &watches());
+        assert_eq!(d.level, Level::Ignore);
+        assert!(d.reason.starts_with("対処未公開"), "{}", d.reason);
+
+        i.remedy = true;
+        let d = evaluate(&i, SourceMode::Filter, &rules, &watches());
+        assert_eq!(d.level, Level::Urgent);
+
+        // An explicit `mode = "urgent"` source is still sent.
+        i.remedy = false;
+        let d = evaluate(&i, SourceMode::Urgent, &rules, &watches());
+        assert_eq!(d.level, Level::Urgent);
+    }
+
+    #[test]
+    fn digest_disabled_drops_digest_items() {
+        let rules = Rules {
+            digest: false,
+            ..Rules::default()
+        };
+        let d = evaluate(
+            &item("nginx: minor issue", Some(5.0)),
+            SourceMode::Filter,
+            &rules,
+            &watches(),
+        );
+        assert_eq!(d.level, Level::Ignore);
+        assert!(d.reason.starts_with("ダイジェスト無効"), "{}", d.reason);
+        let d = evaluate(
+            &item("Anything", None),
+            SourceMode::Digest,
+            &rules,
+            &watches(),
+        );
+        assert_eq!(d.level, Level::Ignore);
+        // Urgent items are unaffected.
+        let d = evaluate(
+            &item("nginx: buffer overflow", Some(9.1)),
+            SourceMode::Filter,
+            &rules,
+            &watches(),
+        );
+        assert_eq!(d.level, Level::Urgent);
     }
 
     #[test]
