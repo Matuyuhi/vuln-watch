@@ -427,7 +427,10 @@ fn to_item(source: &str, a: Advisory) -> Item {
             }
             let range = v.vulnerable_version_range.unwrap_or_default();
             match v.first_patched_version.filter(|s| !s.is_empty()) {
-                Some(fix) => patched.push(format!("{} {} → {}", p.name, range, fix)),
+                Some(fix) => {
+                    item.remedy = true;
+                    patched.push(format!("{} {} → {}", p.name, range, fix))
+                }
                 None => patched.push(format!("{} {} → 修正版なし", p.name, range)),
             }
         }

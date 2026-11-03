@@ -77,6 +77,13 @@ oss-security often carries a disclosure before a CVE record exists.
 
 Thresholds, exclusions and the watch list are set in [`config.example.toml`](config.example.toml).
 
+#### Only problems with a fix, no digest
+
+Two `[rules]` switches turn vuln-watch into "tell me when there is a problem and something to do about it":
+
+- `require_remedy = true`: an urgent item is sent only when a fix or mitigation is published: a GHSA with a patched version, a USN, a KEV entry (its required action), or an advisory with actions or fixed versions. CVE records and plain feeds (oss-security, release feeds) carry no fix, so they no longer notify on their own. A CVE dropped this way is not marked as notified, so it is sent when USN or GHSA later brings the fix. Sources with `mode = "urgent"` are not affected.
+- `digest = false`: items that would go to the digest are dropped, urgent messages over `max_urgent_per_run` wait in the outbox for the next run, and a cvelist record given up after 48 hours is only logged. Disable the digest timer too: `sudo systemctl disable --now vuln-watch-digest.timer`.
+
 ### Installed packages
 
 With `[installed] enabled = true`, USN entries are compared with `/var/lib/dpkg/status` using dpkg version ordering. The file is re-read on every run, so a package counts as patched as soon as `apt upgrade` has run. The release codename is read from `/etc/os-release`. A USN for a package that is not installed is ignored, even if it matches the watch list.

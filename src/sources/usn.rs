@@ -176,6 +176,8 @@ fn to_item(source: &str, n: Notice, release: Option<&str>) -> Item {
             }
         }
     }
+    // A notice is published together with the updated packages.
+    item.remedy = true;
     if !item.fixed.is_empty() {
         item.extra.push((
             "対処".into(),

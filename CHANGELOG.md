@@ -5,6 +5,11 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 
 ## [Unreleased]
 
+### Added
+
+- `[rules] require_remedy = true` sends an urgent message only when a fix or mitigation is published: a GHSA with a patched version, a USN, a KEV entry with a required action, or a Claude advisory with actions or fixed versions. Other items that would be urgent are ignored ("対処未公開") without being marked as notified, so the same CVE is sent when a source with the fix arrives. Sources with `mode = "urgent"` are not affected. Default `false`.
+- `[rules] digest = false` turns the digest off: items that would go to it are ignored ("ダイジェスト無効"), urgent messages over `max_urgent_per_run` stay in the outbox for the next run, and a cvelist record given up after 48 hours is only logged. Default `true`.
+
 ### Fixed
 
 - When several `[[watch]]` entries matched the same item, the first one in the config decided, so an earlier `urgent = false` entry (e.g. Chrome with keyword `chromium`) sent an item that a later `urgent = true` entry matched by exact package name (e.g. Electron) to the digest instead of an urgent DM. `vuln-watch watch add` appends entries at the end, so new urgent entries were always affected. The match is now chosen by rank, whatever the order: a strong match from an `urgent = true` entry, then a strong match from an `urgent = false` entry, then a description-only match. `watch_urgent_cvss` still applies to the chosen match. Claude advisories use the same rule; a description-only match from an urgent entry no longer outranks a strong match from a digest-only entry there.

@@ -252,6 +252,9 @@ fn flush_outbox(
             db.dequeue(Queue::Digest, &e.key)?;
             db.dequeue(Queue::Digest, &e.item.dedupe_key())?;
             summary.urgent += 1;
+        } else if !cfg.rules.digest {
+            // No digest to fall back to: keep it in the outbox for the next run.
+            continue;
         } else {
             db.enqueue(
                 Queue::Digest,
@@ -265,11 +268,16 @@ fn flush_outbox(
         db.dequeue(Queue::Outbox, &e.key)?;
     }
     if overflow > 0 {
+        let rest = if cfg.rules.digest {
+            "ダイジェストに回しました"
+        } else {
+            "次回の実行で送ります"
+        };
         renew_run_lock(db, lock)?;
         notifier.send(
             db,
             &Message::text(format!(
-                "⚠️ 即時通知が上限（{max}件/回）を超えたため、残り{overflow}件はダイジェストに回しました。"
+                "⚠️ 即時通知が上限（{max}件/回）を超えたため、残り{overflow}件は{rest}。"
             )),
         )?;
     }
@@ -841,6 +849,46 @@ kind = "ghsa"
             Some(Level::Urgent)
         );
         assert!(keys(&db, Queue::Digest).is_empty());
+    }
+
+    #[test]
+    fn overflow_without_digest_waits_for_next_run() {
+        let mut cfg = cfg();
+        cfg.rules.digest = false;
+        let http = Http::new(5).unwrap();
+        let notifier = recorder(&http, vec![]);
+        let mut db = Db::open_in_memory().unwrap();
+        let mut s = RunSummary::default();
+        let items = (1..=3)
+            .map(|i| kev_item("kev", &format!("CVE-2026-000{i}")))
+            .collect();
+        handle(&cfg, &mut db, "kev", fetched(items, "c1"), &mut s);
+        flush_outbox(&cfg, &db, &notifier, &mut s, &mut None).unwrap();
+        assert!(notifier.sent()[2].content.contains("次回の実行で送ります"));
+        assert_eq!(keys(&db, Queue::Outbox), ["CVE-2026-0003#kev"]);
+        assert!(keys(&db, Queue::Digest).is_empty());
+
+        flush_outbox(&cfg, &db, &notifier, &mut s, &mut None).unwrap();
+        assert!(notifier.sent()[3].content.contains("CVE-2026-0003"));
+        assert_eq!(db.queue_len(Queue::Outbox).unwrap(), 0);
+    }
+
+    #[test]
+    fn cve_dropped_for_no_fix_is_sent_when_a_fix_arrives() {
+        let mut cfg = cfg();
+        cfg.rules.require_remedy = true;
+        cfg.rules.urgent_cvss = Some(9.0);
+        let mut db = Db::open_in_memory().unwrap();
+        let mut s = RunSummary::default();
+        let no_fix = digest_item("ghsa", "CVE-2026-0001");
+        handle(&cfg, &mut db, "ghsa", fetched(vec![no_fix], "c1"), &mut s);
+        assert_eq!(db.queue_len(Queue::Outbox).unwrap(), 0);
+
+        let mut fixed = digest_item("ghsa", "CVE-2026-0001");
+        fixed.id = "GHSA-xxxx".into();
+        fixed.remedy = true;
+        handle(&cfg, &mut db, "ghsa", fetched(vec![fixed], "c2"), &mut s);
+        assert_eq!(keys(&db, Queue::Outbox), ["CVE-2026-0001"]);
     }
 
     #[test]

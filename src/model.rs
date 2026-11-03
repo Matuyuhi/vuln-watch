@@ -33,6 +33,10 @@ pub struct Item {
     /// they are decided by their own rule instead of KEV / CVSS.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub confidence: Option<Confidence>,
+    /// A fix or mitigation is published: a patched version, a distro update, KEV's required
+    /// action or the advisory's actions. Used by `rules.require_remedy`.
+    #[serde(default)]
+    pub remedy: bool,
 }
 
 /// How well an advisory is backed by primary sources.
