@@ -254,7 +254,7 @@ fn flush_outbox(
     }
 
     // The rest goes out now as compact list messages rather than waiting for the digest.
-    let mut rejected = Vec::new();
+    let mut rejected = 0;
     for (j, (msg, keys)) in discord::overflow_messages(&overflow, max)
         .into_iter()
         .enumerate()
@@ -271,13 +271,28 @@ fn flush_outbox(
                     summary.urgent += 1;
                 }
             }
-            // One item Discord refuses must not hold up the outbox: hand those to the digest.
+            // One item Discord refuses must not hold up the outbox: hand those to the digest
+            // now, so a later chunk failing transiently cannot leave them behind.
             Err(err) if discord::is_rejected(&err) => {
                 tracing::warn!(
                     "Discord rejected the list of {} urgent items over the cap ({err:#})",
                     keys.len()
                 );
-                rejected.extend(listed);
+                rejected += keys.len();
+                if cfg.rules.digest {
+                    for e in listed {
+                        db.enqueue(
+                            Queue::Digest,
+                            &e.key,
+                            &e.item,
+                            &format!("{}（即時通知の上限超過）", e.reason),
+                        )?;
+                        db.set_alerted(&e.key, Level::Digest)?;
+                        db.dequeue(Queue::Outbox, &e.key)?;
+                        summary.digested += 1;
+                    }
+                }
+                // Without a digest they stay in the outbox; later runs send them one by one.
             }
             // Transient: the entries stay in the outbox for the next run.
             Err(err) => {
@@ -288,23 +303,9 @@ fn flush_outbox(
             }
         }
     }
-    if rejected.is_empty() {
+    if rejected == 0 {
         return Ok(());
     }
-    if cfg.rules.digest {
-        for e in &rejected {
-            db.enqueue(
-                Queue::Digest,
-                &e.key,
-                &e.item,
-                &format!("{}（即時通知の上限超過）", e.reason),
-            )?;
-            db.set_alerted(&e.key, Level::Digest)?;
-            db.dequeue(Queue::Outbox, &e.key)?;
-            summary.digested += 1;
-        }
-    }
-    // Without a digest they stay in the outbox; the next run sends them one by one.
     let rest = if cfg.rules.digest {
         "ダイジェストに回しました"
     } else {
@@ -314,8 +315,7 @@ fn flush_outbox(
     notifier.send(
         db,
         &Message::text(format!(
-            "⚠️ 即時通知が上限（{max}件/回）を超えた残り{}件は一覧を送れなかったため、{rest}。",
-            rejected.len()
+            "⚠️ 即時通知が上限（{max}件/回）を超えた残り{rejected}件は一覧を送れなかったため、{rest}。"
         )),
     )?;
     Ok(())
@@ -1088,6 +1088,29 @@ kind = "ghsa"
             db.alerted_level("CVE-2026-0003#kev").unwrap(),
             Some(Level::Digest)
         );
+    }
+
+    #[test]
+    fn rejected_list_goes_to_digest_even_if_a_later_list_fails() {
+        let cfg = cfg();
+        let http = Http::new(5).unwrap();
+        // 0, 1: urgent messages; 2: first list (rejected); 3: second list (transient).
+        let notifier = recorder(&http, vec![(2, Fail::Rejected), (3, Fail::Transient)]);
+        let mut db = Db::open_in_memory().unwrap();
+        let mut s = RunSummary::default();
+        outbox_with(&mut db, 120);
+        let lists = discord::overflow_messages(&db.queue_entries(Queue::Outbox).unwrap()[2..], 2);
+        assert!(lists.len() >= 2, "needs several lists: {}", lists.len());
+        let first: Vec<String> = lists[0].1.clone();
+        assert!(flush_outbox(&cfg, &db, &notifier, &mut s, &mut None).is_err());
+
+        assert_eq!(notifier.sent().len(), 2);
+        assert_eq!(keys(&db, Queue::Digest), first);
+        assert_eq!(s.digested, first.len());
+        assert_eq!(db.alerted_level(&first[0]).unwrap(), Some(Level::Digest));
+        let outbox = keys(&db, Queue::Outbox);
+        assert_eq!(outbox.len(), 118 - first.len());
+        assert!(outbox.iter().all(|k| !first.contains(k)));
     }
 
     #[test]
