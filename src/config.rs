@@ -62,8 +62,8 @@ pub struct Rules {
     /// unless they are in KEV or match the watch list.
     #[serde(default)]
     pub exclude_keywords: Vec<String>,
-    /// false = items that would go to the digest are dropped, and urgent messages over
-    /// `max_urgent_per_run` wait for the next run instead.
+    /// false = items that would go to the digest are dropped, and urgent items over
+    /// `max_urgent_per_run` whose list message Discord rejects wait for the next run instead.
     #[serde(default = "default_true")]
     pub digest: bool,
     /// true = urgent only when a fix or mitigation is published; the rest is dropped and
@@ -90,7 +90,7 @@ impl Default for Rules {
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Runtime {
-    /// Maximum urgent messages per run; the rest go to the digest.
+    /// Maximum individual urgent messages per run; the rest go out as list messages.
     #[serde(default = "default_max_urgent")]
     pub max_urgent_per_run: usize,
     /// Send a warning after this many consecutive failures of one source.
