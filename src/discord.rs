@@ -345,18 +345,24 @@ pub fn urgent_fallback_message(item: &Item, decision: &Decision) -> Message {
     let product = product_hint(item)
         .map(|p| format!("[{}] ", escape_md(&p)))
         .unwrap_or_default();
-    let mut text = format!(
+    let text = format!(
         "{icon} {} — {}{}\n{}",
         escape_md(&truncate(item.display_id(), 200)),
         product,
         escape_md(&truncate(&item.title, 300)),
         escape_md(&truncate(&decision.reason, 300)),
     );
-    // A truncated URL would point somewhere else: leave out one that does not fit.
-    if let Some(url) = safe_url(&item.url).filter(|u| u.chars().count() <= 1000) {
-        text.push_str(&format!("\n<{url}>"));
+    // A truncated URL would point somewhere else: the link is never cut. It is left out when
+    // it is very long; otherwise the text before it is shortened to make room.
+    match safe_url(&item.url).filter(|u| u.chars().count() <= 1000) {
+        Some(url) => {
+            let link = format!("\n<{url}>");
+            let mut text = truncate(&text, 2000 - link.chars().count());
+            text.push_str(&link);
+            Message::text(text)
+        }
+        None => Message::text(truncate(&text, 2000)),
     }
-    Message::text(truncate(&text, 2000))
 }
 
 /// Re-render the `出典` lines of a Claude advisory (`[title](<url>)` or a bare URL, see
@@ -436,15 +442,21 @@ fn score_label(item: &Item) -> String {
     }
 }
 
-/// Longest item URL linked in a digest line (lines are cut at 600 characters).
-const MAX_DIGEST_URL: usize = 300;
+/// Digest lines are cut at this many characters.
+const DIGEST_LINE_MAX: usize = 600;
+/// Room kept after a linked id for the rest of the digest line (title, score).
+const DIGEST_LINE_REST: usize = 150;
 
 fn digest_line(e: &DigestEntry, show_reason: bool) -> String {
     let item = &e.item;
     let id = escape_md(item.display_id());
-    // Long (e.g. percent-encoded non-ASCII) URLs would eat the line budget and get cut.
-    let head = match safe_url(&item.url).filter(|u| u.chars().count() <= MAX_DIGEST_URL) {
-        Some(url) => format!("[{id}](<{url}>)"),
+    // The line is cut at `DIGEST_LINE_MAX`; a link that could be cut (long percent-encoded
+    // URL, long feed GUID) is left out and the id shown alone.
+    let head = match safe_url(&item.url)
+        .map(|url| format!("[{id}](<{url}>)"))
+        .filter(|h| "• **".len() + h.chars().count() + DIGEST_LINE_REST <= DIGEST_LINE_MAX)
+    {
+        Some(h) => h,
         None => id,
     };
     let product = product_hint(item)
@@ -498,7 +510,7 @@ pub fn digest_messages(entries: &[DigestEntry], resumed: bool) -> Vec<(Message, 
     for (header, show_reason, list) in &sections {
         let mut header_pending = !single_section;
         for e in list {
-            let line = truncate(&digest_line(e, *show_reason), 600);
+            let line = truncate(&digest_line(e, *show_reason), DIGEST_LINE_MAX);
             let header_len = if header_pending || cur.is_empty() {
                 header.chars().count() + 2
             } else {
@@ -869,6 +881,17 @@ mod tests {
         let l = line(&format!("https://example.com/{}", "あ".repeat(70)));
         assert!(l.starts_with("• **CVE-1** Bug — 9.6"), "{l}");
 
+        // A long feed GUID with a URL that would fit on its own: still never cut.
+        let mut e = entry("CVE-1", "Bug", &[], "");
+        e.item.cve = None;
+        e.item.id = "g".repeat(380);
+        e.item.url = format!("https://example.com/{}", "a".repeat(279));
+        let l = truncate(&digest_line(&e, false), DIGEST_LINE_MAX);
+        assert!(!l.contains("](<"), "{l}");
+        e.item.id = "g".repeat(40);
+        let l = truncate(&digest_line(&e, false), DIGEST_LINE_MAX);
+        assert!(l.contains(">)** Bug — 9.6"), "{l}");
+
         let mut e = entry("CVE-1", "Bug", &[], "");
         e.item.url = "ftp://example.com/x".into();
         let msgs = digest_messages(&[e], false);
@@ -920,6 +943,14 @@ mod tests {
         it.url = format!("https://example.com/{}", "あ".repeat(200));
         let m = urgent_fallback_message(&it, &Decision::new(Level::Urgent, "watch: nginx"));
         assert!(m.content.ends_with("watch: nginx"), "{}", m.content);
+        // Markdown-heavy id and title: escaping doubles them, the link still stays whole.
+        let mut it = Item::new("rel", "*".repeat(200));
+        it.title = "*".repeat(300);
+        let url = format!("https://example.com/{}", "a".repeat(972));
+        it.url = url.clone();
+        let m = urgent_fallback_message(&it, &Decision::new(Level::Urgent, "watch: nginx"));
+        assert!(m.content.chars().count() <= 2000);
+        assert!(m.content.ends_with(&format!("\n<{url}>")), "{}", m.content);
         it.url = "javascript:alert(1)".into();
         let m = urgent_fallback_message(&it, &Decision::new(Level::Urgent, "watch: nginx"));
         assert!(!m.content.contains("javascript"));
