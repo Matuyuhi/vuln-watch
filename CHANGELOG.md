@@ -5,6 +5,10 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 
 ## [Unreleased]
 
+### Added
+
+- `require_watch = true` on a `kind = "advisory"` source notifies only Claude advisories that match a `[[watch]]` entry, or that list a `deb` package installed here and older than its fixed version. Others are ignored ("ウォッチ不一致"), also with `mode = "urgent"`. Default `false` (every advisory, as before). Other kinds reject the setting.
+
 ### Security
 
 - Urgent DMs now escape text that comes from sources (CVE / GHSA titles and descriptions, feed titles, product names, field values such as GHSA fixed versions) before it goes into the message content, the embed description and the embed fields, as the digest and the plain-text fallback already did. A crafted title, description or product name could otherwise show a masked link (`[text](https://…)`) whose visible text is not its target. The embed title is not rendered as Markdown and is unchanged. The `出典` links of Claude advisories still work: they are rebuilt from an escaped title and a validated URL.
