@@ -5,6 +5,8 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 
 ## [Unreleased]
 
+## [1.2.0] - 2026-11-03
+
 ### Added
 
 - `[rules] require_remedy = true` sends an urgent message only when a fix or mitigation is published: a GHSA with a patched version, a USN, a KEV entry with a required action, or a Claude advisory with actions or fixed versions. Other items that would be urgent are ignored ("対処未公開") without being marked as notified, so the same CVE is sent when a source with the fix arrives, and the same advisory is decided again when it is updated with a fix. Sources with `mode = "urgent"` are not affected. Default `false`.
@@ -130,7 +132,8 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 - systemd units (`vuln-watch@.service`, run and digest timers) and `deploy/install.sh`.
 - Release archives for x86_64 and aarch64 Linux with SHA256 checksums and build provenance attestations.
 
-[Unreleased]: https://github.com/Matuyuhi/vuln-watch/compare/v1.1.4...HEAD
+[Unreleased]: https://github.com/Matuyuhi/vuln-watch/compare/v1.2.0...HEAD
+[1.2.0]: https://github.com/Matuyuhi/vuln-watch/compare/v1.1.4...v1.2.0
 [1.1.4]: https://github.com/Matuyuhi/vuln-watch/compare/v1.1.3...v1.1.4
 [1.1.3]: https://github.com/Matuyuhi/vuln-watch/compare/v1.1.2...v1.1.3
 [1.1.2]: https://github.com/Matuyuhi/vuln-watch/compare/v1.1.1...v1.1.2
