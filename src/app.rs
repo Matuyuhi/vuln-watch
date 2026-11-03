@@ -254,6 +254,8 @@ fn flush_outbox(
     }
 
     // The rest goes out now as compact list messages rather than waiting for the digest.
+    let by_key: std::collections::HashMap<&str, &DigestEntry> =
+        overflow.iter().map(|e| (e.key.as_str(), e)).collect();
     let mut rejected = 0;
     for (j, (msg, keys)) in discord::overflow_messages(&overflow, max)
         .into_iter()
@@ -263,7 +265,7 @@ fn flush_outbox(
             notifier.pace();
         }
         renew_run_lock(db, lock)?;
-        let listed = overflow.iter().filter(|e| keys.contains(&e.key));
+        let listed = keys.iter().filter_map(|k| by_key.get(k.as_str()).copied());
         match notifier.send(db, &msg) {
             Ok(()) => {
                 for e in listed {
@@ -395,7 +397,11 @@ fn handle_fetched(
             continue;
         }
         new += 1;
-        let decision = rules::evaluate_with(&item, src.mode, &cfg.rules, &cfg.watches, installed);
+        let policy = rules::SourcePolicy {
+            mode: src.mode,
+            require_watch: src.require_watch,
+        };
+        let decision = rules::evaluate_with(&item, policy, &cfg.rules, &cfg.watches, installed);
         if opts.dry_run {
             println!(
                 "[{name}] {:<7} {} — {} ({})",

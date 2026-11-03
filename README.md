@@ -102,6 +102,7 @@ Some problems never get a CVE but still mean "update this now" for many products
 | Anything else, with or without a watch match | urgent |
 
 - Advisories are few and each one is merged by hand, so they are urgent by default. The reason shows the matching watch entry or installed package, if any.
+- With `require_watch = true` on the source, only advisories that match a watch entry, or that list a `deb` package installed here and older than its fixed version, are notified. Others are ignored ("ウォッチ不一致"), also with `mode = "urgent"`. Matching advisories follow the table above. Default `false`: advisories are notified with or without a watch match.
 - Advisories with `confidence = "unverified"`, or without a `primary` reference, are never urgent.
 - Advisories past `expires`, and those with `status = "resolved"` or `"withdrawn"`, are skipped.
 - A new `revision` of an advisory is notified again; other edits are not.

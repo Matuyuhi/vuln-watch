@@ -380,8 +380,9 @@ fn score_label(item: &Item) -> String {
 
 fn digest_line(e: &DigestEntry, show_reason: bool) -> String {
     let item = &e.item;
-    // Bound each field so the 600-char cap on a line never cuts off the link or the reason
-    // (feed GUIDs, URLs and reasons have no length limit of their own).
+    // Each field is bounded on its own (feed GUIDs, URLs and reasons have no limit of their
+    // own), so a whole line stays far under MAX_LIST_DESC even after Markdown escaping
+    // doubles it, and nothing at its end (score, reason, actions) is ever cut off.
     let id = escape_md(&truncate(item.display_id(), 80));
     let head = if item.url.starts_with("http") && item.url.chars().count() <= 300 {
         format!("[{id}](<{}>)", item.url)
@@ -423,7 +424,7 @@ pub fn overflow_messages(entries: &[DigestEntry], max: usize) -> Vec<(Message, V
     let mut cur = String::new();
     let mut keys = Vec::new();
     for e in entries {
-        let line = truncate(&digest_line(e, true), 600);
+        let line = digest_line(e, true);
         if !cur.is_empty() && cur.chars().count() + line.chars().count() + 1 > MAX_LIST_DESC {
             chunks.push((std::mem::take(&mut cur), std::mem::take(&mut keys)));
         }
@@ -488,7 +489,7 @@ pub fn digest_messages(entries: &[DigestEntry], resumed: bool) -> Vec<(Message, 
     for (header, show_reason, list) in &sections {
         let mut header_pending = !single_section;
         for e in list {
-            let line = truncate(&digest_line(e, *show_reason), 600);
+            let line = digest_line(e, *show_reason);
             let header_len = if header_pending || cur.is_empty() {
                 header.chars().count() + 2
             } else {
@@ -625,6 +626,27 @@ mod tests {
         let d = msgs[0].0.embeds[0]["description"].as_str().unwrap();
         assert!(d.contains("](<https://example.com/x>)"), "{d}");
         assert!(d.ends_with("watch: nginx"), "{d}");
+    }
+
+    #[test]
+    fn worst_case_line_keeps_score_reason_and_actions() {
+        let mut it = Item::new("rel", "_".repeat(5000));
+        it.url = format!("https://example.com/{}", "a".repeat(280));
+        it.title = "_".repeat(5000);
+        it.products = vec!["`".repeat(5000), "b".into()];
+        it.cvss = Some(9.8);
+        it.confidence = Some(crate::model::Confidence::Confirmed);
+        it.extra = vec![("対策".into(), "*".repeat(5000))];
+        let e = DigestEntry {
+            key: "k".into(),
+            item: it,
+            reason: "_".repeat(5000),
+        };
+        let line = digest_line(&e, true);
+        assert!(line.chars().count() <= 1400, "{}", line.chars().count());
+        assert!(line.contains("](<https://example.com/aaa"), "link kept");
+        assert!(line.contains(" — 9.8 · \\_"), "score and reason kept");
+        assert!(line.ends_with("\\*…"), "actions kept at the end");
     }
 
     #[test]

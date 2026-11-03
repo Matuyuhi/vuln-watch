@@ -259,6 +259,10 @@ pub struct SourceConfig {
     /// `advisory` only: branch of the repository to read. Default: "advisories".
     #[serde(default)]
     pub branch: Option<String>,
+    /// `advisory` only: notify only advisories that match a `[[watch]]` entry (or a `deb`
+    /// package installed here and older than its fix). Default: false (all advisories).
+    #[serde(default)]
+    pub require_watch: bool,
     /// Warn once when fetches succeed but nothing new arrived for this many hours.
     /// 0 = off. Default depends on the kind (see `default_stale_after_hours`).
     #[serde(default)]
@@ -336,6 +340,12 @@ impl Config {
             if !names.insert(name.clone()) {
                 bail!("duplicate source name `{name}` (set `name` to make it unique)");
             }
+            if s.require_watch && s.kind != SourceKind::Advisory {
+                bail!(
+                    "source `{name}`: `require_watch` is only for kind = \"advisory\" \
+                     (other sources already follow the watch list unless mode is set)"
+                );
+            }
             if s.kind == SourceKind::Feed && s.url.is_none() {
                 bail!("source `{name}` (kind = \"feed\") needs `url`");
             }
@@ -377,6 +387,7 @@ pub fn default_sources() -> Vec<SourceConfig> {
             ignore_title_prefixes: Vec::new(),
             release: None,
             branch: None,
+            require_watch: false,
             stale_after_hours: None,
         })
         .collect()
@@ -392,6 +403,15 @@ mod tests {
         assert_eq!(cfg.sources.len(), 3);
         assert!(cfg.rules.kev_urgent);
         assert_eq!(cfg.discord.mode, DeliveryMode::Dm);
+    }
+
+    #[test]
+    fn require_watch_only_for_advisory() {
+        let ok = "[[source]]\nkind = \"advisory\"\nrequire_watch = true\n";
+        assert!(Config::parse(ok).unwrap().sources[0].require_watch);
+        let bad = "[[source]]\nkind = \"ghsa\"\nrequire_watch = true\n";
+        let err = Config::parse(bad).unwrap_err().to_string();
+        assert!(err.contains("require_watch"), "{err}");
     }
 
     #[test]

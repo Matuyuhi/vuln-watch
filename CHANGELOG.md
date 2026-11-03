@@ -5,13 +5,17 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 
 ## [Unreleased]
 
+### Added
+
+- `require_watch = true` on a `kind = "advisory"` source notifies only Claude advisories that match a `[[watch]]` entry, or that list a `deb` package installed here and older than its fixed version. Others are ignored ("ウォッチ不一致"), also with `mode = "urgent"`. Default `false` (every advisory, as before). Other kinds reject the setting.
+
 ### Changed
 
 - Urgent items over `max_urgent_per_run` are no longer moved to the digest (which waits for the 08:00 timer, up to ~24 hours). They are sent in the same run as one compact list message, "⚠️ 即時通知の上限（N件/回）を超えた残りM件", with the digest line format (id and link, product, title, score, reason), split into several messages under Discord limits when needed. Listed items count as notified urgently. If a list message fails transiently, its items stay in the outbox for the next run; if Discord rejects it, its items go to the digest as before (with `digest = false`, they stay in the outbox and are sent one by one by later runs), with one notice. The old "残りN件はダイジェストに回しました" notice is gone. `max_urgent_per_run` still caps the individual urgent messages per run.
 
 ### Fixed
 
-- A digest line with a very long feed GUID or reason could be cut at 600 characters before its title, score and reason. The id (80), reason (120) and title (90) are now bounded on their own; a link longer than 300 characters is left out of the line.
+- A digest line with a very long feed GUID, title or reason (or many Markdown characters) was cut at 600 characters, which could drop its link, score and reason. Each field is now bounded on its own instead (id 80, title 90, reason 120, actions 150 characters; a link longer than 300 characters is left out), and the line is no longer cut as a whole.
 
 ## [1.2.0] - 2026-11-03
 
