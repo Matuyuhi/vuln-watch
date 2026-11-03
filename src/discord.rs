@@ -305,16 +305,17 @@ pub fn urgent_message(item: &Item, decision: &Decision) -> Message {
         }));
     }
     for (k, v) in item.extra.iter().take(15) {
-        if v.trim().is_empty() {
-            continue;
-        }
         // Claude advisories list their sources as links on purpose; rebuild those from
         // validated parts. Everything else is escaped.
         let value = if item.confidence.is_some() && k == "出典" {
-            reference_links(v)
+            reference_links(v, 1024)
         } else {
             escape_md(v)
         };
+        // Discord rejects empty field values.
+        if value.trim().is_empty() {
+            continue;
+        }
         fields.push(json!({
             "name": truncate(k, 256),
             "value": truncate(&value, 1024),
@@ -351,33 +352,53 @@ pub fn urgent_fallback_message(item: &Item, decision: &Decision) -> Message {
         escape_md(&truncate(&item.title, 300)),
         escape_md(&truncate(&decision.reason, 300)),
     );
-    if let Some(url) = safe_url(&item.url) {
-        text.push_str(&format!("\n<{}>", truncate(&url, 1000)));
+    // A truncated URL would point somewhere else: leave out one that does not fit.
+    if let Some(url) = safe_url(&item.url).filter(|u| u.chars().count() <= 1000) {
+        text.push_str(&format!("\n<{url}>"));
     }
     Message::text(truncate(&text, 2000))
 }
 
 /// Re-render the `出典` lines of a Claude advisory (`[title](<url>)` or a bare URL, see
 /// `sources::advisory`): the title is escaped and the URL validated, so only well-formed
-/// links survive. Other lines are escaped as plain text.
-fn reference_links(v: &str) -> String {
-    v.lines()
-        .map(|line| {
-            let line = line.trim();
-            let link = line
-                .strip_prefix('[')
-                .and_then(|l| l.strip_suffix(">)"))
-                .and_then(|l| l.split_once("](<"));
-            match link {
-                Some((title, url)) => match safe_url(url) {
-                    Some(url) => format!("[{}](<{url}>)", escape_md(title)),
-                    None => escape_md(title),
-                },
-                None => safe_url(line).unwrap_or_else(|| escape_md(line)),
+/// links survive. Other lines are escaped as plain text. The result stays within `max`
+/// characters without cutting a URL: a link that does not fit is shown as its title only.
+fn reference_links(v: &str, max: usize) -> String {
+    let mut out = String::new();
+    let mut len = 0;
+    for line in v.lines().map(str::trim).filter(|l| !l.is_empty()) {
+        let (label, url) = match line
+            .strip_prefix('[')
+            .and_then(|l| l.strip_suffix(">)"))
+            .and_then(|l| l.split_once("](<"))
+        {
+            Some((title, url)) => (escape_md(title), safe_url(url)),
+            None => match safe_url(line) {
+                Some(url) => (String::new(), Some(url)),
+                None => (escape_md(line), None),
+            },
+        };
+        let link = url.map(|u| {
+            if label.trim().is_empty() {
+                u
+            } else {
+                format!("[{label}](<{u}>)")
             }
-        })
-        .collect::<Vec<_>>()
-        .join("\n")
+        });
+        let sep = usize::from(!out.is_empty());
+        let room = max.saturating_sub(len + sep);
+        let rendered = match link {
+            Some(l) if l.chars().count() <= room => l,
+            _ if label.trim().is_empty() || room == 0 => continue,
+            _ => truncate(&label, room),
+        };
+        if sep == 1 {
+            out.push('\n');
+        }
+        len += sep + rendered.chars().count();
+        out.push_str(&rendered);
+    }
+    out
 }
 
 /// Short "what is affected" label, or None when the title already names it.
@@ -415,10 +436,14 @@ fn score_label(item: &Item) -> String {
     }
 }
 
+/// Longest item URL linked in a digest line (lines are cut at 600 characters).
+const MAX_DIGEST_URL: usize = 300;
+
 fn digest_line(e: &DigestEntry, show_reason: bool) -> String {
     let item = &e.item;
     let id = escape_md(item.display_id());
-    let head = match safe_url(&item.url) {
+    // Long (e.g. percent-encoded non-ASCII) URLs would eat the line budget and get cut.
+    let head = match safe_url(&item.url).filter(|u| u.chars().count() <= MAX_DIGEST_URL) {
         Some(url) => format!("[{id}](<{url}>)"),
         None => id,
     };
@@ -784,7 +809,35 @@ mod tests {
             "[Vendor \\*notice\\*](<https://example.com/vendor>)\nhttps://example.com/news\nBad"
         );
 
+        // A reference left empty after sanitizing does not produce an empty field.
+        it.extra = vec![("出典".into(), "[](<ftp://example.com/x>)".into())];
+        let m = urgent_message(&it, &Decision::new(Level::Urgent, "Claude 調査"));
+        let fields = m.embeds[0]["fields"].as_array().unwrap();
+        assert!(fields.iter().all(|f| f["name"] != "出典"), "{fields:?}");
+
+        // Links never get cut: one that does not fit is shown as its title.
+        let long = format!("https://example.com/{}", "あ".repeat(100));
+        let refs = (0..5)
+            .map(|i| format!("[Ref {i}](<{long}>)"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let out = reference_links(&refs, 1024);
+        assert!(out.chars().count() <= 1024, "{out}");
+        assert_eq!(
+            out.matches("](<").count(),
+            out.matches(">)").count(),
+            "{out}"
+        );
+        assert!(out
+            .lines()
+            .all(|l| l.starts_with("[Ref ") || l.starts_with("Ref ")));
+        assert_eq!(out.lines().count(), 5, "{out}");
+
         // Not an advisory: the same text is escaped.
+        it.extra = vec![(
+            "出典".into(),
+            "[Vendor](<https://example.com/vendor>)".into(),
+        )];
         it.confidence = None;
         let m = urgent_message(&it, &Decision::new(Level::Urgent, "x"));
         for text in rendered(&m) {
@@ -812,6 +865,10 @@ mod tests {
         for bad in ["javascript:alert(1)", "httpx", "not a url", ""] {
             assert!(line(bad).starts_with("• **CVE-1** Bug"), "{bad}");
         }
+        // A URL that grows past the budget when percent-encoded is left out, not cut.
+        let l = line(&format!("https://example.com/{}", "あ".repeat(70)));
+        assert!(l.starts_with("• **CVE-1** Bug — 9.6"), "{l}");
+
         let mut e = entry("CVE-1", "Bug", &[], "");
         e.item.url = "ftp://example.com/x".into();
         let msgs = digest_messages(&[e], false);
@@ -860,6 +917,9 @@ mod tests {
             "{}",
             m.content
         );
+        it.url = format!("https://example.com/{}", "あ".repeat(200));
+        let m = urgent_fallback_message(&it, &Decision::new(Level::Urgent, "watch: nginx"));
+        assert!(m.content.ends_with("watch: nginx"), "{}", m.content);
         it.url = "javascript:alert(1)".into();
         let m = urgent_fallback_message(&it, &Decision::new(Level::Urgent, "watch: nginx"));
         assert!(!m.content.contains("javascript"));
