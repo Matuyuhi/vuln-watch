@@ -15,7 +15,7 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 
 ### Fixed
 
-- A digest line with a very long feed GUID, title or reason (or many Markdown characters) was cut at 600 characters, which could drop its link, score and reason. Each field is now bounded on its own instead (id 80, title 90, reason 120, actions 150 characters; a link longer than 300 characters is left out), and the line is no longer cut as a whole.
+- A digest line with a very long feed GUID, title or reason (or many Markdown characters) was cut at 600 characters, which could drop its link, score and reason. Each field is now bounded on its own instead (id 80, title 90, severity 20, reason 120, actions 150 characters; a link longer than 300 characters is left out), and the line is no longer cut as a whole.
 
 ## [1.2.0] - 2026-11-03
 

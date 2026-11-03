@@ -373,7 +373,8 @@ pub fn product_hint(item: &Item) -> Option<String> {
 fn score_label(item: &Item) -> String {
     match (item.cvss, &item.severity) {
         (Some(c), _) => format!("{c:.1}"),
-        (None, Some(s)) => s.to_lowercase(),
+        // Source data: bounded like every other field of a digest line.
+        (None, Some(s)) => escape_md(&truncate(&s.to_lowercase(), 20)),
         (None, None) => "-".into(),
     }
 }
@@ -644,6 +645,16 @@ mod tests {
         };
         let line = digest_line(&e, true);
         assert!(line.chars().count() <= 1400, "{}", line.chars().count());
+        let mut item = e.item.clone();
+        item.cvss = None;
+        item.severity = Some("x".repeat(5000));
+        let no_cvss = DigestEntry {
+            key: "k".into(),
+            item,
+            reason: e.reason.clone(),
+        };
+        let n = digest_line(&no_cvss, true).chars().count();
+        assert!(n <= 1400, "unbounded severity: {n}");
         assert!(line.contains("](<https://example.com/aaa"), "link kept");
         assert!(line.contains(" — 9.8 · \\_"), "score and reason kept");
         assert!(line.ends_with("\\*…"), "actions kept at the end");
