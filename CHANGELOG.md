@@ -7,8 +7,8 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 
 ### Added
 
-- `[rules] require_remedy = true` sends an urgent message only when a fix or mitigation is published: a GHSA with a patched version, a USN, a KEV entry with a required action, or a Claude advisory with actions or fixed versions. Other items that would be urgent are ignored ("対処未公開") without being marked as notified, so the same CVE is sent when a source with the fix arrives. Sources with `mode = "urgent"` are not affected. Default `false`.
-- `[rules] digest = false` turns the digest off: items that would go to it are ignored ("ダイジェスト無効"), urgent messages over `max_urgent_per_run` stay in the outbox for the next run, and a cvelist record given up after 48 hours is only logged. Default `true`.
+- `[rules] require_remedy = true` sends an urgent message only when a fix or mitigation is published: a GHSA with a patched version, a USN, a KEV entry with a required action, or a Claude advisory with actions or fixed versions. Other items that would be urgent are ignored ("対処未公開") without being marked as notified, so the same CVE is sent when a source with the fix arrives, and the same advisory is decided again when it is updated with a fix. Sources with `mode = "urgent"` are not affected. Default `false`.
+- `[rules] digest = false` turns the digest off: items that would go to it are ignored ("ダイジェスト無効"), urgent messages over `max_urgent_per_run` stay in the outbox for the next run, and a cvelist record given up after 48 hours is only logged. `vuln-watch digest` and the digest retry in `run` send nothing. Default `true`.
 
 ### Fixed
 

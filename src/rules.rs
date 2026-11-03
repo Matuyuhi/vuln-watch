@@ -288,7 +288,10 @@ pub fn evaluate_with(
     let d = decide(item, mode, rules, watches, installed);
     match d.level {
         Level::Urgent if rules.require_remedy && !item.remedy && mode != SourceMode::Urgent => {
-            Decision::new(Level::Ignore, format!("対処未公開: {}", d.reason))
+            Decision {
+                awaiting_remedy: true,
+                ..Decision::new(Level::Ignore, format!("対処未公開: {}", d.reason))
+            }
         }
         Level::Digest if !rules.digest => {
             Decision::new(Level::Ignore, format!("ダイジェスト無効: {}", d.reason))

@@ -133,6 +133,9 @@ impl Level {
 pub struct Decision {
     pub level: Level,
     pub reason: String,
+    /// Ignored only because no fix is published yet (`rules.require_remedy`); the item is
+    /// decided again when a later fetch brings it with a fix.
+    pub awaiting_remedy: bool,
 }
 
 impl Decision {
@@ -140,6 +143,7 @@ impl Decision {
         Self {
             level,
             reason: reason.into(),
+            awaiting_remedy: false,
         }
     }
 }
