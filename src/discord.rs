@@ -380,8 +380,10 @@ fn score_label(item: &Item) -> String {
 
 fn digest_line(e: &DigestEntry, show_reason: bool) -> String {
     let item = &e.item;
-    let id = escape_md(item.display_id());
-    let head = if item.url.starts_with("http") {
+    // Bound each field so the 600-char cap on a line never cuts off the link or the reason
+    // (feed GUIDs, URLs and reasons have no length limit of their own).
+    let id = escape_md(&truncate(item.display_id(), 80));
+    let head = if item.url.starts_with("http") && item.url.chars().count() <= 300 {
         format!("[{id}](<{}>)", item.url)
     } else {
         id
@@ -395,7 +397,7 @@ fn digest_line(e: &DigestEntry, show_reason: bool) -> String {
         score_label(item),
     );
     if show_reason {
-        line.push_str(&format!(" · {}", escape_md(&e.reason)));
+        line.push_str(&format!(" · {}", escape_md(&truncate(&e.reason, 120))));
     }
     // Claude advisories: the actions on a second line; the linked file lists the sources.
     if item.confidence.is_some() {
@@ -607,6 +609,22 @@ mod tests {
             .0
             .content
             .starts_with("📋 脆弱性ダイジェスト（再送）: 50件"));
+    }
+
+    #[test]
+    fn overflow_line_keeps_link_and_reason_with_a_long_guid() {
+        let mut it = Item::new("rel", "g".repeat(5000));
+        it.url = "https://example.com/x".into();
+        it.title = "t".repeat(5000);
+        let e = DigestEntry {
+            key: "k".into(),
+            item: it,
+            reason: "watch: nginx".into(),
+        };
+        let msgs = overflow_messages(&[e], 2);
+        let d = msgs[0].0.embeds[0]["description"].as_str().unwrap();
+        assert!(d.contains("](<https://example.com/x>)"), "{d}");
+        assert!(d.ends_with("watch: nginx"), "{d}");
     }
 
     #[test]
