@@ -349,7 +349,11 @@ fn handle_fetched(
             continue;
         }
         new += 1;
-        let decision = rules::evaluate_with(&item, src.mode, &cfg.rules, &cfg.watches, installed);
+        let policy = rules::SourcePolicy {
+            mode: src.mode,
+            require_watch: src.require_watch,
+        };
+        let decision = rules::evaluate_with(&item, policy, &cfg.rules, &cfg.watches, installed);
         if opts.dry_run {
             println!(
                 "[{name}] {:<7} {} — {} ({})",

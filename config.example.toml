@@ -180,6 +180,8 @@ mode = "digest"
 # [[source]]
 # kind = "advisory"
 # name = "claude-advisories"
+# Only notify advisories that match a [[watch]] entry or an outdated installed package.
+# require_watch = true
 
 # Malicious packages. Only notified when a watch entry matches.
 # [[source]]
