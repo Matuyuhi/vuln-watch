@@ -5,6 +5,10 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 
 ## [Unreleased]
 
+### Changed
+
+- Urgent items over `max_urgent_per_run` are no longer moved to the digest (which waits for the 08:00 timer, up to ~24 hours). They are sent in the same run as one compact list message, "⚠️ 即時通知の上限（N件/回）を超えた残りM件", with the digest line format (id and link, product, title, score, reason), split into several messages under Discord limits when needed. Listed items count as notified urgently. If a list message fails transiently, its items stay in the outbox for the next run; if Discord rejects it, its items go to the digest as before (with `digest = false`, they stay in the outbox and are sent one by one by later runs), with one notice. The old "残りN件はダイジェストに回しました" notice is gone. `max_urgent_per_run` still caps the individual urgent messages per run.
+
 ## [1.2.0] - 2026-11-03
 
 ### Added

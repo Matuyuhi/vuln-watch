@@ -1,7 +1,7 @@
 use anyhow::{Context, Result};
 
 use crate::config::{Config, DeliveryMode, SourceConfig};
-use crate::db::{Db, Queue};
+use crate::db::{Db, DigestEntry, Queue};
 use crate::discord::{self, Message, Notifier, Target};
 use crate::http::Http;
 use crate::installed::Installed;
@@ -219,43 +219,80 @@ fn flush_outbox(
     summary: &mut RunSummary,
     lock: &mut Option<&mut String>,
 ) -> Result<()> {
-    let entries = db.queue_entries(Queue::Outbox)?;
+    let mut entries = db.queue_entries(Queue::Outbox)?;
     let max = cfg.runtime.max_urgent_per_run;
-    let overflow = entries.len().saturating_sub(max);
+    let overflow = entries.split_off(max.min(entries.len()));
     for (i, e) in entries.into_iter().enumerate() {
-        if i < max {
-            if i > 0 {
-                notifier.pace();
+        if i > 0 {
+            notifier.pace();
+        }
+        renew_run_lock(db, lock)?;
+        let decision = Decision::new(Level::Urgent, e.reason.clone());
+        let id = e.item.display_id();
+        match notifier.send(db, &discord::urgent_message(&e.item, &decision)) {
+            Ok(()) => {}
+            // Resending a message Discord refused would fail on every run and hold up
+            // everything queued behind it.
+            Err(err) if discord::is_rejected(&err) => {
+                tracing::warn!(
+                    "Discord rejected the message for {id} ({err:#}), sending plain text"
+                );
+                renew_run_lock(db, lock)?;
+                notifier
+                    .send(db, &discord::urgent_fallback_message(&e.item, &decision))
+                    .with_context(|| format!("sending plain-text notification for {id}"))?;
             }
-            renew_run_lock(db, lock)?;
-            let decision = Decision::new(Level::Urgent, e.reason.clone());
-            let id = e.item.display_id();
-            match notifier.send(db, &discord::urgent_message(&e.item, &decision)) {
-                Ok(()) => {}
-                // Resending a message Discord refused would fail on every run and hold up
-                // everything queued behind it.
-                Err(err) if discord::is_rejected(&err) => {
-                    tracing::warn!(
-                        "Discord rejected the message for {id} ({err:#}), sending plain text"
-                    );
-                    renew_run_lock(db, lock)?;
-                    notifier
-                        .send(db, &discord::urgent_fallback_message(&e.item, &decision))
-                        .with_context(|| format!("sending plain-text notification for {id}"))?;
-                }
-                Err(err) => {
-                    return Err(err.context(format!("sending notification for {id}")));
+            Err(err) => {
+                return Err(err.context(format!("sending notification for {id}")));
+            }
+        }
+        mark_sent_urgent(db, &e)?;
+        summary.urgent += 1;
+    }
+    if overflow.is_empty() {
+        return Ok(());
+    }
+
+    // The rest goes out now as compact list messages rather than waiting for the digest.
+    let mut rejected = Vec::new();
+    for (j, (msg, keys)) in discord::overflow_messages(&overflow, max)
+        .into_iter()
+        .enumerate()
+    {
+        if max > 0 || j > 0 {
+            notifier.pace();
+        }
+        renew_run_lock(db, lock)?;
+        let listed = overflow.iter().filter(|e| keys.contains(&e.key));
+        match notifier.send(db, &msg) {
+            Ok(()) => {
+                for e in listed {
+                    mark_sent_urgent(db, e)?;
+                    summary.urgent += 1;
                 }
             }
-            db.set_alerted(&e.key, Level::Urgent)?;
-            // It may have been queued for the digest earlier at a lower level.
-            db.dequeue(Queue::Digest, &e.key)?;
-            db.dequeue(Queue::Digest, &e.item.dedupe_key())?;
-            summary.urgent += 1;
-        } else if !cfg.rules.digest {
-            // No digest to fall back to: keep it in the outbox for the next run.
-            continue;
-        } else {
+            // One item Discord refuses must not hold up the outbox: hand those to the digest.
+            Err(err) if discord::is_rejected(&err) => {
+                tracing::warn!(
+                    "Discord rejected the list of {} urgent items over the cap ({err:#})",
+                    keys.len()
+                );
+                rejected.extend(listed);
+            }
+            // Transient: the entries stay in the outbox for the next run.
+            Err(err) => {
+                return Err(err.context(format!(
+                    "sending the list of {} urgent items over the cap",
+                    keys.len()
+                )));
+            }
+        }
+    }
+    if rejected.is_empty() {
+        return Ok(());
+    }
+    if cfg.rules.digest {
+        for e in &rejected {
             db.enqueue(
                 Queue::Digest,
                 &e.key,
@@ -263,25 +300,34 @@ fn flush_outbox(
                 &format!("{}（即時通知の上限超過）", e.reason),
             )?;
             db.set_alerted(&e.key, Level::Digest)?;
+            db.dequeue(Queue::Outbox, &e.key)?;
             summary.digested += 1;
         }
-        db.dequeue(Queue::Outbox, &e.key)?;
     }
-    if overflow > 0 {
-        let rest = if cfg.rules.digest {
-            "ダイジェストに回しました"
-        } else {
-            "次回の実行で送ります"
-        };
-        renew_run_lock(db, lock)?;
-        notifier.send(
-            db,
-            &Message::text(format!(
-                "⚠️ 即時通知が上限（{max}件/回）を超えたため、残り{overflow}件は{rest}。"
-            )),
-        )?;
-    }
+    // Without a digest they stay in the outbox; the next run sends them one by one.
+    let rest = if cfg.rules.digest {
+        "ダイジェストに回しました"
+    } else {
+        "次回の実行で送ります"
+    };
+    renew_run_lock(db, lock)?;
+    notifier.send(
+        db,
+        &Message::text(format!(
+            "⚠️ 即時通知が上限（{max}件/回）を超えた残り{}件は一覧を送れなかったため、{rest}。",
+            rejected.len()
+        )),
+    )?;
     Ok(())
+}
+
+/// Record an outbox entry as sent at the urgent level and take it out of the queues.
+fn mark_sent_urgent(db: &Db, e: &DigestEntry) -> Result<()> {
+    db.set_alerted(&e.key, Level::Urgent)?;
+    // It may have been queued for the digest earlier at a lower level.
+    db.dequeue(Queue::Digest, &e.key)?;
+    db.dequeue(Queue::Digest, &e.item.dedupe_key())?;
+    db.dequeue(Queue::Outbox, &e.key)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -862,7 +908,7 @@ kind = "ghsa"
     }
 
     #[test]
-    fn overflow_without_digest_waits_for_next_run() {
+    fn overflow_without_digest_is_still_sent_as_a_list() {
         let mut cfg = cfg();
         cfg.rules.digest = false;
         let http = Http::new(5).unwrap();
@@ -874,13 +920,14 @@ kind = "ghsa"
             .collect();
         handle(&cfg, &mut db, "kev", fetched(items, "c1"), &mut s);
         flush_outbox(&cfg, &db, &notifier, &mut s, &mut None).unwrap();
-        assert!(notifier.sent()[2].content.contains("次回の実行で送ります"));
-        assert_eq!(keys(&db, Queue::Outbox), ["CVE-2026-0003#kev"]);
-        assert!(keys(&db, Queue::Digest).is_empty());
-
-        flush_outbox(&cfg, &db, &notifier, &mut s, &mut None).unwrap();
-        assert!(notifier.sent()[3].content.contains("CVE-2026-0003"));
+        let sent = notifier.sent();
+        assert_eq!(sent.len(), 3);
+        assert!(sent[2].embeds[0]["description"]
+            .as_str()
+            .unwrap()
+            .contains("CVE-2026-0003"));
         assert_eq!(db.queue_len(Queue::Outbox).unwrap(), 0);
+        assert!(keys(&db, Queue::Digest).is_empty());
     }
 
     #[test]
@@ -927,24 +974,103 @@ kind = "ghsa"
         assert_eq!(db.queue_len(Queue::Digest).unwrap(), 1);
     }
 
+    /// Queue `n` KEV items (urgent) in the outbox; the test config caps a run at 2.
+    fn outbox_with(db: &mut Db, n: usize) {
+        let mut s = RunSummary::default();
+        let items = (1..=n)
+            .map(|i| {
+                let id = format!("CVE-2026-{i:04}");
+                let mut item = kev_item("kev", &id);
+                item.url = format!("https://example.com/{id}");
+                item
+            })
+            .collect();
+        handle(&cfg(), db, "kev", fetched(items, "c1"), &mut s);
+        assert_eq!(keys(db, Queue::Outbox).len(), n);
+    }
+
     #[test]
-    fn overflow_beyond_cap_goes_to_digest_with_one_notice() {
+    fn overflow_beyond_cap_is_sent_now_as_one_list() {
         let cfg = cfg();
         let http = Http::new(5).unwrap();
         let notifier = recorder(&http, vec![]);
         let mut db = Db::open_in_memory().unwrap();
         let mut s = RunSummary::default();
-        let items = (1..=5)
-            .map(|i| kev_item("kev", &format!("CVE-2026-000{i}")))
-            .collect();
-        handle(&cfg, &mut db, "kev", fetched(items, "c1"), &mut s);
+        outbox_with(&mut db, 5);
         flush_outbox(&cfg, &db, &notifier, &mut s, &mut None).unwrap();
 
         let sent = notifier.sent();
-        assert_eq!(sent.len(), 3, "2 urgent + 1 overflow notice");
+        assert_eq!(sent.len(), 3, "2 urgent + 1 list");
         assert!(sent[0].content.contains("CVE-2026-0001"));
         assert!(sent[1].content.contains("CVE-2026-0002"));
+        assert!(
+            sent[2].content.contains("上限（2件/回）を超えた残り3件"),
+            "{}",
+            sent[2].content
+        );
+        let list = sent[2].embeds[0]["description"].as_str().unwrap();
+        for id in ["CVE-2026-0003", "CVE-2026-0004", "CVE-2026-0005"] {
+            assert!(list.contains(id), "{list}");
+            assert!(
+                list.contains(&format!("(<https://example.com/{id}>)")),
+                "{list}"
+            );
+        }
+        assert!(!list.contains("CVE-2026-0001"));
+        assert!(!list.contains("上限超過"), "{list}");
+        assert_eq!(s.urgent, 5);
+        assert_eq!(s.digested, 0);
+        assert_eq!(db.queue_len(Queue::Outbox).unwrap(), 0);
+        assert_eq!(db.queue_len(Queue::Digest).unwrap(), 0);
+        for i in 1..=5 {
+            let key = format!("CVE-2026-{i:04}#kev");
+            assert_eq!(
+                db.alerted_level(&key).unwrap(),
+                Some(Level::Urgent),
+                "{key}"
+            );
+        }
+    }
+
+    #[test]
+    fn overflow_list_transient_failure_keeps_entries_in_outbox() {
+        let cfg = cfg();
+        let http = Http::new(5).unwrap();
+        // Attempts 0 and 1 are the urgent messages; 2 is the list.
+        let notifier = recorder(&http, vec![(2, Fail::Transient)]);
+        let mut db = Db::open_in_memory().unwrap();
+        let mut s = RunSummary::default();
+        outbox_with(&mut db, 5);
+        assert!(flush_outbox(&cfg, &db, &notifier, &mut s, &mut None).is_err());
+
+        assert_eq!(notifier.sent().len(), 2);
+        assert_eq!(s.urgent, 2);
+        assert_eq!(
+            keys(&db, Queue::Outbox),
+            [
+                "CVE-2026-0003#kev",
+                "CVE-2026-0004#kev",
+                "CVE-2026-0005#kev"
+            ]
+        );
+        assert_eq!(db.queue_len(Queue::Digest).unwrap(), 0);
+        assert_eq!(db.alerted_level("CVE-2026-0003#kev").unwrap(), None);
+    }
+
+    #[test]
+    fn overflow_list_rejected_goes_to_digest_with_one_notice() {
+        let cfg = cfg();
+        let http = Http::new(5).unwrap();
+        let notifier = recorder(&http, vec![(2, Fail::Rejected)]);
+        let mut db = Db::open_in_memory().unwrap();
+        let mut s = RunSummary::default();
+        outbox_with(&mut db, 5);
+        flush_outbox(&cfg, &db, &notifier, &mut s, &mut None).unwrap();
+
+        let sent = notifier.sent();
+        assert_eq!(sent.len(), 3, "2 urgent + 1 notice");
         assert!(sent[2].content.contains("残り3件"), "{}", sent[2].content);
+        assert!(sent[2].content.contains("ダイジェストに回しました"));
         assert_eq!(s.urgent, 2);
         assert_eq!(s.digested, 3);
         assert_eq!(db.queue_len(Queue::Outbox).unwrap(), 0);
@@ -958,6 +1084,59 @@ kind = "ghsa"
         );
         let reason = &db.queue_entries(Queue::Digest).unwrap()[0].reason;
         assert!(reason.contains("即時通知の上限超過"), "{reason}");
+        assert_eq!(
+            db.alerted_level("CVE-2026-0003#kev").unwrap(),
+            Some(Level::Digest)
+        );
+    }
+
+    #[test]
+    fn overflow_list_rejected_without_digest_stays_in_outbox() {
+        let mut cfg = cfg();
+        cfg.rules.digest = false;
+        let http = Http::new(5).unwrap();
+        let notifier = recorder(&http, vec![(2, Fail::Rejected)]);
+        let mut db = Db::open_in_memory().unwrap();
+        let mut s = RunSummary::default();
+        outbox_with(&mut db, 3);
+        flush_outbox(&cfg, &db, &notifier, &mut s, &mut None).unwrap();
+
+        let sent = notifier.sent();
+        assert_eq!(sent.len(), 3);
+        assert!(sent[2].content.contains("次回の実行で送ります"));
+        assert_eq!(keys(&db, Queue::Outbox), ["CVE-2026-0003#kev"]);
+        assert_eq!(db.queue_len(Queue::Digest).unwrap(), 0);
+
+        // The next run sends it on its own, within the cap.
+        flush_outbox(&cfg, &db, &notifier, &mut s, &mut None).unwrap();
+        assert!(notifier.sent()[3].content.contains("CVE-2026-0003"));
+        assert_eq!(db.queue_len(Queue::Outbox).unwrap(), 0);
+    }
+
+    #[test]
+    fn many_overflow_items_are_split_into_several_lists() {
+        let cfg = cfg();
+        let http = Http::new(5).unwrap();
+        let notifier = recorder(&http, vec![]);
+        let mut db = Db::open_in_memory().unwrap();
+        let mut s = RunSummary::default();
+        outbox_with(&mut db, 120);
+        flush_outbox(&cfg, &db, &notifier, &mut s, &mut None).unwrap();
+
+        let sent = notifier.sent();
+        assert!(sent.len() > 3, "2 urgent + several lists: {}", sent.len());
+        let listed: usize = sent[2..]
+            .iter()
+            .map(|m| {
+                let d = m.embeds[0]["description"].as_str().unwrap();
+                assert!(d.chars().count() <= 3900);
+                d.lines().filter(|l| l.starts_with("• ")).count()
+            })
+            .sum();
+        assert_eq!(listed, 118);
+        assert_eq!(s.urgent, 120);
+        assert_eq!(db.queue_len(Queue::Outbox).unwrap(), 0);
+        assert_eq!(db.queue_len(Queue::Digest).unwrap(), 0);
     }
 
     #[test]

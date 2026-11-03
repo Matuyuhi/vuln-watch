@@ -410,11 +410,60 @@ fn digest_line(e: &DigestEntry, show_reason: bool) -> String {
     line
 }
 
+/// Longest embed description a digest or list message uses (Discord allows 4096).
+const MAX_LIST_DESC: usize = 3900;
+
+/// Build list messages for urgent items over `max_urgent_per_run`, sent in the same run
+/// instead of their own urgent message. Same line format and size limits as the digest;
+/// each message comes with the queue keys of the entries it lists.
+pub fn overflow_messages(entries: &[DigestEntry], max: usize) -> Vec<(Message, Vec<String>)> {
+    let mut chunks: Vec<(String, Vec<String>)> = Vec::new();
+    let mut cur = String::new();
+    let mut keys = Vec::new();
+    for e in entries {
+        let line = truncate(&digest_line(e, true), 600);
+        if !cur.is_empty() && cur.chars().count() + line.chars().count() + 1 > MAX_LIST_DESC {
+            chunks.push((std::mem::take(&mut cur), std::mem::take(&mut keys)));
+        }
+        if !cur.is_empty() {
+            cur.push('\n');
+        }
+        cur.push_str(&line);
+        keys.push(e.key.clone());
+    }
+    if !cur.is_empty() {
+        chunks.push((cur, keys));
+    }
+
+    let total = chunks.len();
+    chunks
+        .into_iter()
+        .enumerate()
+        .map(|(i, (desc, keys))| {
+            let content = if i == 0 {
+                format!(
+                    "⚠️ 即時通知の上限（{max}件/回）を超えた残り{}件",
+                    entries.len()
+                )
+            } else {
+                format!("⚠️ 上限超過分（続き {}/{}）", i + 1, total)
+            };
+            let msg = Message {
+                content,
+                embeds: vec![json!({
+                    "description": desc,
+                    "color": 0xE53935,
+                })],
+            };
+            (msg, keys)
+        })
+        .collect()
+}
+
 /// Build digest messages, each with one embed whose description stays under Discord limits,
 /// together with the queue keys of the entries in each message. `resumed` marks a digest
 /// that resends what a failed one left in the queue.
 pub fn digest_messages(entries: &[DigestEntry], resumed: bool) -> Vec<(Message, Vec<String>)> {
-    const MAX_DESC: usize = 3900;
     const RELEVANT: &str = "**関係あり**";
     const SCORE_ONLY: &str = "**その他の高 CVSS**（ウォッチ・サーバーに一致なし）";
 
@@ -444,7 +493,7 @@ pub fn digest_messages(entries: &[DigestEntry], resumed: bool) -> Vec<(Message, 
                 0
             };
             if !cur.is_empty()
-                && cur.chars().count() + header_len + line.chars().count() + 1 > MAX_DESC
+                && cur.chars().count() + header_len + line.chars().count() + 1 > MAX_LIST_DESC
             {
                 chunks.push((std::mem::take(&mut cur), std::mem::take(&mut keys)));
                 header_pending = !single_section;
@@ -558,6 +607,42 @@ mod tests {
             .0
             .content
             .starts_with("📋 脆弱性ダイジェスト（再送）: 50件"));
+    }
+
+    #[test]
+    fn overflow_list_is_chunked_under_limits() {
+        let entries: Vec<DigestEntry> = (0..200)
+            .map(|i| DigestEntry {
+                key: i.to_string(),
+                item: item(i),
+                reason: "CISA KEV".into(),
+            })
+            .collect();
+        let msgs = overflow_messages(&entries, 10);
+        assert!(msgs.len() > 1);
+        assert_eq!(
+            msgs[0].0.content,
+            "⚠️ 即時通知の上限（10件/回）を超えた残り200件"
+        );
+        assert!(
+            msgs[1].0.content.contains("続き 2/"),
+            "{}",
+            msgs[1].0.content
+        );
+        let mut keys = Vec::new();
+        for (m, k) in &msgs {
+            assert!(m.content.chars().count() <= 2000);
+            let d = m.embeds[0]["description"].as_str().unwrap();
+            assert!(d.chars().count() <= 3900);
+            let items = d.lines().filter(|l| l.starts_with("• ")).count();
+            assert_eq!(items, k.len());
+            for l in d.lines().filter(|l| l.starts_with("• ")) {
+                assert!(l.contains("CISA KEV"), "reason shown: {l}");
+            }
+            keys.extend(k.iter().cloned());
+        }
+        let expected: Vec<String> = (0..200).map(|i| i.to_string()).collect();
+        assert_eq!(keys, expected);
     }
 
     fn entry(key: &str, title: &str, products: &[&str], reason: &str) -> DigestEntry {
