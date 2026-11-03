@@ -215,16 +215,25 @@ fn evaluate_installed(item: &Item, im: &InstalledMatch) -> Option<Decision> {
 
 /// Advisories from the scheduled Claude research: urgent unless their severity is low or
 /// the only match is a digest-only watch entry. An unverified one is never urgent, even
-/// from a source with `mode = "urgent"`.
+/// from a source with `mode = "urgent"`. With `require_watch`, an advisory that matches
+/// no watch entry and no outdated installed package is ignored.
 fn evaluate_advisory(
     item: &Item,
     confidence: Confidence,
-    mode: SourceMode,
+    src: SourcePolicy,
     watches: &[Watch],
     installed: Option<&InstalledMatch>,
 ) -> Decision {
     let m = match_watch(item, watches);
     let d = advisory_decision(item, confidence, m.as_ref(), installed);
+    if src.require_watch && m.is_none() && !d.installed_outdated {
+        return Decision::new(
+            Level::Ignore,
+            format!("ウォッチ不一致: {}", d.decision.reason),
+        );
+    }
+    let d = d.decision;
+    let mode = src.mode;
     let level = match mode {
         SourceMode::Urgent => Level::Urgent,
         SourceMode::Digest => d.level.min(Level::Digest),
@@ -238,12 +247,18 @@ fn evaluate_advisory(
     Decision::new(level, d.reason)
 }
 
+struct AdvisoryDecision {
+    decision: Decision,
+    /// A `deb` package of the advisory is installed here and older than its fix.
+    installed_outdated: bool,
+}
+
 fn advisory_decision(
     item: &Item,
     confidence: Confidence,
     m: Option<&WatchMatch>,
     installed: Option<&InstalledMatch>,
-) -> Decision {
+) -> AdvisoryDecision {
     let tag = format!("Claude 調査（{}）", confidence.label());
     // Distro packages count only when one of them is installed here; the advisory may
     // equally be about desktop apps that dpkg does not know. A patched package only
@@ -256,7 +271,10 @@ fn advisory_decision(
         })
         .and_then(|im| evaluate_installed(item, im));
     if let Some(d) = installed.as_ref().filter(|d| d.level == Level::Urgent) {
-        return Decision::new(Level::Urgent, format!("{tag} {}", d.reason));
+        return AdvisoryDecision {
+            decision: Decision::new(Level::Urgent, format!("{tag} {}", d.reason)),
+            installed_outdated: true,
+        };
     }
     let reason = match (m, &installed) {
         (Some(m), _) => format!("{tag} ウォッチ: {}（{}）", m.watch.name, m.evidence),
@@ -270,7 +288,28 @@ fn advisory_decision(
     } else {
         Level::Urgent
     };
-    Decision::new(level, reason)
+    AdvisoryDecision {
+        decision: Decision::new(level, reason),
+        installed_outdated: false,
+    }
+}
+
+/// Per-source settings that affect the decision.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct SourcePolicy {
+    pub mode: SourceMode,
+    /// `advisory` only: notify only advisories that match a watch entry or an outdated
+    /// installed package.
+    pub require_watch: bool,
+}
+
+impl From<SourceMode> for SourcePolicy {
+    fn from(mode: SourceMode) -> Self {
+        SourcePolicy {
+            mode,
+            require_watch: false,
+        }
+    }
 }
 
 #[cfg(test)]
@@ -280,12 +319,14 @@ pub fn evaluate(item: &Item, mode: SourceMode, rules: &Rules, watches: &[Watch])
 
 pub fn evaluate_with(
     item: &Item,
-    mode: SourceMode,
+    src: impl Into<SourcePolicy>,
     rules: &Rules,
     watches: &[Watch],
     installed: Option<&InstalledMatch>,
 ) -> Decision {
-    let d = decide(item, mode, rules, watches, installed);
+    let src = src.into();
+    let mode = src.mode;
+    let d = decide(item, src, rules, watches, installed);
     match d.level {
         Level::Urgent if rules.require_remedy && !item.remedy && mode != SourceMode::Urgent => {
             Decision {
@@ -302,14 +343,15 @@ pub fn evaluate_with(
 
 fn decide(
     item: &Item,
-    mode: SourceMode,
+    src: SourcePolicy,
     rules: &Rules,
     watches: &[Watch],
     installed: Option<&InstalledMatch>,
 ) -> Decision {
     if let Some(confidence) = item.confidence {
-        return evaluate_advisory(item, confidence, mode, watches, installed);
+        return evaluate_advisory(item, confidence, src, watches, installed);
     }
+    let mode = src.mode;
     let m = match_watch(item, watches);
     let watch_note = m
         .as_ref()
@@ -857,6 +899,51 @@ mod tests {
         let d = evaluate_with(&i, SourceMode::Filter, &r, &[], Some(&im));
         assert_eq!(d.level, Level::Urgent);
         assert!(d.reason.contains("適用済み"));
+    }
+
+    #[test]
+    fn advisory_require_watch_ignores_unmatched() {
+        let r = Rules::default();
+        let policy = SourcePolicy {
+            mode: SourceMode::Filter,
+            require_watch: true,
+        };
+        let i = advisory_item("high", Confidence::Confirmed);
+        let d = evaluate_with(&i, policy, &r, &[], None);
+        assert_eq!(d.level, Level::Ignore);
+        assert!(d.reason.starts_with("ウォッチ不一致: "));
+        assert!(!d.awaiting_remedy);
+        // Also when the source is set to always notify.
+        let urgent = SourcePolicy {
+            mode: SourceMode::Urgent,
+            ..policy
+        };
+        assert_eq!(
+            evaluate_with(&i, urgent, &r, &[], None).level,
+            Level::Ignore
+        );
+        // A watch match decides as usual.
+        let d = evaluate_with(&i, policy, &r, &electron_watch(), None);
+        assert_eq!(d.level, Level::Urgent);
+        // An outdated installed package counts as relevant; a patched one does not.
+        let old = Installed::from_pairs("noble", &[("ca-certificates", "20240203")]);
+        let im = InstalledMatch {
+            installed: &old,
+            already_fixed: AlreadyFixed::Digest,
+        };
+        assert_eq!(
+            evaluate_with(&i, policy, &r, &[], Some(&im)).level,
+            Level::Urgent
+        );
+        let new = Installed::from_pairs("noble", &[("ca-certificates", "20260101")]);
+        let im = InstalledMatch {
+            installed: &new,
+            already_fixed: AlreadyFixed::Digest,
+        };
+        assert_eq!(
+            evaluate_with(&i, policy, &r, &[], Some(&im)).level,
+            Level::Ignore
+        );
     }
 
     #[test]
