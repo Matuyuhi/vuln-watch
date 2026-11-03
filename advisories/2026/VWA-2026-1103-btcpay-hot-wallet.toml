@@ -1,0 +1,38 @@
+id = "VWA-2026-1103-btcpay-hot-wallet"
+revision = 1
+status = "active"
+published = 2026-11-03
+expires = 2026-12-03
+severity = "high"
+confidence = "confirmed"
+title = "BTCPay Server 2.4.1 以前を狙ったホットウォレットの盗難が発生、更新だけでなく新しいサーバーとウォレットへの移行が必要"
+summary = """
+BTCPay Server は 2026-11-02 に、2.4.1（2026-07-23 リリース）以前を動かすサーバーのホットウォレットから Bitcoin と Litecoin が盗まれたと公表した。攻撃者は 2.4.2（2026-08-07）で修正済みの脆弱性を別の手口で悪用しており、11-01 以降に被害報告が相次いだ。
+BTCPay は 11-01 に運営者へサーバー停止を呼びかけ、LunaNode などの VPS 事業者が予防的にインスタンスを停止した。11-01 の警告時点で 2.4.2 以降だったサーバーへの影響は確認されていない。
+2.4.1 以前を動かしていた場合は、盗難に気づいていなくても、また警告後に更新済みでも、残高を新しいウォレットへ移して新しいサーバーに作り直すよう求めている。更新だけでは攻撃者が既に得たアクセスを取り除けないため。
+攻撃がいつ始まったかは確定しておらず、脆弱性の詳細や CVE 番号は公表されていない。鍵をサーバー外に置くウォレット（ハードウェアウォレットなど）の資金は影響を受けていない。"""
+cves = []
+actions = [
+  "管理画面下部で BTCPay Server のバージョンを確認する",
+  "2.4.1 以前だった場合は、信頼できる端末で新しいシードのウォレットを作り、旧ホットウォレットの残高を移す（旧シードの再利用は不可）",
+  "旧サーバーは調査用にログと取引記録を保全したうえでオフラインにし、新しい VM に最新のサポート版を信頼できる配布元から入れ直す（旧サーバーを丸ごと復元しない）",
+  "旧サーバーがアクセスできたホスティング・SSH・アプリ・API・Lightning の認証情報を、信頼できる端末から失効・再発行する",
+  "支払いの受け取りには鍵をサーバー外に置くウォレット（ハードウェアウォレットなど）を使う",
+  "被害や不正アクセスの兆候があれば security@btcpayserver.org に報告する（シードや秘密鍵は送らない）",
+]
+
+[[affects]]
+name = "BTCPay Server"
+keywords = ["btcpay server", "btcpayserver", "btcpay"]
+fixed_versions = ["2.4.2"]
+
+[[references]]
+url = "https://blog.btcpayserver.org/btcpay-server-security-incident-2-4-1-and-earlier/"
+kind = "primary"
+title = "Security Incident Affecting BTCPay Server 2.4.1 and Earlier（BTCPay Server Blog, 2026-11-02）"
+quote = "The attackers used a different method to exploit the vulnerability fixed in"
+
+[[references]]
+url = "https://www.scworld.com/brief/btcpay-server-urges-users-to-update-after-hot-wallet-attacks"
+kind = "secondary"
+title = "BTCPay Server urges users to update after hot wallet attacks (SC Media)"

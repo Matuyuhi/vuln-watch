@@ -1,16 +1,17 @@
 id = "VWA-2026-1025-php2shell"
-revision = 3
+revision = 4
 status = "active"
 published = 2026-10-25
-updated = 2026-10-27
+updated = 2026-11-03
 expires = 2026-11-24
 severity = "critical"
 confidence = "confirmed"
 title = "PHP の認証不要 RCE「php2shell」（CVE-2026-109618 / 109619）、Web で PHP を動かすすべての環境に更新が必要"
 summary = """
 PHP は 2026-10-21 に、Web リクエストを処理するすべての PHP（PHP-FPM、Apache の mod_php、php-cgi、FrankenPHP、LiteSpeed）で認証なしにリモートコード実行につながる 2 件の脆弱性（CVE-2026-109618 / CVE-2026-109619、通称 php2shell）を修正した 8.5.12 / 8.4.27 / 8.3.36 / 8.2.35 を出し、直ちに更新するよう呼びかけた。
-mod_php ではアプリのコードが動く前に未認証のリクエストで攻撃できることが実証されている。香港 HKCERT は 10-22 公開・10-23 更新の告知で両 CVE が実際に悪用されているとし、直ちに更新できない場合はインターネットに公開したアプリを隔離するよう求めている。Amazon は公開 4 日前の 10-17 から自社ハニーポットで攻撃の試行を観測したと報告しているが、成功した侵害の有無は明らかになっていないCISA は 10-26 に両 CVE を KEV（悪用が確認された脆弱性のカタログ）に追加し、米連邦機関に 10-29 までの対応を求めている。
+mod_php ではアプリのコードが動く前に未認証のリクエストで攻撃できることが実証されている。香港 HKCERT は 10-22 公開・10-23 更新の告知で両 CVE が実際に悪用されているとし、直ちに更新できない場合はインターネットに公開したアプリを隔離するよう求めている。Amazon は公開 4 日前の 10-17 から自社ハニーポットで攻撃の試行を観測したと報告しているが、成功した侵害の有無は明らかになっていない。CISA は 10-26 に両 CVE を KEV（悪用が確認された脆弱性のカタログ）に追加し、米連邦機関に 10-29 までの対応を求めている。
 PHP は多数の Web アプリ・アプライアンス・コンテナに組み込まれており、8.1 以前は PHP プロジェクトの更新対象外のため、ディストリビューションや製品ベンダーのバックポートを確認する必要がある。
+Palo Alto Networks は PAN-OS（PA-Series / VM-Series ファイアウォールと Panorama）が両 CVE の影響を受けると告知し、インターネットに公開された管理インターフェースを狙う実際の悪用を確認したとしている。修正済みの hotfix（12.2.4-h1、12.1.10-h3、11.2.16-h1、11.1.16-h4、10.2.18-h13 など）が順次公開済み。
 10-23 には 10-21 の更新で直っていない別の RCE（CVE-2026-115560）が告知され、次の通常リリースまでの緩和策として session.upload_progress.enabled=0 が推奨された。"""
 cves = ["CVE-2026-109618", "CVE-2026-109619"]
 actions = [
@@ -20,6 +21,7 @@ actions = [
   "インターネットに公開した PHP サーバーと、PHP を同梱するサードパーティ製品・アプライアンス・コンテナを優先して洗い出す",
   "直ちに更新できない場合は、インターネットに公開した PHP アプリを修正の適用・確認まで公開ネットワークから隔離する（HKCERT）",
   "（独自提案）CISA が KEV で対応期限を 10-29 としているため、未更新のサーバーはそれまでに更新または隔離を終える",
+  "PAN-OS / Panorama は Palo Alto Networks の告知にある修正版 hotfix へ更新し、それまでは管理インターフェースへのアクセスを信頼できる内部 IP に限定する（Palo Alto Networks）",
   "侵害の有無の調査は公開日の 10-21 ではなく、少なくとも 10-17 以降のログを対象にする（Amazon）",
 ]
 
@@ -49,6 +51,11 @@ deb = [
   { package = "php8.1-cgi", fixed_version = "8.1.2-1ubuntu2.28", release = "jammy" },
   { package = "libapache2-mod-php8.1", fixed_version = "8.1.2-1ubuntu2.28", release = "jammy" },
 ]
+
+[[affects]]
+name = "Palo Alto Networks PAN-OS / Panorama"
+keywords = ["pan-os", "palo alto networks"]
+fixed_versions = ["12.2.4-h1", "12.1.10-h3", "12.1.7-h11", "12.1.4-h13", "11.2.16-h1", "11.2.13-h4", "11.2.10-h16", "11.2.7-h23", "11.2.4-h23", "11.1.16-h4", "11.1.13-h16", "11.1.10-h36", "11.1.7-h12", "11.1.6-h40", "11.1.4-h38", "10.2.18-h13", "10.2.16-h12", "10.2.13-h27", "10.2.10-h42", "10.2.7-h39"]
 
 [[references]]
 url = "https://www.php.net/"
@@ -85,6 +92,12 @@ url = "https://www.cisa.gov/sites/default/files/feeds/known_exploited_vulnerabil
 kind = "primary"
 title = "CISA Known Exploited Vulnerabilities Catalog（JSON、CVE-2026-109618 / 109619 は dateAdded 2026-10-26・dueDate 2026-10-29）"
 quote = "PHP contains a stale internal request-state vulnerability that allows for unauthenticated remote code execution."
+
+[[references]]
+url = "https://security.paloaltonetworks.com/CVE-2026-109618"
+kind = "primary"
+title = "CVE-2026-109618 Impact of Critical Vulnerabilities in PHP (CVE-2026-109618, CVE-2026-109619) on Palo Alto Networks Products（Palo Alto Networks）"
+quote = "Active exploitation has been observed targeting the Palo Alto Networks management interface exposed to the internet."
 
 [[references]]
 url = "https://www.bleepingcomputer.com/news/security/amazon-says-php2shell-exploitation-began-4-days-before-patches/"
