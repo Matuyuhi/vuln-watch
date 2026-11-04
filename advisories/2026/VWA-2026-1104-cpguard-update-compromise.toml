@@ -1,0 +1,43 @@
+id = "VWA-2026-1104-cpguard-update-compromise"
+revision = 1
+status = "active"
+published = 2026-11-04
+expires = 2026-12-04
+severity = "high"
+confidence = "confirmed"
+title = "サーバー用セキュリティ製品 cPGuard の更新経路が乗っ取られ、5.88.12–5.88.19 が root 権限で認証情報を窃取（2026-11-02）"
+summary = """
+OPSSHIELD は 2026-11-03、Web ホスティング向けセキュリティ製品 cPGuard の更新配信基盤（CDN）が不正アクセスを受け、2026-11-02 に悪意あるスクリプトを含む更新（5.88.12–5.88.19）が配信されたと公表した。
+攻撃者は顧客として登録した無料試用アカウントから課金・ライセンスサーバーに侵入し、更新公開用の鍵を盗んで偽の更新を約 70 分間配信した。偽の更新は root で実行され、/etc/shadow・/etc/passwd、root の SSH 鍵、MySQL の root パスワード（/root/.my.cnf）、root のシェル履歴などを収集して送信し、隠し root シェル（/var/tmp/.cpg91511_sh）などを残した。
+OPSSHIELD によると、2026-11-02 02:08–03:20 UTC に cPGuard が稼働していたサーバー約 2,950 台が偽の更新を実行し、課金ポータルの顧客情報約 7,900 件も複製された。
+修正版は 5.88.25 以降（OPSSHIELD は隠しシェルを除去する 5.88.26 も公開）だが、更新しても既に盗まれた認証情報は有効なままなので、鍵とパスワードの入れ替えが必要。"""
+cves = []
+actions = [
+  "すべての cPGuard サーバーを 5.88.25 以降に更新し（cpgcli update --start）、cpgcli --version で確認する",
+  "grep 'Successfully updated' /opt/cpguard/logs/install_log で 5.88.12–5.88.19 を入れた履歴があるか確認し、あれば侵害されたものとして扱う",
+  "/etc/cron.d/i93677、/var/tmp/.i93677/、/var/tmp/.cpg91511_sh が残っていないか確認し、あれば削除する",
+  "root と全ローカルユーザーのパスワード、root の SSH 鍵（他サーバーの authorized_keys からも旧鍵を削除）、MySQL の root パスワード、シェル履歴や /root/.s3cfg にある API キー・トークンを入れ替える",
+  "OPSSHIELD の課金ポータル（manage.opsshield.com）のパスワードを変更し、二要素認証を有効にする（影響を受けていなくても推奨されている）",
+]
+
+[[affects]]
+name = "cPGuard (OPSSHIELD)"
+keywords = ["cpguard", "opsshield"]
+fixed_versions = ["5.88.25"]
+
+[[references]]
+url = "https://opsshield.com/notice/cpguard-update-channel-compromise.html"
+kind = "primary"
+title = "cPGuard security advisory: Update channel compromise（OPSSHIELD, 2026-11-03）"
+quote = "an unidentified attacker used compromised credentials to gain unauthorized access to OPSSHIELD's update distribution infrastructure (CDN)."
+
+[[references]]
+url = "https://opsshield.com/notice/security-incident-disclosure-servermanage.html"
+kind = "primary"
+title = "Security Incident Disclosure: manage.opsshield.com（OPSSHIELD, 2026-11-03）"
+quote = "If your server had cPGuard installed and online between 02:08 and 03:20 UTC on 2 November, assume its root-level secrets are known to the attacker."
+
+[[references]]
+url = "https://www.securityweek.com/malicious-cpguard-updates-served-in-opsshield-supply-chain-attack/"
+kind = "secondary"
+title = "Malicious cPGuard Updates Served in OpsShield Supply Chain Attack (SecurityWeek, 2026-11-04)"
