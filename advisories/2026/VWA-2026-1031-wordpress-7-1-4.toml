@@ -1,20 +1,24 @@
 id = "VWA-2026-1031-wordpress-7-1-4"
-revision = 1
+revision = 2
 status = "active"
 published = 2026-10-31
-expires = 2026-11-30
+updated = 2026-11-04
+expires = 2026-12-04
 severity = "high"
-confidence = "likely"
-title = "WordPress 本体の更新処理に RCE の弱点、7.1.4 で修正され公開直後から攻撃の試行が報告、すぐに更新が必要"
+confidence = "confirmed"
+title = "WordPress 本体の更新処理の RCE（CVE-2026-119977）が悪用され KEV 入り、7.1.4（旧ブランチは各最新版）へすぐに更新が必要"
 summary = """
 2026-10-28、WordPress 7.1.4 がセキュリティリリースとして公開された。修正には、アップグレード処理中にリモートコード実行につながりうる弱点が含まれ、WordPress は直ちに更新するよう推奨している。修正はセキュリティ修正の対象となる 4.7 までの全ブランチにバックポートされている。
-SecurityWeek（Wordfence の観測を引用）によると、パッチ公開から数時間で攻撃の試行が始まったが、成功した侵害はまだ報告されていない（攻撃の観測は二次情報のみのため確度は likely）。
-2026-10-31 時点で CVE は採番されておらず、CISA KEV や GitHub Advisory Database 経由では検知できない。
+この弱点には CVE-2026-119977（採番は Wordfence）が割り当てられた。CVE レコードによると影響は 4.7 から 7.1.3 で、本体のフルパッケージ更新時に Web から到達できる予測可能なステージング用パスが使われるため、認証不要の攻撃者が更新の最中にサーバー上でコードを実行できる。
+2026-11-03、CISA は CVE-2026-119977 を Known Exploited Vulnerabilities カタログに追加した（期限 2026-11-06）。実際の悪用が確認されたため確度を confirmed に引き上げた。
+悪用は更新処理の実行中に限られるため、7.1.3 以前のサイトでこれから更新を行うこと自体が攻撃の機会になりうる点に注意が必要。
 7.1.4 には eMudhra の失効に伴う同梱ルート証明書の更新も含まれる。"""
-cves = []
+cves = ["CVE-2026-119977"]
 actions = [
   "WordPress を 7.1.4 に更新する（旧ブランチは各ブランチの最新セキュリティリリースに更新する）",
   "（独自提案）自動バックグラウンド更新が有効か確認し、無効なサイトは手動で更新する",
+  "CISA の要求に従い、ベンダーの案内どおりに対策し、BOD 26-04 の Forensics Triage Requirements に沿って侵害の痕跡を調べる",
+  "（独自提案）7.1.3 以前のまま更新したサイトは、更新の前後で見覚えのない PHP ファイルや管理者アカウントが増えていないか確認する",
 ]
 
 [[affects]]
@@ -27,6 +31,18 @@ url = "https://wordpress.org/news/2026/10/wordpress-7-1-4/"
 kind = "primary"
 title = "WordPress 7.1.4（2026-10-28）"
 quote = "Because this is a security release, it is recommended that you update your sites immediately."
+
+[[references]]
+url = "https://cveawg.mitre.org/api/cve/CVE-2026-119977"
+kind = "primary"
+title = "CVE-2026-119977: WordPress Core 4.7.0 - 7.1.3 - Unauthenticated Upgrade-Window Staged-Installer Remote Code Execution（cve.org、CNA: Wordfence）"
+quote = "This makes it possible for unauthenticated attackers to execute code on the server during the upgrade window."
+
+[[references]]
+url = "https://www.cisa.gov/sites/default/files/feeds/known_exploited_vulnerabilities.json"
+kind = "primary"
+title = "CISA Known Exploited Vulnerabilities Catalog（JSON、CVE-2026-119977 は dateAdded 2026-11-03・dueDate 2026-11-06）"
+quote = "CVE-2026-119977"
 
 [[references]]
 url = "https://www.securityweek.com/fresh-wordpress-vulnerability-in-attackers-crosshairs/"
