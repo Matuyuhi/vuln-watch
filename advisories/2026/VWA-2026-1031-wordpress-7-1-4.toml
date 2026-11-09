@@ -1,8 +1,8 @@
 id = "VWA-2026-1031-wordpress-7-1-4"
-revision = 2
+revision = 3
 status = "active"
 published = 2026-10-31
-updated = 2026-11-04
+updated = 2026-11-09
 expires = 2026-12-04
 severity = "high"
 confidence = "confirmed"
@@ -12,9 +12,11 @@ summary = """
 この弱点には CVE-2026-119977（採番は Wordfence）が割り当てられた。CVE レコードによると影響は 4.7 から 7.1.3 で、本体のフルパッケージ更新時に Web から到達できる予測可能なステージング用パスが使われるため、認証不要の攻撃者が更新の最中にサーバー上でコードを実行できる。
 2026-11-03、CISA は CVE-2026-119977 を Known Exploited Vulnerabilities カタログに追加した（期限 2026-11-06）。実際の悪用が確認されたため確度を confirmed に引き上げた。
 悪用は更新処理の実行中に限られるため、7.1.3 以前のサイトでこれから更新を行うこと自体が攻撃の機会になりうる点に注意が必要。
+発見者（Picus Security の Umut Bayram 氏）は 2026-11-05 の解説で、修正を入れる更新そのものが古い脆弱な更新処理で実行されると指摘し、更新前に wp-content/upgrade への Web アクセスを拒否して 403 になることを確かめてから更新するよう勧めている。WP-CLI の wp core update も同じ更新処理を使うため代わりにならない。
 7.1.4 には eMudhra の失効に伴う同梱ルート証明書の更新も含まれる。"""
 cves = ["CVE-2026-119977"]
 actions = [
+  "7.1.3 以前のサイトは、更新の前に Web サーバー（nginx / Apache / .htaccess）で wp-content/upgrade へのアクセスを拒否し、/wp-content/upgrade/ が 403 を返すことを確かめてから更新する（発見者の推奨。WP-CLI の wp core update は代わりにならない）",
   "WordPress を 7.1.4 に更新する（旧ブランチは各ブランチの最新セキュリティリリースに更新する）",
   "（独自提案）自動バックグラウンド更新が有効か確認し、無効なサイトは手動で更新する",
   "CISA の要求に従い、ベンダーの案内どおりに対策し、BOD 26-04 の Forensics Triage Requirements に沿って侵害の痕跡を調べる",
@@ -48,3 +50,14 @@ quote = "CVE-2026-119977"
 url = "https://www.securityweek.com/fresh-wordpress-vulnerability-in-attackers-crosshairs/"
 kind = "secondary"
 title = "Fresh WordPress Vulnerability in Attackers' Crosshairs (SecurityWeek, 2026-10-30)"
+
+[[references]]
+url = "https://www.picussecurity.com/resource/blog/cve-2026-119977-when-updating-wordpress-becomes-the-vulnerability"
+kind = "secondary"
+title = "CVE-2026-119977: When Updating WordPress Becomes the Vulnerability（発見者 Umut Bayram 氏による解説、Picus Security、2026-11-05 更新）"
+quote = "the update that installs the fix is still performed by the old, vulnerable updater"
+
+[[references]]
+url = "https://thehackernews.com/2026/11/installing-fix-for-exploited-wordpress.html"
+kind = "secondary"
+title = "Installing the Fix for an Exploited WordPress Flaw Can Expose Some Sites One Last Time (The Hacker News, 2026-11-06)"
