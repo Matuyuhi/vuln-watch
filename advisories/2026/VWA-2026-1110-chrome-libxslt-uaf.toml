@@ -1,0 +1,57 @@
+id = "VWA-2026-1110-chrome-libxslt-uaf"
+revision = 1
+status = "active"
+published = 2026-11-10
+expires = 2026-12-10
+severity = "high"
+confidence = "confirmed"
+title = "Chrome の XML 処理の use-after-free（CVE-2026-125350）が悪用中、Chrome 157.0.8103.50 と Chromium 系ブラウザの更新が必要（原因は同梱 libxslt、本家は未修正との報道）"
+summary = """
+Google は 2026-11-09 に Chrome デスクトップ版 157.0.8103.50/.51（Windows / Mac）・157.0.8103.50（Linux）を出し、XML 処理の use-after-free（CVE-2026-125350、深刻度 High）について悪用コードが出回っていると明らかにした。同じ更新で別の XML の use-after-free（CVE-2026-125346）を含む 9 件も修正している。
+Microsoft は同日、Edge について悪用を認識しており修正版を準備中と告知しており、Chromium を使うほかのブラウザやアプリもそれぞれのベンダーの更新を待つ必要がある。
+報道（Ostorlab）によれば欠陥は Chrome が同梱する libxslt のパターン照合キャッシュにあり、細工した XML / XSLT を読ませるだけで突ける。Chromium は独自パッチで直したが、本家 libxslt はまだ修正を取り込んでいないとされ、libxslt を組み込むほかのソフト（サーバー側の XSLT 処理など）の扱いは各ベンダーの判断待ち。
+CVE レコードは 11-10 時点で cve.org に未公開、CISA KEV にも未掲載。Debian の chromium パッケージも 11-10 時点で未修正。"""
+cves = []
+actions = [
+  "Chrome を 157.0.8103.50（Windows / Mac は .50 または .51）以降に更新し、ブラウザを再起動する（Google）",
+  "Microsoft Edge は修正版が出たらすぐに適用する（Microsoft は修正を準備中と告知）。Brave / Opera / Vivaldi など他の Chromium 系ブラウザも各ベンダーの更新を確認して適用する",
+  "（独自提案）Electron 製アプリ（Slack / Discord / VS Code など）や Android WebView は、Chromium 157.0.8103.50 相当の修正を含む更新が出るまで信頼できない Web コンテンツを開かないようにし、更新が出たら適用する",
+  "（独自提案）サーバー側で libxslt（lxml / PHP xsl / Nokogiri など経由を含む）を使い、外部から受け取った XSLT スタイルシートを処理しているなら、ディストリや本家 libxslt の修正が出るまで信頼できない XSLT を処理しない",
+]
+
+[[affects]]
+name = "Google Chrome"
+keywords = ["chrome", "google-chrome", "chromium"]
+fixed_versions = ["157.0.8103.50", "157.0.8103.51"]
+
+[[affects]]
+name = "Microsoft Edge"
+keywords = ["microsoft-edge"]
+
+[[affects]]
+name = "libxslt"
+keywords = ["libxslt"]
+
+[[references]]
+url = "https://chromereleases.googleblog.com/2026/11/stable-channel-update-for-desktop_018223192.html"
+kind = "primary"
+title = "Stable Channel Update for Desktop（Chrome Releases, 2026-11-09）"
+quote = "Google is aware that an exploit for CVE-2026-125350 exists in the wild."
+
+[[references]]
+url = "https://learn.microsoft.com/en-us/deployedge/microsoft-edge-relnotes-security"
+kind = "primary"
+title = "Release notes for Microsoft Edge Security Updates（2026-11-09 の項）"
+quote = "Microsoft is aware of the recent exploits existing in the wild. We are actively working on releasing a security fix."
+
+[[references]]
+url = "https://security-tracker.debian.org/tracker/CVE-2026-125350"
+kind = "primary"
+title = "CVE-2026-125350（Debian Security Tracker、chromium は 11-10 時点で unfixed）"
+quote = "chromium source (unstable) (unfixed)"
+
+[[references]]
+url = "https://blog.ostorlab.co/chrome-xslt-use-after-free-cve-2026-125350.html"
+kind = "secondary"
+title = "Chrome XSLT Use-After-Free Exploited in the Wild (CVE-2026-125350)（Ostorlab, 2026-11-10）"
+quote = "The upstream libxslt project has not taken the change."
