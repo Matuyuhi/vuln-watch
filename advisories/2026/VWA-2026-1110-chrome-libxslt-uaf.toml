@@ -1,7 +1,8 @@
 id = "VWA-2026-1110-chrome-libxslt-uaf"
-revision = 1
+revision = 2
 status = "active"
 published = 2026-11-10
+updated = 2026-11-11
 expires = 2026-12-10
 severity = "high"
 confidence = "confirmed"
@@ -10,8 +11,8 @@ summary = """
 Google は 2026-11-09 に Chrome デスクトップ版 157.0.8103.50/.51（Windows / Mac）・157.0.8103.50（Linux）を出し、XML 処理の use-after-free（CVE-2026-125350、深刻度 High）について悪用コードが出回っていると明らかにした。同じ更新で別の XML の use-after-free（CVE-2026-125346）を含む 9 件も修正している。
 Microsoft は同日、Edge について悪用を認識しており修正版を準備中と告知しており、Chromium を使うほかのブラウザやアプリもそれぞれのベンダーの更新を待つ必要がある。
 報道（Ostorlab）によれば欠陥は Chrome が同梱する libxslt のパターン照合キャッシュにあり、細工した XML / XSLT を読ませるだけで突ける。Chromium は独自パッチで直したが、本家 libxslt はまだ修正を取り込んでいないとされ、libxslt を組み込むほかのソフト（サーバー側の XSLT 処理など）の扱いは各ベンダーの判断待ち。
-CVE レコードは 11-10 時点で cve.org に未公開、CISA KEV にも未掲載。Debian の chromium パッケージも 11-10 時点で未修正。"""
-cves = []
+CVE レコードは 11-10 に cve.org で公開され、CISA は同日 CVE-2026-125350 を KEV に追加した（対応期限 2026-11-24、Chrome・Edge・Opera など Chromium を使う複数のブラウザに影響しうるとしている）。11-11 時点で Edge デスクトップ版の修正版は未公開、Debian の chromium パッケージも未修正。"""
+cves = ["CVE-2026-125350"]
 actions = [
   "Chrome を 157.0.8103.50（Windows / Mac は .50 または .51）以降に更新し、ブラウザを再起動する（Google）",
   "Microsoft Edge は修正版が出たらすぐに適用する（Microsoft は修正を準備中と告知）。Brave / Opera / Vivaldi など他の Chromium 系ブラウザも各ベンダーの更新を確認して適用する",
@@ -39,6 +40,18 @@ title = "Stable Channel Update for Desktop（Chrome Releases, 2026-11-09）"
 quote = "Google is aware that an exploit for CVE-2026-125350 exists in the wild."
 
 [[references]]
+url = "https://www.cisa.gov/sites/default/files/feeds/known_exploited_vulnerabilities.json"
+kind = "primary"
+title = "CISA Known Exploited Vulnerabilities Catalog（JSON、CVE-2026-125350 は dateAdded 2026-11-10・dueDate 2026-11-24）"
+quote = "This vulnerability could affect multiple web browsers that utilize Chromium, including, but not limited to, Google Chrome, Microsoft Edge, and Opera."
+
+[[references]]
+url = "https://cveawg.mitre.org/api/cve/CVE-2026-125350"
+kind = "primary"
+title = "CVE-2026-125350（cve.org、CNA: Chrome、2026-11-10 公開）"
+quote = "Use after free in XML in Google Chrome prior to 157.0.8103.50 allowed a remote attacker to execute arbitrary code inside the sandbox via a crafted HTML page."
+
+[[references]]
 url = "https://learn.microsoft.com/en-us/deployedge/microsoft-edge-relnotes-security"
 kind = "primary"
 title = "Release notes for Microsoft Edge Security Updates（2026-11-09 の項）"
@@ -47,7 +60,7 @@ quote = "Microsoft is aware of the recent exploits existing in the wild. We are 
 [[references]]
 url = "https://security-tracker.debian.org/tracker/CVE-2026-125350"
 kind = "primary"
-title = "CVE-2026-125350（Debian Security Tracker、chromium は 11-10 時点で unfixed）"
+title = "CVE-2026-125350（Debian Security Tracker、chromium は 11-11 時点で unfixed）"
 quote = "chromium source (unstable) (unfixed)"
 
 [[references]]
