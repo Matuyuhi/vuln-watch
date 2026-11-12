@@ -1,0 +1,53 @@
+id = "VWA-2026-1112-github-wfx-loot"
+revision = 1
+status = "active"
+published = 2026-11-12
+expires = 2026-12-12
+severity = "medium"
+confidence = "unverified"
+title = "乗っ取られた約 4,800 の GitHub アカウントから CI シークレット窃取ワークフロー（wfx-loot）が多数のリポジトリに押し込まれた（2026-11-10〜）"
+summary = """
+セキュリティ企業 Aikido などの報告によると、2026-11-10 から、盗まれた GitHub の認証情報を使って悪意あるワークフローやスクリプトが多数のリポジトリに押し込まれ、GitHub Actions のシークレット・変数・GITHUB_TOKEN・OIDC トークンやクラウド（AWS / GCP / Azure / Vault / Kubernetes）の認証情報が外部に送られている。
+Aikido の集計では 4,837 アカウントが 61,764 リポジトリに「docs: dependency audit notes」という PR を出して書き込み権限を確かめ、少なくとも 1,835 リポジトリでペイロードが実行された。攻撃者は実行後すぐにコミットを戻してワークフロー実行とログを削除するため、実行番号の欠番が唯一の痕跡になることが多い。
+Azure AD アプリへのフェデレーション資格情報（wfx-ci-…）追加や AWS ロールの信頼ポリシー変更による永続化も試みるため、シークレットを入れ替えるだけでは不十分とされる。自動公開を通じて Packagist の digitalelvis/neuronai-studio 3.14.3 などにも混入した。
+GitHub 自身の公式声明や CERT の勧告は 2026-11-12 時点で確認できておらず、規模の数字は報告元によって異なる。"""
+cves = []
+actions = [
+  "書き込みできるリポジトリに 11-10 以降、wfx-docs ブランチ、「docs: dependency audit notes」という PR、「ci: refresh build cache」「chore: add ci helper」「chore: add dependency audit workflow」というコミット、chore/ に続く 8 文字のブランチが現れていないか確認する",
+  "Actions の実行履歴に欠番がないか、.github/workflows/build-audit-*.yml や package.json の postinstall から呼ばれる .ci-*.sh が追加されていないか確認する",
+  "ペイロードが実行されていた場合は、そのワークフローから使えたすべてのシークレットとクラウドのロールが漏えいしたものとして扱い、入れ替える",
+  "Azure AD アプリに心当たりのない wfx-ci-… というフェデレーション資格情報がないか、AWS ロールの信頼ポリシーが任意の AWS アカウントに開かれていないか確認する",
+  "Packagist の digitalelvis/neuronai-studio 3.14.3 と Go の github.com/onuragtas/docker-env v1.0.278 / v1.0.280 を使っていれば外す（neuronai-studio を入れた・開いたマシンは侵害されたものとして扱う）",
+  "（独自提案）GitHub の個人アクセストークンと gh CLI のトークンを見直して不要なものを失効させ、Actions の GITHUB_TOKEN の既定権限を読み取り専用にする",
+]
+
+[[affects]]
+name = "GitHub Actions を使うリポジトリ（乗っ取られたアカウントが書き込めるもの）"
+keywords = ["github actions"]
+
+[[affects]]
+name = "digitalelvis/neuronai-studio（Packagist）"
+keywords = ["neuronai-studio"]
+packages = ["composer:digitalelvis/neuronai-studio"]
+
+[[affects]]
+name = "github.com/onuragtas/docker-env（Go）"
+packages = ["go:github.com/onuragtas/docker-env"]
+
+[[references]]
+url = "https://www.aikido.dev/blog/compromised-github-accounts-push-ci-secret-stealer-to-tens-of-thousands-of-repositories"
+kind = "secondary"
+title = "wfx-loot campaign pushes CI secret stealer to tens of thousands of repositories（Aikido, 2026-11-12、発見者による報告）"
+quote = "If the payload ran in your repository, assume every secret and cloud role available to its workflows is compromised."
+
+[[references]]
+url = "https://www.endorlabs.com/learn/github-actions-supply-chain-attack-targeting-ci-secrets-at-scale"
+kind = "secondary"
+title = "Hijacked GitHub Accounts Push \"wfx\" CI Secret Stealer to 60,000+ Repositories（Endor Labs, 2026-11-12）"
+quote = "at least 1,806 repositories have already had credentials stolen, and at least 50 of the hijacked accounts publish packages to npm, Go, Packagist, PyPI or crates."
+
+[[references]]
+url = "https://www.helpnetsecurity.com/2026/11/12/wfx-loot-github-actions-secret-stealer/"
+kind = "secondary"
+title = "Check your GitHub repos: A secret stealer hit tens of thousands of them（Help Net Security, 2026-11-12）"
+quote = "A threat actor using stolen GitHub credentials has pushed a credential-stealing payload into tens of thousands of repositories since November 10."
