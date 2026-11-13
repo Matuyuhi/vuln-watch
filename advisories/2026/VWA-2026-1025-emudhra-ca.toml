@@ -1,23 +1,25 @@
 id = "VWA-2026-1025-emudhra-ca"
-revision = 4
+revision = 5
 status = "active"
 published = 2026-10-25
-updated = 2026-10-27
-expires = 2026-11-24
+updated = 2026-11-13
+expires = 2026-12-15
 severity = "high"
 confidence = "confirmed"
-title = "eMudhra の中間 CA 8 件の鍵が弱く失効、emSign ECC Root CA - G3 が各 CA ストアから削除"
+title = "eMudhra の中間 CA 8 件の鍵が弱く失効、emSign ECC Root CA - G3 が各 CA ストアから削除（11-16 から残る eMudhra ルートも Microsoft が削除、Chrome / Firefox は G1 の新規証明書を不信頼に、Apple は 11-30 に G1 を削除）"
 summary = """
 eMudhra（emSign）の Global TLS 中間 CA 8 件の秘密鍵が復元可能なほど弱いことが 2026-10-17 に報告され、eMudhra は翌日 8 件すべてを失効させた。
 Firefox は OneCRL で即日ブロックし、OneCRL を受け取れない環境向けに Firefox 158.0.1 / ESR 153.5.1 / ESR 115.43.1 を出した（CVE-2026-113470）。
 ブラウザ以外で OS や同梱の CA バンドルを使うソフトは自動では守られないため、Ubuntu は ca-certificates（USN-8944-1）と NSS（USN-8947-1）から emSign ECC Root CA - G3 を削除した（NSS では Comodo AAA Services root も削除）。
 Python は 10-20 の告知で、pip が同梱の certifi を常に読み込み無効化できないため、certifi 2026.10.19・pip 26.2.2・uv 0.13.4 など以降への即時更新と、キャッシュを使わないコンテナイメージの再ビルドを求めている。
 Electron は 44.9.1 / 43.8.1 / 42.11.16 に、侵害された eMudhra 中間証明書への対策（GHSA-jr5w-w6x2-84p9）を入れた。Electron 製アプリは同梱の Electron が更新されるまで守られない。
-Apple は 10-19 から中間 CA の証明書を、10-23 から emSign ECC Root CA - G3 を自動でブロックしているが、macOS の curl / git / python3 などの /etc/ssl/cert.pem を使うコマンドラインツールは今後の macOS アップデートまでこれらの証明書を受け入れ得るとしている。
+Apple は中間 CA の証明書 12 件と emSign ECC Root CA - G3 を Safari や Apple のフレームワークを使うアプリで自動的にブロックしている。macOS の curl / git / python3 など /etc/ssl/cert.pem を使うコマンドラインツールは、macOS 27.2.1 / 26.7.3 / 15.8.3 からこれらの証明書を受け入れなくなり、cert.pem からも該当する 2 つのルートとほかの eMudhra ルート 3 件が削除された。
 Java は独自の CA ストア（cacerts）を持つため、Oracle は 10-21 に影響する中間 CA を不信頼にする Java 更新（CVE-2026-91403）を、10-24 に影響するルート CA を削除する Java 更新（CVE-2026-114820）を出した。Node.js も同梱の CA 証明書を 22.23.4 / 24.22.1 / 26.12.1（10-21）で更新している。
 Chrome は CRLSet で中間 CA を即日ブロックしたうえで、emSign ECC Root CA - G3 を Chrome Root Store から削除し、全デバイスへの反映は 2026-10-27 朝（米太平洋時間）の予定としている。このルートにつながる正規の証明書も Chrome で使えなくなるため、該当するサイト運営者は直ちに別の CA の証明書に入れ替える必要がある。
 同時期に Go 1.27.3 / 1.26.10 が crypto/x509 で特定 CA の中間証明書を拒否する修正（CVE-2026-111943）を出しているが、Go の告知は CA 名を明記していない。
-eMudhra によれば失効した中間 CA から発行された証明書はなく、悪用は確認されていないが、Mozilla は失効情報を確実に確認しないクライアントに向けて、鍵の悪用は近いうちに起こり得ると警告している。"""
+eMudhra によれば失効した中間 CA から発行された証明書はなく、悪用は確認されていないが、Mozilla は失効情報を確実に確認しないクライアントに向けて、鍵の悪用は近いうちに起こり得ると警告している。
+その後 eMudhra は公開 TLS 証明書事業から撤退すると表明し、11-05 の更新で、残る emSign G1 階層について Chrome と Firefox が 2026-11-16 以降に発行（SCT 付与）された証明書を信頼しなくなり、Apple は 2026-11-30 に G1 を削除して発行時期にかかわらず G1 につながる証明書をすべて信頼しなくなると告知した。
+Microsoft も 11-12 の更新で、2026-11-16 から残る eMudhra のルート証明書 10 件を Windows の信頼済みルート一覧と Microsoft Trusted Root Program から削除し、Edge / WebView2 でも emSign Root CA - G1 / C1、emSign ECC Root CA、emSign Root TLS CA - G1 の既定の信頼を外すとした。Azure Linux のイメージ、Azure CLI 2.93.0（11-16）、VS Code 1.147.0（11-18）なども順次対応し、.NET コンテナイメージや Microsoft Build of OpenJDK は 11-16 の Mozilla のリリースを受けて更新される予定。"""
 cves = ["CVE-2026-113470", "CVE-2026-111943", "CVE-2026-91403", "CVE-2026-114820"]
 actions = [
   "Ubuntu の ca-certificates と libnss3 を USN-8944-1 / USN-8947-1 の版以降に更新する",
@@ -28,8 +30,11 @@ actions = [
   "Oracle Java SE / GraalVM を最新の版に更新する。10-21 の更新（CVE-2026-91403）を適用済みでも、10-24 のルート CA 削除（CVE-2026-114820）を含む版まで上げる（Oracle）",
   "Node.js を 22.23.4 / 24.22.1 / 26.12.1 以降に更新する。サポート終了した版は更新されないので、サポート中の版へ移行する",
   "emSign ECC Root CA - G3 につながる TLS 証明書を使っているサイトは、Chrome Root Store に含まれる別の PKI の証明書を直ちに取得して入れ替える（Google）",
-  "macOS でコマンドラインツール（curl、git、python3 など）を使う場合は、今後の macOS アップデートを適用する。待てない場合は Apple の手順に従い /etc/ssl/cert.pem から該当ルート CA を削除する（Apple）",
-  "（独自提案）その他、独自の CA バンドルを同梱するソフトも、配布元の更新を確認する",
+  "macOS を 27.2.1（macOS 26 は 26.7.3、macOS 15 は 15.8.3）以降に更新し、コマンドラインツール（curl、git、python3 など）にも対策を反映する。更新できない場合は Apple の手順に従い /etc/ssl/cert.pem から該当ルート CA を削除する（Apple）",
+  "emSign / eMudhra のルート（G1 を含む）につながる TLS 証明書を使っているサイトは、各ルートが削除される前（Chrome / Firefox は 2026-11-16、Apple は 2026-11-30）に別の CA の証明書へ入れ替える（eMudhra / Microsoft）",
+  "Windows の証明書信頼の自動更新と Edge のコンポーネント更新が届くようにし、インターネットにつながらない端末には更新済みの信頼リストを配る。影響するルートの信頼をリスクを理解しないまま手元で戻さない（Microsoft）",
+  "VS Code を 1.147.0（2026-11-18 予定）以降に、Azure CLI を 2.93.0 以降に更新する（Microsoft）",
+  "（独自提案）その他、独自の CA バンドルを同梱するソフトも、配布元の更新を確認する。11-16 以降に Mozilla の CA リストを取り込んだ ca-certificates / certifi などの更新が出たら適用する",
 ]
 
 [[affects]]
@@ -90,6 +95,18 @@ title = "eMudhra Statement on Recent Certificate Security Incident"
 quote = "We revoked all eight intermediates the following day."
 
 [[references]]
+url = "https://emudhra.com/en/post/certificate-security-incident"
+kind = "primary"
+title = "eMudhra Statement on Recent Certificate Security Incident（Update 8, 2026-11-05: emSign G1 の各ルートプログラムでの廃止日程）"
+quote = "For Apple it means all certificates issued under the G1 hierarchy at any point in time will cease to be trusted on their platforms."
+
+[[references]]
+url = "https://www.microsoft.com/en-us/msrc/blog/2026/10/microsoft-response-to-compromised-emudhra-certificate-authority-keys"
+kind = "primary"
+title = "Microsoft's response to compromised eMudhra certificate authority keys（MSRC, 2026-10-26、2026-11-12 更新）"
+quote = "microsoft is removing the remaining emudhra root certificates across its products and services, starting november 16, 2026."
+
+[[references]]
 url = "https://www.mozilla.org/security/advisories/mfsa2026-111/"
 kind = "primary"
 title = "MFSA 2026-111: Security Vulnerabilities fixed in Firefox 158.0.1"
@@ -134,8 +151,8 @@ quote = "This release contains the fix for https://github.com/electron/electron/
 [[references]]
 url = "https://support.apple.com/en-us/149555"
 kind = "primary"
-title = "About the compromised eMudhra intermediate CAs (Apple Support, 2026-10-23)"
-quote = "On 23 October 2026, Apple also began blocking the emSign ECC Root CA - G3."
+title = "About the compromised eMudhra intermediate CAs（Apple Support、macOS 27.2.1 / 26.7.3 / 15.8.3 でコマンドラインツールにも対策）"
+quote = "Starting in macOS 27.2.1, these command-line tools stop accepting these certificates."
 
 [[references]]
 url = "https://www.oracle.com/security-alerts/alert-CVE-2026-91403.html"
@@ -147,7 +164,7 @@ quote = "This Security Alert addresses CVE-2026-91403 by providing Java updates 
 url = "https://www.oracle.com/security-alerts/alert-CVE-2026-114820.html"
 kind = "primary"
 title = "Oracle Security Alert Advisory - CVE-2026-114820 (2026-10-24)"
-quote = "This Security Alert addresses CVE-2026-114820 by providing Java updates which removes the set of impacted root CA certificates related to eMudhra."
+quote = "This Security Alert addresses CVE-2026-114820 by providing Java updates that remove the set of impacted root CA certificates related to eMudhra."
 
 [[references]]
 url = "https://nodejs.org/en/blog/vulnerability/october-2026-security-releases"
