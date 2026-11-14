@@ -1,0 +1,42 @@
+id = "VWA-2026-1114-ios-worse-query"
+revision = 1
+status = "active"
+published = 2026-11-14
+expires = 2026-12-14
+severity = "medium"
+confidence = "unverified"
+title = "iOS のサンドボックス脱出「worse_query」の PoC が公開、ほかのアプリのデータを読み書きできる（iOS 27.2.1 でも未修正と研究者が主張、Apple は未発表）"
+summary = """
+研究者 forcequitOS が 2026-11-08 ごろ、iOS 26 / 27 のサンドボックス脱出の PoC「worse_query」を GitHub で公開した。App Group コンテナを持つアプリから、ほかのアプリのデータ領域（/var/mobile/Containers/Data/Application/* など）や、iOS 27 では一部のシステム領域にアクセスできるとしている。
+README は対象を iOS 26.0 - 26.7.2 / 27.2 としているが、研究者は 11-10 に iOS 27.2.1 と iOS 27.3 beta 1 でも修正されていないと投稿している。Apple が 11-09 に出した iOS 27.2.1 / 26.7.3 のセキュリティ情報には該当する修正の記載がなく、Apple はこの件について発表していない。
+この手法を使ったファイル管理アプリ（WQ Files）がすでに AltStore / SideStore などのサイドロードで配布されており、脱獄やカーネルの脆弱性なしにほかのアプリのデータを閲覧・変更・削除できる。
+Binance は 11-10、ウォレットのシードフレーズ・秘密鍵・ログイン情報が悪意あるアプリに読まれるおそれがあると警告した。2026-11-14 時点で実際の攻撃や盗難は報告されていない。CVE 番号はなく、ベンダーの一次情報で確認できていない。"""
+cves = []
+actions = [
+  "信頼できない入手元のアプリ（サイドロードや手動で署名した IPA）を削除する（Binance）",
+  "iOS とすべてのアプリを公式の最新版に更新する（Binance）",
+  "侵害が疑われる場合は、クリーンな端末で作った新しいウォレットへ資金を移し、有効なログインセッションをすべてリセットする（Binance）",
+  "（独自提案）Apple のセキュリティ情報で修正が確認できるまで、AltStore / SideStore などでのサイドロードを控え、iPhone のアプリ内に平文の秘密情報を置かない",
+]
+
+[[affects]]
+name = "Apple iOS / iPadOS（26 / 27）"
+keywords = ["ios", "ipados"]
+
+[[references]]
+url = "https://raw.githubusercontent.com/forcequitOS/worse_query/main/README.md"
+kind = "secondary"
+title = "forcequitOS/worse_query README（研究者による PoC、GitHub）"
+quote = "A sandbox escape for iOS 26.0 - 26.7.2 / 27.2."
+
+[[references]]
+url = "https://9to5mac.com/2026/11/11/binance-warns-iphone-crypto-holders-of-security-flaw-researchers-say-remains-unpatched/"
+kind = "secondary"
+title = "Binance warns iPhone crypto holders of security flaw researchers say remains unpatched（9to5Mac, 2026-11-11、Binance と研究者の X 投稿を引用）"
+quote = "worse_query is *not* patched in iOS 27.2.1 and 27.3 beta 1."
+
+[[references]]
+url = "https://securityaffairs.com/202788/hacking/ios-sandbox-escape-is-public-and-apple-hasnt-confirmed-a-fix.html"
+kind = "secondary"
+title = "iOS Sandbox Escape Is Public, and Apple Hasn't Confirmed a Fix（Security Affairs, 2026-11-10）"
+quote = "The proof-of-concept can access the data folders used by all apps and, on iOS 27, some system folders as well."
