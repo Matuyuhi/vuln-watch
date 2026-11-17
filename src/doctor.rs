@@ -284,16 +284,23 @@ const KNOWN_ENV: &[&str] = &[
 
 #[derive(Debug, PartialEq, Eq)]
 enum EnvIssue {
-    /// Not `KEY=value`; systemd skips the line.
-    Invalid { line: usize, head: String },
-    /// A config.toml setting written into the env file.
+    /// Not `KEY=value`; systemd skips the line. `head` is the text before `=`,
+    /// or, for a line without `=`, a known variable name it starts with
+    /// (`GITHUB_TOKEN: x`); otherwise nothing from the line is kept.
+    Invalid { line: usize, head: Option<String> },
+    /// A config.toml setting written into the env file: the text before `=`,
+    /// or a `[section]` header.
     ConfigKey { line: usize, head: String },
     /// Well-formed but not a variable vuln-watch reads (often a typo).
     Unknown { line: usize, key: String },
 }
 
 /// Lines of an EnvironmentFile that do not do what was probably meant.
-/// Only the part before `=` is kept so that values (tokens) are never printed.
+///
+/// Values (tokens) are never printed: for a `KEY=value` line only the part
+/// before `=` is kept. A line without `=` is often a secret pasted on its own
+/// line, so text from it is kept only when it is a `[section]` header or
+/// starts with a variable name vuln-watch reads followed by `:` or a space.
 fn lint_env_file(text: &str) -> Vec<EnvIssue> {
     let mut out = Vec::new();
     for (i, raw) in text.lines().enumerate() {
@@ -302,56 +309,103 @@ fn lint_env_file(text: &str) -> Vec<EnvIssue> {
         if l.is_empty() || l.starts_with('#') || l.starts_with(';') {
             continue;
         }
-        let key = l.split_once('=').map(|(k, _)| k.trim());
-        let head: String = key
-            .unwrap_or_else(|| l.split([':', ' ', '\t']).next().unwrap_or(l))
-            .chars()
-            .take(40)
-            .collect();
-        let valid = key.is_some_and(|k| {
-            k.chars()
+        let Some((key, _)) = l.split_once('=') else {
+            out.push(lint_line_without_eq(line, l));
+            continue;
+        };
+        let key = key.trim();
+        let valid = !key.is_empty()
+            && key
+                .chars()
                 .enumerate()
-                .all(|(i, c)| c == '_' || c.is_ascii_alphabetic() || (i > 0 && c.is_ascii_digit()))
-                && !k.is_empty()
-        });
+                .all(|(i, c)| c == '_' || c.is_ascii_alphabetic() || (i > 0 && c.is_ascii_digit()));
+        if valid {
+            if !is_known_env(key) {
+                out.push(EnvIssue::Unknown {
+                    line,
+                    key: key.to_string(),
+                });
+            }
+            continue;
+        }
+        let head: String = key.chars().take(40).collect();
         let config_like = head.starts_with('[')
             || head.contains('.')
             || (!head.is_empty() && head.chars().all(|c| c.is_ascii_lowercase() || c == '_'));
-        match key {
-            Some(k) if valid => {
-                if !KNOWN_ENV.iter().any(|known| known.eq_ignore_ascii_case(k)) {
-                    out.push(EnvIssue::Unknown {
-                        line,
-                        key: k.to_string(),
-                    });
-                }
-            }
-            _ if config_like => out.push(EnvIssue::ConfigKey { line, head }),
-            _ => out.push(EnvIssue::Invalid { line, head }),
+        if config_like {
+            out.push(EnvIssue::ConfigKey { line, head });
+        } else {
+            out.push(EnvIssue::Invalid {
+                line,
+                head: Some(head),
+            });
         }
     }
     out
 }
 
+fn is_known_env(name: &str) -> bool {
+    KNOWN_ENV
+        .iter()
+        .any(|known| known.eq_ignore_ascii_case(name))
+}
+
+/// A line without `=`. Only text that cannot be a secret is kept.
+fn lint_line_without_eq(line: usize, l: &str) -> EnvIssue {
+    let section = l
+        .strip_prefix('[')
+        .and_then(|rest| rest.strip_suffix(']'))
+        .filter(|name| {
+            !name.is_empty()
+                && name.len() <= 38
+                && name
+                    .chars()
+                    .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '.'))
+        });
+    if section.is_some() {
+        return EnvIssue::ConfigKey {
+            line,
+            head: l.to_string(),
+        };
+    }
+    let first = l.split([':', ' ', '\t']).next().unwrap_or("");
+    let head = (first.len() < l.len() && is_known_env(first)).then(|| first.to_string());
+    EnvIssue::Invalid { line, head }
+}
+
 fn report_env_issues(r: &mut Report, issues: &[EnvIssue]) {
     for issue in issues {
-        match issue {
-            EnvIssue::Invalid { line, head } => r.warn(
-                "env",
-                format!("{ENV_FILE} line {line}: `{head}` is not KEY=value; systemd ignores it"),
-                Some("write it as KEY=value without quotes or `export`, or comment it out with #"),
+        let (detail, hint) = env_issue_text(issue);
+        r.warn("env", detail, Some(&hint));
+    }
+}
+
+/// The warning and hint printed for an issue.
+fn env_issue_text(issue: &EnvIssue) -> (String, String) {
+    match issue {
+        EnvIssue::Invalid {
+            line,
+            head: Some(head),
+        } => (
+            format!("{ENV_FILE} line {line}: `{head}` is not KEY=value; systemd ignores it"),
+            "write it as KEY=value without quotes or `export`, or comment it out with #".into(),
+        ),
+        EnvIssue::Invalid { line, head: None } => (
+            format!(
+                "{ENV_FILE} line {line}: not KEY=value; systemd ignores it \
+                 (a token pasted on its own line?)"
             ),
-            EnvIssue::ConfigKey { line, head } => r.warn(
-                "env",
-                format!("{ENV_FILE} line {line}: `{head}` looks like a config.toml setting; systemd ignores it"),
-                Some("move it to /etc/vuln-watch/config.toml (e.g. `mode` under [discord])"),
-            ),
-            EnvIssue::Unknown { line, key } => r.warn(
-                "env",
-                format!("{ENV_FILE} line {line}: `{key}` is not used by vuln-watch (typo?)"),
-                Some(&format!("known variables: {}", KNOWN_ENV[..5].join(", "))),
-            ),
-        }
+            "write it as KEY=value on one line (e.g. GITHUB_TOKEN=...), or comment it out with #"
+                .into(),
+        ),
+        EnvIssue::ConfigKey { line, head } => (
+            format!("{ENV_FILE} line {line}: `{head}` looks like a config.toml setting; systemd ignores it"),
+            "move it to /etc/vuln-watch/config.toml (e.g. `mode` under [discord])".into(),
+        ),
+        EnvIssue::Unknown { line, key } => (
+            format!("{ENV_FILE} line {line}: `{key}` is not used by vuln-watch (typo?)"),
+            format!("known variables: {}", KNOWN_ENV[..5].join(", ")),
+        ),
     }
 }
 
@@ -847,16 +901,121 @@ mod tests {
                 },
                 EnvIssue::Invalid {
                     line: 8,
-                    head: "export GITHUB_TOKEN".into()
+                    head: Some("export GITHUB_TOKEN".into())
                 },
                 EnvIssue::Invalid {
                     line: 9,
-                    head: "DISCORD_USER_ID".into()
+                    head: Some("DISCORD_USER_ID".into())
                 },
             ]
         );
         let shown = format!("{issues:?}");
         assert!(!shown.contains("secret") && !shown.contains("123"));
+    }
+
+    /// Everything `doctor` prints for the env file.
+    fn printed_env_issues(text: &str) -> String {
+        lint_env_file(text)
+            .iter()
+            .map(|i| {
+                let (detail, hint) = env_issue_text(i);
+                format!("{detail}\n{hint}\n")
+            })
+            .collect()
+    }
+
+    /// True if any 5-character window of `secret` appears in `shown`.
+    fn leaks(shown: &str, secret: &str) -> bool {
+        let chars: Vec<char> = secret.chars().collect();
+        chars
+            .windows(5)
+            .any(|w| shown.contains(&w.iter().collect::<String>()))
+    }
+
+    #[test]
+    fn env_lint_does_not_print_a_token_on_its_own_line() {
+        let token = "ghp_aBcD1234eFgH5678iJkL9012mNoP3456qRsT";
+        assert_eq!(token.len(), 40);
+        let text = format!("# GITHUB_TOKEN=\n{token}\n");
+        assert_eq!(
+            lint_env_file(&text),
+            vec![EnvIssue::Invalid {
+                line: 2,
+                head: None
+            }]
+        );
+        let shown = printed_env_issues(&text);
+        assert!(!leaks(&shown, token), "{shown}");
+        assert!(shown.contains("line 2"), "{shown}");
+
+        let pat = "github_pat_11ABCDEFG0123456789_abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUV";
+        let shown = printed_env_issues(pat);
+        assert!(!leaks(&shown, pat), "{shown}");
+    }
+
+    #[test]
+    fn env_lint_does_not_print_a_dotted_token() {
+        let token = "MTEyMzQ1Njc4OTAxMjM0NTY3OA.GaBcDe.xyzSECRETsecretSECRETsecret0123";
+        let shown = printed_env_issues(&format!("DISCORD_BOT_TOKEN=ok\n{token}\n"));
+        assert!(!leaks(&shown, token), "{shown}");
+        assert!(shown.contains("line 2"), "{shown}");
+    }
+
+    #[test]
+    fn env_lint_does_not_print_a_secret_line_with_a_space() {
+        let line = "abcdef0123456789secret more";
+        let shown = printed_env_issues(line);
+        assert!(!leaks(&shown, line), "{shown}");
+        let shown = printed_env_issues("abcdef0123456789secret:more\n");
+        assert!(!leaks(&shown, "abcdef0123456789secret"), "{shown}");
+    }
+
+    #[test]
+    fn env_lint_names_known_variables_and_sections_without_eq() {
+        assert_eq!(
+            lint_env_file("GITHUB_TOKEN ghp_x\n[discord]\n[a b]\nGITHUB_TOKEN\n"),
+            vec![
+                EnvIssue::Invalid {
+                    line: 1,
+                    head: Some("GITHUB_TOKEN".into())
+                },
+                EnvIssue::ConfigKey {
+                    line: 2,
+                    head: "[discord]".into()
+                },
+                EnvIssue::Invalid {
+                    line: 3,
+                    head: None
+                },
+                EnvIssue::Invalid {
+                    line: 4,
+                    head: None
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn env_lint_keeps_hints_for_lines_with_eq() {
+        let shown = printed_env_issues(
+            "mode = \"dm\"\ndiscord.mode = \"dm\"\nexport GITHUB_TOKEN=secret\n",
+        );
+        assert!(
+            shown.contains("`mode` is not used by vuln-watch"),
+            "{shown}"
+        );
+        assert!(
+            shown.contains("`discord.mode` looks like a config.toml setting"),
+            "{shown}"
+        );
+        assert!(
+            shown.contains("`export GITHUB_TOKEN` is not KEY=value"),
+            "{shown}"
+        );
+        assert!(
+            !shown.contains("secret") && !shown.contains("\"dm\""),
+            "{shown}"
+        );
     }
 
     #[test]
