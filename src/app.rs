@@ -8,7 +8,7 @@ use crate::installed::Installed;
 use crate::model::{Decision, Item, Level};
 use crate::rules::{self, InstalledMatch};
 use crate::sources::{self, Ctx, Fetched};
-use crate::text::truncate;
+use crate::text::{code_block, truncate};
 
 pub struct Secrets {
     pub bot_token: Option<String>,
@@ -28,6 +28,29 @@ impl Secrets {
             github_token: get("GITHUB_TOKEN"),
             heartbeat_url: get("HEARTBEAT_URL"),
         }
+    }
+}
+
+/// Which heartbeat URL a run pings. The URL embeds a token, so callers never log it.
+#[derive(Debug, PartialEq, Eq)]
+pub enum Heartbeat<'a> {
+    None,
+    /// HEARTBEAT_URL from the (private) env file.
+    Env(&'a str),
+    /// runtime.heartbeat_url from the world-readable config.toml.
+    Config(&'a str),
+    /// HEARTBEAT_URL is set but not https: the token would travel in clear text.
+    Insecure,
+}
+
+/// HEARTBEAT_URL overrides runtime.heartbeat_url; a non-https HEARTBEAT_URL is not pinged and
+/// does not fall back to the config value. (Config::validate already rejects non-https there.)
+pub fn heartbeat<'a>(env: Option<&'a str>, config: Option<&'a str>) -> Heartbeat<'a> {
+    match (env, config) {
+        (Some(url), _) if crate::config::is_https(url) => Heartbeat::Env(url),
+        (Some(_), _) => Heartbeat::Insecure,
+        (None, Some(url)) => Heartbeat::Config(url),
+        (None, None) => Heartbeat::None,
     }
 }
 
@@ -188,12 +211,29 @@ fn locked_run(
     }
 
     if !opts.dry_run {
-        let hb = secrets
-            .heartbeat_url
-            .clone()
-            .or_else(|| cfg.runtime.heartbeat_url.clone());
-        if let Some(url) = hb {
-            if let Err(e) = http.ping(&url) {
+        let url = match heartbeat(
+            secrets.heartbeat_url.as_deref(),
+            cfg.runtime.heartbeat_url.as_deref(),
+        ) {
+            Heartbeat::None => None,
+            Heartbeat::Env(url) => Some(url),
+            Heartbeat::Config(url) => {
+                tracing::warn!(
+                    "runtime.heartbeat_url is set in config.toml, which every local user can read; \
+                     move it to HEARTBEAT_URL in /etc/vuln-watch/env"
+                );
+                Some(url)
+            }
+            Heartbeat::Insecure => {
+                tracing::warn!(
+                    "HEARTBEAT_URL does not start with https:// ({}); not pinging it",
+                    crate::config::url_scheme(secrets.heartbeat_url.as_deref().unwrap_or(""))
+                );
+                None
+            }
+        };
+        if let Some(url) = url {
+            if let Err(e) = http.ping(url) {
                 tracing::warn!("heartbeat ping failed: {e:#}");
             }
         }
@@ -550,18 +590,21 @@ fn source_failed(
         + 1;
     db.set_kv(&fail_key, &count.to_string())?;
     if !dry_run && count >= cfg.runtime.alert_after_failures && db.get_kv(&alert_key)?.is_none() {
-        notifier.send(
-            db,
-            &Message::text(truncate(
-                &format!(
-                    "⚠️ ソース `{name}` の取得が{count}回連続で失敗しています。\n```\n{err:#}\n```"
-                ),
-                1900,
-            )),
-        )?;
+        notifier.send(db, &Message::text(source_failed_message(name, count, err)))?;
         db.set_kv(&alert_key, "1")?;
     }
     Ok(())
+}
+
+/// The "source failing" text. The error often holds a remote response body, so it goes
+/// through `code_block`: a body with ``` must not close the block and render as Markdown.
+fn source_failed_message(name: &str, count: u32, err: &anyhow::Error) -> String {
+    // Source names have no length limit in the config; bound only the name so the fixed
+    // text and Markdown delimiters always survive.
+    let name = truncate(name, 100);
+    let head = format!("⚠️ ソース `{name}` の取得が{count}回連続で失敗しています。\n");
+    let room = 1900 - head.chars().count();
+    format!("{head}{}", code_block(&format!("{err:#}"), room))
 }
 
 /// Set when a digest fails to send (value: time of the failed attempt); `run` then retries it.
@@ -1319,6 +1362,39 @@ kind = "ghsa"
         assert_eq!(db.get_kv("failalert:kev").unwrap(), None);
     }
 
+    #[test]
+    fn source_failed_message_keeps_error_body_inside_code_block() {
+        let err = anyhow::Error::new(crate::http::StatusError {
+            url: "http://feed.example/rss".into(),
+            status: 500,
+            body: "oops ```\n[x](https://evil.example) ```".into(),
+        });
+        let m = source_failed_message("feed", 5, &err);
+        assert_eq!(m.matches("```").count(), 2, "{m}");
+        let (_, after_open) = m.split_once("```").unwrap();
+        let (inside, after_close) = after_open.split_once("```").unwrap();
+        assert!(!m.split("```").next().unwrap().contains("]("), "{m}");
+        assert_eq!(after_close, "", "{m}");
+        assert!(inside.contains("http://feed.example/rss"), "{m}");
+        assert!(inside.contains("HTTP 500"), "{m}");
+        assert!(inside.contains("oops"), "{m}");
+        assert!(inside.contains("[x](https://evil.example)"), "{m}");
+
+        let long = anyhow::anyhow!("{}", "`".repeat(5000));
+        let m = source_failed_message("feed", 5, &long);
+        assert!(m.chars().count() <= 2000, "{}", m.chars().count());
+        assert!(m.ends_with("\n```"));
+        assert_eq!(m.matches("```").count(), 2);
+
+        let m = source_failed_message(&"n".repeat(1000), 7, &long);
+        assert!(m.chars().count() <= 2000, "{}", m.chars().count());
+        assert!(
+            m.contains("…` の取得が7回連続で失敗しています。\n```\n"),
+            "{m}"
+        );
+        assert!(m.ends_with("\n```"));
+    }
+
     fn hours_before(now: chrono::DateTime<chrono::Utc>, h: i64) -> String {
         (now - chrono::Duration::hours(h)).to_rfc3339()
     }
@@ -1518,6 +1594,23 @@ stale_after_hours = 0
         cfg.sources.clear();
         cfg.installed.enabled = false;
         cfg
+    }
+
+    #[test]
+    fn heartbeat_prefers_env_and_skips_insecure_env() {
+        let env = "https://hc-ping.com/env";
+        let file = "https://hc-ping.com/file";
+        assert_eq!(heartbeat(None, None), Heartbeat::None);
+        assert_eq!(heartbeat(Some(env), Some(file)), Heartbeat::Env(env));
+        assert_eq!(heartbeat(None, Some(file)), Heartbeat::Config(file));
+        assert_eq!(
+            heartbeat(Some("http://hc-ping.com/env"), Some(file)),
+            Heartbeat::Insecure
+        );
+        assert_eq!(
+            heartbeat(Some("hc-ping.com/env"), None),
+            Heartbeat::Insecure
+        );
     }
 
     fn secrets() -> Secrets {

@@ -33,8 +33,8 @@ max_urgent_per_run = 10
 # Warn after this many consecutive failures of one source.
 alert_after_failures = 5
 http_timeout_secs = 30
-# Pinged after every successful run. HEARTBEAT_URL overrides this.
-# heartbeat_url = "https://hc-ping.com/..."
+# Heartbeat: set HEARTBEAT_URL in /etc/vuln-watch/env (mode 600), not here.
+# This file is world-readable, and the heartbeat URL is a secret.
 # Send the digest even when it is empty.
 digest_send_empty = true
 # CVE records fetched per run; the remainder is processed on later runs.
@@ -56,11 +56,14 @@ already_fixed = "digest"
 #   packages  exact package name (Maven: group:artifact)
 #   sources   limit to these source names (default: all)
 #   urgent    false = matches only go to the digest
+#   exclude   words blanked out before keywords are matched (whole-word, case-insensitive),
+#             for other products that contain the keyword; exact packages are not affected
 # With neither keywords nor packages, name is used as the keyword.
 
 # Server
 [[watch]]
 name = "nginx"
+exclude = ["ingress-nginx", "nginx-ui", "nginx ui", "nginx proxy manager"]
 
 # Dozens of kernel CVEs are published daily. Patches for the installed kernel are
 # covered by [installed]; exploited ones by KEV.

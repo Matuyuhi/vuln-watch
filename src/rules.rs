@@ -3,7 +3,7 @@ use std::cmp::Ordering;
 use crate::config::{AlreadyFixed, Rules, SourceMode, Watch};
 use crate::installed::{cmp_deb_version, split_kernel_release, Installed};
 use crate::model::{Confidence, Decision, Item, Level};
-use crate::text::contains_word;
+use crate::text::{contains_word, mask_words};
 
 /// How a watch entry matched an item.
 #[derive(Debug, Clone)]
@@ -31,7 +31,17 @@ pub fn match_watch<'a>(item: &Item, watches: &'a [Watch]) -> Option<WatchMatch<'
         .join("\n");
     let summary = item.summary.to_lowercase();
 
+    // The searched text with the entry's `exclude` terms blanked out.
+    let masked = |text: &'_ str, w: &Watch| -> String {
+        if w.exclude.is_empty() {
+            text.to_string()
+        } else {
+            mask_words(text, &w.exclude_terms())
+        }
+    };
+
     let strong_evidence = |w: &Watch| -> Option<String> {
+        // Exact package names are not affected by `exclude`.
         if let Some(p) = w
             .packages
             .iter()
@@ -40,9 +50,11 @@ pub fn match_watch<'a>(item: &Item, watches: &'a [Watch]) -> Option<WatchMatch<'
             return Some(format!("パッケージ: {p}"));
         }
         let keywords = w.effective_keywords();
+        let products = masked(&products, w);
         if let Some(k) = keywords.iter().find(|k| contains_word(&products, k)) {
             return Some(format!("製品: {k}"));
         }
+        let title = masked(&title, w);
         keywords
             .iter()
             .find(|k| contains_word(&title, k))
@@ -65,6 +77,7 @@ pub fn match_watch<'a>(item: &Item, watches: &'a [Watch]) -> Option<WatchMatch<'
             continue;
         }
         if weak.is_none() {
+            let summary = masked(&summary, w);
             if let Some(k) = w
                 .effective_keywords()
                 .iter()
@@ -434,6 +447,7 @@ mod tests {
                 packages: vec![],
                 sources: vec![],
                 urgent: true,
+                exclude: vec![],
             },
             Watch {
                 name: "OkHttp".into(),
@@ -441,6 +455,7 @@ mod tests {
                 packages: vec!["com.squareup.okhttp3:okhttp".into()],
                 sources: vec![],
                 urgent: true,
+                exclude: vec![],
             },
         ]
     }
@@ -507,6 +522,7 @@ mod tests {
                 packages: vec![],
                 sources: vec![],
                 urgent: false,
+                exclude: vec![],
             },
             Watch {
                 name: "Electron".into(),
@@ -514,6 +530,7 @@ mod tests {
                 packages: vec!["electron".into()],
                 sources: vec![],
                 urgent: true,
+                exclude: vec![],
             },
         ]
     }
@@ -719,6 +736,7 @@ mod tests {
             packages: vec![],
             sources: vec!["ubuntu-usn".into()],
             urgent: true,
+            exclude: vec![],
         }];
         let mut i = item("USN-1-1: Linux kernel vulnerabilities", None);
         i.source = "ubuntu-usn".into();
@@ -731,6 +749,98 @@ mod tests {
             evaluate(&i, SourceMode::Filter, &Rules::default(), &w).level,
             Level::Ignore
         );
+    }
+
+    fn nginx_with_exclude() -> Vec<Watch> {
+        vec![Watch {
+            name: "nginx".into(),
+            keywords: vec![],
+            packages: vec![],
+            sources: vec![],
+            urgent: true,
+            exclude: vec!["Ingress-NGINX".into(), "nginx ui".into()],
+        }]
+    }
+
+    #[test]
+    fn watch_exclude_masks_other_products() {
+        let w = nginx_with_exclude();
+        let r = Rules::default();
+        let mut i = item(
+            "ingress-nginx controller - configuration injection",
+            Some(9.8),
+        );
+        i.products = vec!["Kubernetes ingress-nginx".into()];
+        i.summary = "A flaw in ingress-nginx allows code execution.".into();
+        let d = evaluate(&i, SourceMode::Filter, &r, &w);
+        // Falls through to the CVSS rules.
+        assert!(is_score_only(&d.reason), "{}", d.reason);
+        assert_eq!(d.level, Level::Digest);
+        // Nginx UI by title only.
+        let i = item("Nginx UI: arbitrary command execution", Some(9.8));
+        assert!(match_watch(&i, &w).is_none());
+
+        let mut i = item("Heap overflow in resolver", Some(9.8));
+        i.products = vec!["F5 nginx".into()];
+        let d = evaluate(&i, SourceMode::Filter, &r, &w);
+        assert_eq!(d.level, Level::Urgent);
+        assert!(d.reason.contains("製品: nginx"), "{}", d.reason);
+
+        let i = item("Request smuggling in nginx and ingress-nginx", Some(9.8));
+        let d = evaluate(&i, SourceMode::Filter, &r, &w);
+        assert_eq!(d.level, Level::Urgent);
+        assert!(d.reason.contains("タイトル: nginx"), "{}", d.reason);
+
+        let mut i = item("Path traversal in FooServer", Some(9.8));
+        i.summary = "Like ingress-nginx, but also in nginx itself.".into();
+        let m = match_watch(&i, &w).expect("weak match");
+        assert!(!m.strong);
+    }
+
+    #[test]
+    fn watch_exclude_overlapping_terms_in_any_order() {
+        let mut i = item("ingress-nginx: configuration injection", Some(9.8));
+        i.products = vec!["Kubernetes ingress-nginx".into()];
+        for exclude in [["ingress", "ingress-nginx"], ["ingress-nginx", "ingress"]] {
+            let mut w = nginx_with_exclude();
+            w[0].exclude = exclude.iter().map(|e| e.to_string()).collect();
+            assert!(match_watch(&i, &w).is_none(), "{exclude:?}");
+        }
+    }
+
+    #[test]
+    fn watch_exclude_keeps_exact_package_match() {
+        let mut w = nginx_with_exclude();
+        w[0].keywords = vec!["nginx".into()];
+        w[0].packages = vec!["nginx".into()];
+        w[0].exclude.push("nginx".into());
+        let mut i = item("Some flaw", Some(9.8));
+        i.packages = vec!["nginx".into()];
+        let m = match_watch(&i, &w).expect("package match");
+        assert!(m.strong);
+        assert_eq!(m.evidence, "パッケージ: nginx");
+    }
+
+    #[test]
+    fn watch_exclude_applies_to_advisories() {
+        let w = nginx_with_exclude();
+        let mut i = advisory_item("high", Confidence::Confirmed);
+        i.title = "ingress-nginx must be updated".into();
+        i.products = vec!["ingress-nginx".into()];
+        i.fixed = vec![];
+        let r = Rules::default();
+        let policy = SourcePolicy {
+            mode: SourceMode::Filter,
+            require_watch: true,
+        };
+        let d = evaluate_with(&i, policy, &r, &w, None);
+        assert_eq!(d.level, Level::Ignore, "{}", d.reason);
+        assert!(d.reason.contains("ウォッチ不一致"), "{}", d.reason);
+
+        i.products.push("nginx".into());
+        let d = evaluate_with(&i, policy, &r, &w, None);
+        assert_eq!(d.level, Level::Urgent, "{}", d.reason);
+        assert!(d.reason.contains("nginx"), "{}", d.reason);
     }
 
     fn advisory_item(severity: &str, confidence: Confidence) -> Item {
@@ -750,6 +860,7 @@ mod tests {
             packages: vec![],
             sources: vec![],
             urgent: true,
+            exclude: vec![],
         }]
     }
 
@@ -803,6 +914,7 @@ mod tests {
             packages: vec![],
             sources: vec![],
             urgent: false,
+            exclude: vec![],
         });
         let i = advisory_item("high", Confidence::Confirmed);
         let r = Rules::default();
@@ -824,6 +936,7 @@ mod tests {
                 packages: vec![],
                 sources: vec![],
                 urgent: true,
+                exclude: vec![],
             },
             Watch {
                 name: "Electron".into(),
@@ -831,6 +944,7 @@ mod tests {
                 packages: vec![],
                 sources: vec![],
                 urgent: false,
+                exclude: vec![],
             },
         ];
         let r = Rules::default();
@@ -1027,6 +1141,7 @@ mod tests {
             packages: vec![],
             sources: vec![],
             urgent: true,
+            exclude: vec![],
         }];
         let d = evaluate_with(
             &usn_item(),
