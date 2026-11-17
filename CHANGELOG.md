@@ -15,6 +15,7 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 
 ### Fixed
 
+- An advisory file that failed to parse (e.g. `actions = "..."` as a string, an unknown key after a format change) was skipped forever with only a log line: no message, and no source failure alert. It is now sent once as an urgent message "アドバイザリを読み込めませんでした: <file name>" with a link to the file and the error as plain text (digest for `mode = "digest"` sources). Watches, `require_watch` and `require_remedy` do not apply to it. A fixed file (new blob SHA) is read as usual; on the first run of the source it is only marked seen.
 - A digest line with a very long feed GUID, title or reason (or many Markdown characters) was cut at 600 characters, which could drop its link, score and reason. Each field is now bounded on its own instead (id 80, title 90, severity 20, reason 120, actions 150 characters; a link longer than 300 characters is left out), and the line is no longer cut as a whole.
 
 ## [1.2.0] - 2026-11-03

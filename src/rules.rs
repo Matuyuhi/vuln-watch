@@ -326,6 +326,16 @@ pub fn evaluate_with(
 ) -> Decision {
     let src = src.into();
     let mode = src.mode;
+    if item.load_error {
+        // Not a vulnerability: watches, KEV, `require_remedy` and `require_watch` do not
+        // apply. The source's `mode = "digest"` is kept unless the digest is off.
+        let level = if mode == SourceMode::Digest && rules.digest {
+            Level::Digest
+        } else {
+            Level::Urgent
+        };
+        return Decision::new(level, "ソースのファイルを読み込めませんでした");
+    }
     let d = decide(item, src, rules, watches, installed);
     match d.level {
         Level::Urgent if rules.require_remedy && !item.remedy && mode != SourceMode::Urgent => {
@@ -662,6 +672,33 @@ mod tests {
         // An explicit `mode = "urgent"` source is still sent.
         i.remedy = false;
         let d = evaluate(&i, SourceMode::Urgent, &rules, &watches());
+        assert_eq!(d.level, Level::Urgent);
+    }
+
+    #[test]
+    fn load_error_reaches_the_owner() {
+        let mut i = Item::new("claude-advisories", "advisories/x.toml@abc");
+        i.title = "アドバイザリを読み込めませんでした: x.toml".into();
+        i.load_error = true;
+        let strict = Rules {
+            require_remedy: true,
+            ..Rules::default()
+        };
+        for rules in [Rules::default(), strict] {
+            let policy = SourcePolicy {
+                mode: SourceMode::Filter,
+                require_watch: true,
+            };
+            let d = evaluate_with(&i, policy, &rules, &[], None);
+            assert_eq!(d.level, Level::Urgent, "{}", d.reason);
+        }
+        let d = evaluate(&i, SourceMode::Digest, &Rules::default(), &[]);
+        assert_eq!(d.level, Level::Digest);
+        let no_digest = Rules {
+            digest: false,
+            ..Rules::default()
+        };
+        let d = evaluate(&i, SourceMode::Digest, &no_digest, &[]);
         assert_eq!(d.level, Level::Urgent);
     }
 
