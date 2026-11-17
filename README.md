@@ -178,7 +178,7 @@ sudo ./deploy/install.sh
 |---|---|
 | `DISCORD_BOT_TOKEN` | required for DM delivery |
 | `DISCORD_USER_ID` | recipient; overrides `discord.user_id` |
-| `DISCORD_WEBHOOK_URL` | required for webhook delivery |
+| `DISCORD_WEBHOOK_URL` | required for webhook delivery. Must be `https://discord.com/api/webhooks/…` (also `discordapp.com`, `ptb.` / `canary.discord.com`, `/api/v<N>/webhooks/…`, a `?thread_id=` query); anything else (e.g. `http://`) is refused at startup and by `doctor` |
 | `GITHUB_TOKEN` | recommended; a fine-grained token with no permissions is enough. Raises the API limit from 60 to 5,000 requests/hour and reads the CVE List through the API instead of the CDN (up to 5 min faster). Only sent to `https://api.github.com`: a `ghsa` / `advisory` `url` (or a `next` page link) on another host is read without it, with one warning per run. |
 | `HEARTBEAT_URL` | optional; pinged after every successful run (e.g. healthchecks.io) |
 

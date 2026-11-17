@@ -178,7 +178,7 @@ sudo ./deploy/install.sh
 |---|---|
 | `DISCORD_BOT_TOKEN` | DM 送信に必須 |
 | `DISCORD_USER_ID` | 送信先。`discord.user_id` より優先 |
-| `DISCORD_WEBHOOK_URL` | Webhook 送信に必須 |
+| `DISCORD_WEBHOOK_URL` | Webhook 送信に必須。`https://discord.com/api/webhooks/…` の形式であること（`discordapp.com`、`ptb.` / `canary.discord.com`、`/api/v<N>/webhooks/…`、`?thread_id=` クエリも可）。それ以外（`http://` など）は起動時と `doctor` でエラーになる |
 | `GITHUB_TOKEN` | 推奨。権限なしの fine-grained token で十分です。API 制限が 60 → 5,000 回/時になり、CVE List を CDN ではなく API から読むため最大 5 分速くなります。`https://api.github.com` にだけ送ります。`ghsa` / `advisory` の `url`（や次ページのリンク）が別のホストのときはトークンなしで読み、実行ごとに 1 回警告します。 |
 | `HEARTBEAT_URL` | 任意。実行成功ごとに ping します（healthchecks.io など） |
 

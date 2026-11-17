@@ -47,12 +47,16 @@ pub fn build_target(cfg: &Config, secrets: &Secrets, dry_run: bool) -> Result<Ta
                 .or_else(|| cfg.discord.user_id.clone())
                 .context("Discord user id is not set (discord.user_id or DISCORD_USER_ID)")?,
         },
-        DeliveryMode::Webhook => Target::Webhook {
-            url: secrets.webhook_url.clone().context(
+        DeliveryMode::Webhook => {
+            let url = secrets.webhook_url.clone().context(
                 "DISCORD_WEBHOOK_URL is not set (required for discord.mode = \"webhook\")",
-            )?,
-            username: cfg.discord.username.clone(),
-        },
+            )?;
+            discord::validate_webhook_url(&url)?;
+            Target::Webhook {
+                url,
+                username: cfg.discord.username.clone(),
+            }
+        }
     })
 }
 
@@ -1061,6 +1065,51 @@ kind = "ghsa"
         );
         assert_eq!(db.queue_len(Queue::Digest).unwrap(), 0);
         assert_eq!(db.alerted_level("CVE-2026-0003#kev").unwrap(), None);
+    }
+
+    #[test]
+    fn build_target_validates_webhook_url() {
+        let mut cfg = config();
+        cfg.discord.mode = DeliveryMode::Webhook;
+        let mut sec = secrets();
+        sec.webhook_url = Some("http://discord.com/api/webhooks/1/abc".into());
+        let err = format!("{:#}", build_target(&cfg, &sec, false).err().unwrap());
+        assert!(err.contains("got http://discord.com"), "{err}");
+        assert!(!err.contains("abc"), "{err}");
+        // --dry-run never sends, so it does not need a valid URL.
+        assert!(build_target(&cfg, &sec, true).is_ok());
+        sec.webhook_url = Some("https://discord.com/api/webhooks/1/abc?thread_id=123".into());
+        match build_target(&cfg, &sec, false).unwrap() {
+            Target::Webhook { url, .. } => {
+                assert_eq!(url, "https://discord.com/api/webhooks/1/abc?thread_id=123")
+            }
+            _ => panic!("not a webhook target"),
+        }
+    }
+
+    #[test]
+    fn redirected_webhook_post_keeps_item_in_outbox() {
+        let srv = crate::http::test_server::start(|path| match path {
+            "/ok" => (200, vec![], "{}".into()),
+            _ => (301, vec![("Location", "/ok".into())], String::new()),
+        });
+        let cfg = cfg();
+        let http = Http::new(5).unwrap();
+        let notifier = Notifier::new(
+            &http,
+            Target::Webhook {
+                url: format!("{}/api/webhooks/1/abc", srv.base),
+                username: None,
+            },
+        );
+        let mut db = Db::open_in_memory().unwrap();
+        let mut s = RunSummary::default();
+        outbox_with(&mut db, 1);
+        assert!(flush_outbox(&cfg, &db, &notifier, &mut s, &mut None).is_err());
+        assert_eq!(s.urgent, 0);
+        assert_eq!(keys(&db, Queue::Outbox), ["CVE-2026-0001#kev"]);
+        assert_eq!(db.alerted_level("CVE-2026-0001#kev").unwrap(), None);
+        assert_eq!(srv.requests().len(), 1, "{:?}", srv.requests());
     }
 
     #[test]

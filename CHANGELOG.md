@@ -17,6 +17,11 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 
 - A digest line with a very long feed GUID, title or reason (or many Markdown characters) was cut at 600 characters, which could drop its link, score and reason. Each field is now bounded on its own instead (id 80, title 90, severity 20, reason 120, actions 150 characters; a link longer than 300 characters is left out), and the line is no longer cut as a whole.
 
+### Security
+
+- `DISCORD_WEBHOOK_URL` is now validated when the delivery target is built (`run`, `digest`, `test-notify`) and by `doctor`: it must be `https://` on a Discord host (`discord.com`, `discordapp.com`, `ptb.discord.com`, `canary.discord.com`), without port or user info, with a path under `/api/webhooks/` (or `/api/v<N>/webhooks/`). A query such as `?thread_id=` is still allowed. An `http://` URL used to send the webhook token in clear text on every message. The error shows only the scheme and host, never the token.
+- Requests to Discord no longer follow redirects, and a `3xx` response is an error that keeps the message in the outbox for the next run. Before, a redirect (e.g. Discord's `301` for `http://`) turned the POST into a GET without body; Discord answers that with `200` for a webhook URL, so every message counted as sent while none arrived. Source fetches still follow redirects.
+
 ## [1.2.0] - 2026-11-03
 
 ### Added

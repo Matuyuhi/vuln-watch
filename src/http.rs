@@ -17,6 +17,10 @@ const MAX_BODY_BYTES: u64 = 64 * 1024 * 1024;
 
 pub struct Http {
     client: Client,
+    /// Same settings, but never follows redirects. Used for Discord: a redirected POST becomes
+    /// a GET without body, which Discord's webhook endpoint answers with 200, so a message
+    /// would count as sent without ever arriving.
+    no_redirect: Client,
 }
 
 pub struct Resp {
@@ -94,18 +98,31 @@ impl Validators {
 
 impl Http {
     pub fn new(timeout_secs: u64) -> Result<Self> {
-        let client = Client::builder()
-            .user_agent(USER_AGENT)
-            .timeout(Duration::from_secs(timeout_secs))
-            .connect_timeout(Duration::from_secs(10))
-            .gzip(true)
+        let builder = || {
+            Client::builder()
+                .user_agent(USER_AGENT)
+                .timeout(Duration::from_secs(timeout_secs))
+                .connect_timeout(Duration::from_secs(10))
+                .gzip(true)
+        };
+        let client = builder().build().context("failed to build HTTP client")?;
+        let no_redirect = builder()
+            .redirect(reqwest::redirect::Policy::none())
             .build()
             .context("failed to build HTTP client")?;
-        Ok(Self { client })
+        Ok(Self {
+            client,
+            no_redirect,
+        })
     }
 
     pub fn client(&self) -> &Client {
         &self.client
+    }
+
+    /// Client that returns 3xx responses as they are instead of following them.
+    pub fn no_redirect_client(&self) -> &Client {
+        &self.no_redirect
     }
 
     /// GET a URL that is itself a secret (heartbeat check-in URLs embed a token): errors never
@@ -221,9 +238,93 @@ pub fn next_link(link: &str) -> Option<String> {
     })
 }
 
+/// Minimal HTTP/1.1 server on 127.0.0.1 for tests: one response per connection.
+#[cfg(test)]
+pub mod test_server {
+    use std::io::{BufRead, BufReader, Read, Write};
+    use std::net::TcpListener;
+    use std::sync::{Arc, Mutex};
+
+    type Reply = (u16, Vec<(&'static str, String)>, String);
+
+    pub struct Server {
+        pub base: String,
+        log: Arc<Mutex<Vec<String>>>,
+    }
+
+    impl Server {
+        /// `METHOD path?query` of each request received so far.
+        pub fn requests(&self) -> Vec<String> {
+            self.log.lock().unwrap().clone()
+        }
+    }
+
+    /// `respond` gets the request path (without query) and returns status, headers and body.
+    pub fn start(respond: impl Fn(&str) -> Reply + Send + 'static) -> Server {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let base = format!("http://{}", listener.local_addr().unwrap());
+        let log = Arc::new(Mutex::new(Vec::new()));
+        let log2 = Arc::clone(&log);
+        std::thread::spawn(move || {
+            for stream in listener.incoming() {
+                let Ok(mut stream) = stream else { break };
+                let mut reader = BufReader::new(stream.try_clone().unwrap());
+                let mut line = String::new();
+                if reader.read_line(&mut line).is_err() {
+                    continue;
+                }
+                let mut parts = line.split_whitespace();
+                let method = parts.next().unwrap_or("").to_string();
+                let target = parts.next().unwrap_or("").to_string();
+                let mut len = 0usize;
+                loop {
+                    let mut h = String::new();
+                    if reader.read_line(&mut h).unwrap_or(0) == 0 || h.trim().is_empty() {
+                        break;
+                    }
+                    if let Some((k, v)) = h.split_once(':') {
+                        if k.eq_ignore_ascii_case("content-length") {
+                            len = v.trim().parse().unwrap_or(0);
+                        }
+                    }
+                }
+                let mut body = vec![0; len];
+                let _ = reader.read_exact(&mut body);
+                log2.lock().unwrap().push(format!("{method} {target}"));
+                let path = target.split('?').next().unwrap_or("");
+                let (status, headers, body) = respond(path);
+                let mut out = format!(
+                    "HTTP/1.1 {status} X\r\nContent-Length: {}\r\nConnection: close\r\n",
+                    body.len()
+                );
+                for (k, v) in headers {
+                    out.push_str(&format!("{k}: {v}\r\n"));
+                }
+                out.push_str("\r\n");
+                out.push_str(&body);
+                let _ = stream.write_all(out.as_bytes());
+            }
+        });
+        Server { base, log }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn get_still_follows_redirects() {
+        let srv = test_server::start(|path| match path {
+            "/new" => (200, vec![], "moved here".into()),
+            _ => (301, vec![("Location", "/new".into())], String::new()),
+        });
+        let http = Http::new(5).unwrap();
+        let resp = http.get(&format!("{}/old", srv.base), &[], None).unwrap();
+        assert_eq!(resp.status, 200);
+        assert_eq!(resp.body, "moved here");
+        assert_eq!(srv.requests(), ["GET /old", "GET /new"]);
+    }
 
     #[test]
     fn parses_next_link() {

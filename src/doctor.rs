@@ -797,6 +797,35 @@ mod tests {
     }
 
     #[test]
+    fn invalid_webhook_url_is_a_failure() {
+        let mut cfg = Config::parse("[discord]\nmode = \"webhook\"\n").unwrap();
+        cfg.installed.enabled = false;
+        let mut env = HashMap::new();
+        env.insert(
+            "DISCORD_WEBHOOK_URL".to_string(),
+            "http://discord.com/api/webhooks/1/abc".to_string(),
+        );
+        let secrets = secrets_from(&env);
+        let mut r = Report::default();
+        check_credentials(&mut r, &cfg, &secrets, true);
+        assert_eq!(r.fails, 1);
+        // The detail doctor prints is this error; it must not contain the token.
+        let err = format!(
+            "{:#}",
+            app::build_target(&cfg, &secrets, false).err().unwrap()
+        );
+        assert!(!err.contains("abc"), "{err}");
+
+        env.insert(
+            "DISCORD_WEBHOOK_URL".to_string(),
+            "https://discord.com/api/webhooks/1/abc".to_string(),
+        );
+        let mut r = Report::default();
+        check_credentials(&mut r, &cfg, &secrets_from(&env), true);
+        assert_eq!(r.fails, 0);
+    }
+
+    #[test]
     fn parses_env_file() {
         let env = parse_env_file(
             "# comment\n\
