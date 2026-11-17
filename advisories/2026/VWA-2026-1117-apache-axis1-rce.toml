@@ -61,8 +61,7 @@ quote = "As Axis 1 has been EOL we recommend you migrate to a different SOAP eng
 [[references]]
 url = "https://cybersecuritynews.com/hackers-exploiting-atlassian-confluence-vulnerability/"
 kind = "secondary"
-title = "Hackers Actively Exploiting Atlassian Confluence RCE Vulnerability（Cyber Security News, 2026-11-17）"
-quote = "Rapid7 detected exploitation in a customer environment on November 13, 2026"
+title = "Hackers Actively Exploiting Atlassian Confluence RCE Vulnerability（Cyber Security News, 2026-11-17、Rapid7 が 11-13 に悪用を検知と報道）"
 
 [[references]]
 url = "https://www.securityweek.com/hackers-exploit-new-n-central-zero-day-hours-after-poc-publication/"
