@@ -65,7 +65,23 @@ pub fn parse_deltas(body: &str) -> Result<Vec<Delta>> {
     }
 }
 
+/// `CVE-YYYY-NNNN…` with ASCII digits only (at least four in the number part).
+/// Delta entries are upstream data: an id of any other shape must not reach the `pending`
+/// table or be used in a URL path.
+fn is_valid_cve_id(id: &str) -> bool {
+    let Some(rest) = id.strip_prefix("CVE-") else {
+        return false;
+    };
+    let Some((year, num)) = rest.split_once('-') else {
+        return false;
+    };
+    let digits = |s: &str| s.bytes().all(|b| b.is_ascii_digit());
+    year.len() == 4 && digits(year) && num.len() >= 4 && digits(num)
+}
+
 /// New CVE entries strictly after `cursor`, oldest first, plus the newest fetchTime seen.
+/// Entries with a malformed `cveId` are skipped with a warning; they do not hold back the
+/// cursor, so the valid entries of the same delta are still processed.
 pub fn select_new(
     deltas: Vec<Delta>,
     cursor: Option<DateTime<Utc>>,
@@ -80,6 +96,13 @@ pub fn select_new(
     let mut out: Vec<DeltaEntry> = Vec::new();
     for (_, d) in deltas {
         for e in d.new {
+            if !is_valid_cve_id(&e.cve_id) {
+                tracing::warn!(
+                    "cvelist: skipping delta entry with invalid cveId {:?}",
+                    truncate(&e.cve_id, 40)
+                );
+                continue;
+            }
             if !out.iter().any(|x| x.cve_id == e.cve_id) {
                 out.push(e);
             }
@@ -224,9 +247,11 @@ pub fn fetch(name: &str, base_override: Option<&str>, ctx: &Ctx) -> Result<Fetch
 
     // Queue new ids durably before the cursor moves, then work through the backlog.
     for e in &entries {
+        // The link is fetched without credentials; still, only follow http(s) links.
         let link = e
             .github_link
             .clone()
+            .filter(|l| l.starts_with("https://") || l.starts_with("http://"))
             .unwrap_or_else(|| record_url(base, &e.cve_id));
         ctx.db.add_pending(name, &e.cve_id, &link)?;
     }
@@ -311,14 +336,16 @@ fn give_up(name: &str, cve: &str, ctx: &Ctx) -> Result<()> {
 }
 
 /// Fallback URL: cves/<year>/<bucket>xxx/CVE-<year>-<num>.json
+/// Never panics: an id whose year or number is not all ASCII digits gives `{base}/{cve}.json`.
 fn record_url(base: &str, cve: &str) -> String {
     let parts: Vec<&str> = cve.split('-').collect();
-    if parts.len() == 3 {
+    let digits = |s: &str| !s.is_empty() && s.bytes().all(|b| b.is_ascii_digit());
+    if parts.len() == 3 && digits(parts[1]) && digits(parts[2]) {
         let num = parts[2];
-        let bucket = if num.len() > 3 {
-            format!("{}xxx", &num[..num.len() - 3])
-        } else {
-            "0xxx".to_string()
+        // ASCII digits only, so every byte index is a char boundary.
+        let bucket = match num.get(..num.len().saturating_sub(3)) {
+            Some(head) if !head.is_empty() => format!("{head}xxx"),
+            _ => "0xxx".to_string(),
         };
         format!("{base}/{}/{bucket}/{cve}.json", parts[1])
     } else {
@@ -462,24 +489,24 @@ mod tests {
         let delta = r#"{
           "fetchTime": "2026-10-24T06:00:00.000Z",
           "numberOfChanges": 2,
-          "new": [{"cveId": "CVE-2026-1", "cveOrgLink": "x", "githubLink": "https://example/1.json", "dateUpdated": "2026-10-24T05:59:00.000Z"}],
+          "new": [{"cveId": "CVE-2026-1001", "cveOrgLink": "x", "githubLink": "https://example/1.json", "dateUpdated": "2026-10-24T05:59:00.000Z"}],
           "updated": [{"cveId": "CVE-2025-9", "cveOrgLink": "x", "githubLink": "x", "dateUpdated": "x"}],
           "error": []
         }"#;
         let d = parse_deltas(delta).unwrap();
         assert_eq!(d.len(), 1);
-        assert_eq!(d[0].new[0].cve_id, "CVE-2026-1");
+        assert_eq!(d[0].new[0].cve_id, "CVE-2026-1001");
 
         let log = r#"[
-          {"fetchTime": "2026-10-24T06:00:00.000Z", "numberOfChanges": 1, "new": [{"cveId": "CVE-2026-3"}], "updated": [], "error": []},
-          {"fetchTime": "2026-10-24T05:50:00.000Z", "numberOfChanges": 2, "new": [{"cveId": "CVE-2026-2"}, {"cveId": "CVE-2026-3"}], "updated": [], "error": []},
-          {"fetchTime": "2026-10-24T05:40:00.000Z", "numberOfChanges": 1, "new": [{"cveId": "CVE-2026-1"}], "updated": [], "error": []}
+          {"fetchTime": "2026-10-24T06:00:00.000Z", "numberOfChanges": 1, "new": [{"cveId": "CVE-2026-1003"}], "updated": [], "error": []},
+          {"fetchTime": "2026-10-24T05:50:00.000Z", "numberOfChanges": 2, "new": [{"cveId": "CVE-2026-1002"}, {"cveId": "CVE-2026-1003"}], "updated": [], "error": []},
+          {"fetchTime": "2026-10-24T05:40:00.000Z", "numberOfChanges": 1, "new": [{"cveId": "CVE-2026-1001"}], "updated": [], "error": []}
         ]"#;
         let deltas = parse_deltas(log).unwrap();
         let cursor = parse_time("2026-10-24T05:40:00.000Z");
         let (entries, newest) = select_new(deltas, cursor);
         let ids: Vec<_> = entries.iter().map(|e| e.cve_id.as_str()).collect();
-        assert_eq!(ids, vec!["CVE-2026-2", "CVE-2026-3"]);
+        assert_eq!(ids, vec!["CVE-2026-1002", "CVE-2026-1003"]);
         assert_eq!(newest.as_deref(), Some("2026-10-24T06:00:00.000Z"));
 
         let (entries, newest) = select_new(
@@ -537,13 +564,13 @@ mod tests {
     #[test]
     fn falls_back_to_delta_json_when_delta_log_fails() {
         let delta = r#"{"fetchTime": "2026-10-24T06:00:00.000Z",
-            "new": [{"cveId": "CVE-2026-7"}], "updated": [], "error": []}"#;
-        let record = r#"{"cveMetadata": {"cveId": "CVE-2026-7", "state": "PUBLISHED"},
+            "new": [{"cveId": "CVE-2026-1007"}], "updated": [], "error": []}"#;
+        let record = r#"{"cveMetadata": {"cveId": "CVE-2026-1007", "state": "PUBLISHED"},
             "containers": {"cna": {"title": "t", "descriptions": []}}}"#;
         let base = serve(vec![
             ("/deltaLog.json", 200, "[{\"fetchTime\": ".to_string()),
             ("/delta.json", 200, delta.to_string()),
-            ("/CVE-2026-7.json", 200, record.to_string()),
+            ("/CVE-2026-1007.json", 200, record.to_string()),
         ]);
         let db = Db::open_in_memory().unwrap();
         db.set_kv(KEY_CURSOR, "2026-10-01T00:00:00.000Z").unwrap();
@@ -561,7 +588,7 @@ mod tests {
 
         let fetched = fetch("cvelist", Some(&base), &ctx).unwrap();
         let ids: Vec<_> = fetched.items.iter().map(|i| i.id.as_str()).collect();
-        assert_eq!(ids, vec!["CVE-2026-7"]);
+        assert_eq!(ids, vec!["CVE-2026-1007"]);
         let commit: std::collections::HashMap<_, _> = fetched.commit.into_iter().collect();
         assert!(commit.contains_key(KEY_LAST_OK));
         assert_eq!(
@@ -571,6 +598,48 @@ mod tests {
         assert!(commit.contains_key(&format!("etag:{base}/delta.json")));
         // The unusable deltaLog.json body must not be cached behind a 304.
         assert!(!commit.contains_key(&format!("etag:{base}/deltaLog.json")));
+    }
+
+    #[test]
+    fn bad_delta_entry_does_not_block_the_run() {
+        let delta = r#"{"fetchTime": "2026-10-24T06:00:00.000Z",
+            "new": [{"cveId": "CVE-2026-é12"}, {"cveId": "CVE-2026-1008"},
+                    {"cveId": "CVE-2026-1009", "githubLink": "file:///etc/passwd"}],
+            "updated": [], "error": []}"#;
+        let record = |id: &str| {
+            format!(
+                r#"{{"cveMetadata": {{"cveId": "{id}", "state": "PUBLISHED"}},
+                "containers": {{"cna": {{"title": "t", "descriptions": []}}}}}}"#
+            )
+        };
+        let base = serve(vec![
+            ("/delta.json", 200, delta.to_string()),
+            ("/CVE-2026-1008.json", 200, record("CVE-2026-1008")),
+            ("/CVE-2026-1009.json", 200, record("CVE-2026-1009")),
+        ]);
+        let db = Db::open_in_memory().unwrap();
+        db.set_kv(KEY_CURSOR, "2026-10-24T05:50:00.000Z").unwrap();
+        db.set_kv(KEY_LAST_OK, &Utc::now().to_rfc3339()).unwrap();
+        let cfg = crate::config::Config::parse("").unwrap();
+        let http = crate::http::Http::new(5).unwrap();
+        let ctx = Ctx {
+            http: &http,
+            db: &db,
+            cfg: &cfg,
+            github_token: None,
+            bootstrap: false,
+            limit: None,
+            release: None,
+        };
+
+        let fetched = fetch("cvelist", Some(&base), &ctx).unwrap();
+        let ids: Vec<_> = fetched.items.iter().map(|i| i.id.as_str()).collect();
+        assert_eq!(ids, vec!["CVE-2026-1008", "CVE-2026-1009"]);
+        let commit: std::collections::HashMap<_, _> = fetched.commit.into_iter().collect();
+        assert_eq!(
+            commit.get(KEY_CURSOR).map(String::as_str),
+            Some("2026-10-24T06:00:00.000Z")
+        );
     }
 
     const OLD: &str = "2000-01-01T00:00:00+00:00";
@@ -754,6 +823,61 @@ mod tests {
             record_url(BASE, "CVE-2026-0042"),
             format!("{BASE}/2026/0xxx/CVE-2026-0042.json")
         );
+    }
+
+    #[test]
+    fn record_url_does_not_panic_on_non_ascii() {
+        for cve in [
+            "CVE-2026-é12",
+            "CVE-2026-1é23",
+            "CVE-2026-12é",
+            "CVE-２０２６-１２３４５",
+            "CVE-2026-",
+            "CVE-é-1234",
+            "😀",
+            "",
+        ] {
+            assert_eq!(record_url(BASE, cve), format!("{BASE}/{cve}.json"));
+        }
+    }
+
+    #[test]
+    fn validates_cve_ids() {
+        for ok in ["CVE-2026-1234", "CVE-1999-0001", "CVE-2026-1234567"] {
+            assert!(is_valid_cve_id(ok), "{ok}");
+        }
+        for bad in [
+            "CVE-2026-123",
+            "CVE-2026-é12",
+            "CVE-2026-1é23",
+            "CVE-26-1234",
+            "cve-2026-1234",
+            "CVE-2026-1234-5",
+            "CVE-2026-1234 ",
+            "CVE-２０２６-１２３４",
+            "GHSA-xxxx-xxxx-xxxx",
+            "",
+        ] {
+            assert!(!is_valid_cve_id(bad), "{bad}");
+        }
+    }
+
+    #[test]
+    fn select_new_drops_invalid_ids() {
+        let delta = r#"{
+          "fetchTime": "2026-10-24T06:00:00.000Z",
+          "new": [
+            {"cveId": "CVE-2026-1001"},
+            {"cveId": "CVE-2026-é12"},
+            {"cveId": "../../etc/passwd"},
+            {"cveId": "CVE-2026-1002", "githubLink": "https://example/2.json"}
+          ]
+        }"#;
+        let (entries, newest) = select_new(parse_deltas(delta).unwrap(), None);
+        let ids: Vec<_> = entries.iter().map(|e| e.cve_id.as_str()).collect();
+        assert_eq!(ids, vec!["CVE-2026-1001", "CVE-2026-1002"]);
+        // The cursor still moves past the delta with the bad entry.
+        assert_eq!(newest.as_deref(), Some("2026-10-24T06:00:00.000Z"));
     }
 
     #[test]
