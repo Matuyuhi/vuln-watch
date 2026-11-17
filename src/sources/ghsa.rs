@@ -48,6 +48,9 @@ struct Advisory {
     cvss_severities: Option<CvssSeverities>,
     #[serde(default)]
     epss: Option<Epss>,
+    /// "reviewed", "unreviewed" or "malware".
+    #[serde(default, rename = "type")]
+    kind: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -354,6 +357,35 @@ impl Walk<'_> {
             next,
         }))
     }
+}
+
+/// The global advisories endpoint, for single lookups (`vuln-watch explain`).
+pub const API_URL: &str = "https://api.github.com/advisories";
+
+/// One advisory found by a lookup.
+pub struct Lookup {
+    pub ghsa_id: String,
+    /// "reviewed", "unreviewed" or "malware".
+    pub kind: Option<String>,
+    /// None when the advisory is withdrawn.
+    pub item: Option<Item>,
+}
+
+/// Parse the body of `GET /advisories/{ghsa_id}` (one object) or of
+/// `GET /advisories?cve_id=...` (an array).
+pub fn parse_lookup(source: &str, body: &str) -> Result<Vec<Lookup>> {
+    let advisories: Vec<Advisory> = match body.trim_start().as_bytes().first() {
+        Some(b'[') => serde_json::from_str(body).context("parsing GitHub advisories")?,
+        _ => vec![serde_json::from_str(body).context("parsing GitHub advisory")?],
+    };
+    Ok(advisories
+        .into_iter()
+        .map(|a| Lookup {
+            ghsa_id: a.ghsa_id.clone(),
+            kind: a.kind.clone(),
+            item: a.withdrawn_at.is_none().then(|| to_item(source, a)),
+        })
+        .collect())
 }
 
 fn max_score(scores: impl IntoIterator<Item = Option<f32>>) -> Option<f32> {

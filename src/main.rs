@@ -4,6 +4,7 @@ mod db;
 mod delegate;
 mod discord;
 mod doctor;
+mod explain;
 mod http;
 mod installed;
 mod model;
@@ -98,6 +99,14 @@ enum Command {
         #[arg(long)]
         force: bool,
     },
+    /// Show what vuln-watch knows and decides for one CVE or GHSA id (read-only)
+    Explain {
+        /// CVE-YYYY-NNNN or GHSA-xxxx-xxxx-xxxx
+        id: String,
+        /// Only show the state; skip fetching the item from its sources
+        #[arg(long)]
+        offline: bool,
+    },
     /// List or edit the watch list in config.toml (editing needs write access, i.e. sudo)
     Watch {
         #[command(subcommand)]
@@ -156,9 +165,10 @@ impl Command {
                 .collect(),
             Command::TestNotify => vec!["test-notify".to_string()],
             Command::CheckConfig => vec!["check-config".to_string()],
-            Command::Doctor { .. } | Command::Upgrade { .. } | Command::Watch { .. } => {
-                return None
-            }
+            Command::Doctor { .. }
+            | Command::Upgrade { .. }
+            | Command::Watch { .. }
+            | Command::Explain { .. } => return None,
         })
     }
 }
@@ -203,6 +213,27 @@ fn real_main() -> Result<ExitCode> {
     // Edits config.toml only: no credentials or state, so it runs here (as root to write).
     if let Command::Watch { command } = cli.command {
         watch::run(&cli.config, command)?;
+        return Ok(ExitCode::SUCCESS);
+    }
+
+    // Read-only: reads state.db like `doctor` (never created or migrated, so it is safe as
+    // root) and sends nothing, so it is not re-run under systemd.
+    if let Command::Explain { id, offline } = cli.command {
+        let cfg = Config::load(&cli.config)?;
+        let http = Http::new(cfg.runtime.http_timeout_secs)?;
+        let state_dir = if cli.state_dir == Path::new(DEFAULT_STATE_DIR)
+            && Path::new(INSTALLED_ENV_FILE).exists()
+        {
+            PathBuf::from(doctor::SYSTEMD_STATE_DIR)
+        } else {
+            cli.state_dir
+        };
+        let opts = explain::Options {
+            id,
+            state_db: state_dir.join("state.db"),
+            offline,
+        };
+        explain::run(&cfg, &http, &Secrets::from_env(), &opts)?;
         return Ok(ExitCode::SUCCESS);
     }
 
@@ -323,9 +354,10 @@ fn real_main() -> Result<ExitCode> {
             );
             target?;
         }
-        Command::Upgrade { .. } | Command::Doctor { .. } | Command::Watch { .. } => {
-            unreachable!("handled above")
-        }
+        Command::Upgrade { .. }
+        | Command::Doctor { .. }
+        | Command::Watch { .. }
+        | Command::Explain { .. } => unreachable!("handled above"),
     }
     Ok(ExitCode::SUCCESS)
 }

@@ -26,7 +26,7 @@ use crate::upgrade;
 const INSTALLED_BIN: &str = "/usr/local/bin/vuln-watch";
 const ENV_FILE: &str = "/etc/vuln-watch/env";
 /// Where systemd's StateDirectory puts state.db (a link into /var/lib/private).
-const SYSTEMD_STATE_DIR: &str = "/var/lib/vuln-watch";
+pub(crate) const SYSTEMD_STATE_DIR: &str = "/var/lib/vuln-watch";
 const UNIT_DIR: &str = "/etc/systemd/system";
 const SERVICE_UNIT: &str = "vuln-watch@.service";
 const TIMERS: [&str; 2] = ["vuln-watch-run.timer", "vuln-watch-digest.timer"];
