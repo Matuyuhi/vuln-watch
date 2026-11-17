@@ -458,12 +458,13 @@ fn fetch_live(
                 types.push("reviewed".to_string());
             }
             for t in types {
+                // One page of 100 (the API maximum): far more than one CVE has.
                 let url = reqwest::Url::parse_with_params(
                     ghsa_api,
-                    [("cve_id", cve.as_str()), ("type", &t)],
+                    [("cve_id", cve.as_str()), ("per_page", "100"), ("type", &t)],
                 )
                 .map(String::from)
-                .unwrap_or_else(|_| format!("{ghsa_api}?cve_id={cve}&type={t}"));
+                .unwrap_or_else(|_| format!("{ghsa_api}?cve_id={cve}&per_page=100&type={t}"));
                 ghsa_from(
                     out,
                     &format!("GitHub {t} advisories for {cve}"),
