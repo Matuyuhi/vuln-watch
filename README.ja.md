@@ -65,6 +65,7 @@ oss-security には、CVE レコードより先に報告が出ることがよく
 | それ以外 | 無視 |
 
 - `urgent = false` のウォッチ対象は、一致してもダイジェストにだけ入ります。
+- キーワードは単語単位で照合し、`-`・`/`・`.`・`_` も単語の区切りとして扱います。そのため `nginx` は `ingress-nginx` や `nginx-ui` にも一致します。ウォッチ対象に `exclude = ["ingress-nginx", "nginx-ui"]` を付けると、そのエントリのキーワードを照合する前に、製品・パッケージ・タイトル・説明文からこれらの語（単語単位、大文字小文字を区別しない）を取り除きます。`Kubernetes ingress-nginx` は `nginx` に一致しなくなりますが、`nginx and ingress-nginx` は引き続き一致します。`packages` の完全一致には影響しません。勧告にも適用されます。`[rules] exclude_keywords` はウォッチに一致しなかった項目にしか効かないので、この用途には使えません。
 - 複数のウォッチ対象が一致したときは、設定の順番に関係なく、`urgent = true` の強い一致 → `urgent = false` の強い一致 → 本文のみの一致の順で優先されます。下の勧告でも同じです。
 - ダイジェストは、ウォッチ対象やインストール済みパッケージに一致したものを先に並べ、CVSS だけで入ったものは別の見出しの下にまとめます。
 - タイトルに製品名がない場合は、通知に対象の製品名を添えます。
@@ -218,11 +219,12 @@ vuln-watch [--config PATH] [--state-dir DIR] <COMMAND>
 
 インストール済みのホストでは、シェルから実行した `run`・`digest`・`test-notify`・`check-config` は systemd のサービスとして動きます。`sudo` を付けると、vuln-watch が `vuln-watch@.service` と同じ設定で `systemd-run` 経由で自分自身を実行し直します。そのため `/etc/vuln-watch/env` の認証情報を使い、タイマーと同じ state を共有しつつ、出力と終了コードはそのまま端末に返ります（`sudo vuln-watch digest`、`sudo vuln-watch run --strict` など）。`sudo` なしでは案内を出して止まります。ただし認証情報も state も使わない `run --dry-run` はそのまま動きます。別の state ディレクトリでローカルに実行したい場合は `--state-dir` を指定してください。
 
-`vuln-watch watch` は config.toml の `[[watch]]` をその場で書き換えます。コメントや書式は残ります。書き込む前にサービスと同じ検証を通し、存在しない情報源・空の値・同名のエントリはエラーにします（重複したキーワードや極端に短いキーワードは警告のみ）。`add` / `edit` には `-k/--keyword`・`-p/--package`・`-s/--source`（複数指定可）と `--urgent` / `--no-urgent` を、`edit` にはさらに `--rm-keyword`・`--rm-package`・`--rm-source` を指定できます。名前は大文字小文字を区別しません。`--dry-run` を付けると書き込まずに結果だけ表示し、書き込んだ場合は直前の内容を `config.toml.bak` に残します。変更は次回のタイマー実行から反映され、再起動は不要です。`watch list` と `--dry-run` は `sudo` なしで動きます。
+`vuln-watch watch` は config.toml の `[[watch]]` をその場で書き換えます。コメントや書式は残ります。書き込む前にサービスと同じ検証を通し、存在しない情報源・空の値・同名のエントリはエラーにします（重複したキーワードや極端に短いキーワードは警告のみ）。`add` / `edit` には `-k/--keyword`・`-p/--package`・`-s/--source`・`--exclude`（複数指定可）と `--urgent` / `--no-urgent` を、`edit` にはさらに `--rm-keyword`・`--rm-package`・`--rm-source`・`--rm-exclude` を指定できます。名前は大文字小文字を区別しません。`--dry-run` を付けると書き込まずに結果だけ表示し、書き込んだ場合は直前の内容を `config.toml.bak` に残します。変更は次回のタイマー実行から反映され、再起動は不要です。`watch list` と `--dry-run` は `sudo` なしで動きます。
 
 ```bash
 sudo vuln-watch watch add PHP -k php -p php/php-src
 sudo vuln-watch watch edit php -k laravel --no-urgent
+sudo vuln-watch watch edit nginx --exclude ingress-nginx --exclude nginx-ui
 sudo vuln-watch watch remove PHP
 ```
 

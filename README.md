@@ -65,6 +65,7 @@ oss-security often carries a disclosure before a CVE record exists.
 | Anything else | ignored |
 
 - Watch entries with `urgent = false` only go to the digest.
+- Keywords match whole words, and `-`, `/`, `.` and `_` are word boundaries, so `nginx` also matches `ingress-nginx` and `nginx-ui`. `exclude = ["ingress-nginx", "nginx-ui"]` on a watch entry blanks those terms out (whole-word, case-insensitive) of the product, package, title and description text before that entry's keywords are matched: `Kubernetes ingress-nginx` no longer matches `nginx`, while `nginx and ingress-nginx` still does. Exact `packages` matches are not affected. This also applies to advisories. `[rules] exclude_keywords` cannot do this, because it only applies to items that match no watch entry.
 - When several watch entries match, the order in the config does not matter: a strong match from an `urgent = true` entry wins over a strong match from an `urgent = false` entry, which wins over a description-only match. The same applies to advisories below.
 - The digest lists items that match a watch entry or an installed package first; items included only for their CVSS score follow under a separate heading.
 - Messages name the affected product when the title does not.
@@ -218,11 +219,12 @@ vuln-watch [--config PATH] [--state-dir DIR] <COMMAND>
 
 On an installed host, `run`, `digest`, `test-notify` and `check-config` started from a shell run as the systemd service: with `sudo`, vuln-watch re-runs itself through `systemd-run` with the settings of `vuln-watch@.service`, so it gets the credentials from `/etc/vuln-watch/env` and shares state with the timers, while the output and exit code stay in your terminal (`sudo vuln-watch digest`, `sudo vuln-watch run --strict`). Without `sudo` they stop with a hint, except `run --dry-run`, which needs neither. Pass `--state-dir` to run locally against a separate state directory instead.
 
-`vuln-watch watch` edits the `[[watch]]` entries of config.toml in place, keeping comments and formatting, and writes nothing unless the result passes the same validation as the service (unknown sources, empty values, duplicate names are rejected; repeated or very short keywords get a warning). `add` / `edit` take `-k/--keyword`, `-p/--package`, `-s/--source` (repeatable) and `--urgent` / `--no-urgent`; `edit` also takes `--rm-keyword`, `--rm-package` and `--rm-source`. Names match case-insensitively. `--dry-run` prints the result without writing; otherwise the previous file is kept as `config.toml.bak`. Changes apply from the next timer run, no restart needed. `watch list` and `--dry-run` work without `sudo`.
+`vuln-watch watch` edits the `[[watch]]` entries of config.toml in place, keeping comments and formatting, and writes nothing unless the result passes the same validation as the service (unknown sources, empty values, duplicate names are rejected; repeated or very short keywords get a warning). `add` / `edit` take `-k/--keyword`, `-p/--package`, `-s/--source`, `--exclude` (repeatable) and `--urgent` / `--no-urgent`; `edit` also takes `--rm-keyword`, `--rm-package`, `--rm-source` and `--rm-exclude`. Names match case-insensitively. `--dry-run` prints the result without writing; otherwise the previous file is kept as `config.toml.bak`. Changes apply from the next timer run, no restart needed. `watch list` and `--dry-run` work without `sudo`.
 
 ```bash
 sudo vuln-watch watch add PHP -k php -p php/php-src
 sudo vuln-watch watch edit php -k laravel --no-urgent
+sudo vuln-watch watch edit nginx --exclude ingress-nginx --exclude nginx-ui
 sudo vuln-watch watch remove PHP
 ```
 

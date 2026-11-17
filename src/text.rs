@@ -47,20 +47,41 @@ pub fn contains_word(haystack: &str, needle: &str) -> bool {
     if needle.is_empty() {
         return false;
     }
-    for (idx, _) in haystack.match_indices(needle) {
-        let before_ok = haystack[..idx]
-            .chars()
-            .next_back()
-            .is_none_or(|c| !c.is_alphanumeric());
-        let after_ok = haystack[idx + needle.len()..]
-            .chars()
-            .next()
-            .is_none_or(|c| !c.is_alphanumeric());
-        if before_ok && after_ok {
-            return true;
+    haystack
+        .match_indices(needle)
+        .any(|(idx, _)| is_word_at(haystack, idx, needle.len()))
+}
+
+/// Blank out every whole-word occurrence of each of `terms` in `haystack`, so that
+/// `contains_word` no longer finds words that are only part of them. Matched bytes
+/// become spaces, which are word boundaries. Both arguments are expected to be
+/// lowercase already; empty terms are skipped.
+pub fn mask_words(haystack: &str, terms: &[String]) -> String {
+    let mut out = haystack.to_string();
+    for term in terms.iter().filter(|t| !t.is_empty()) {
+        let ranges: Vec<(usize, usize)> = out
+            .match_indices(term.as_str())
+            .filter(|(idx, _)| is_word_at(&out, *idx, term.len()))
+            .map(|(idx, m)| (idx, idx + m.len()))
+            .collect();
+        for (start, end) in ranges {
+            out.replace_range(start..end, &" ".repeat(end - start));
         }
     }
-    false
+    out
+}
+
+/// True when `haystack[idx..idx + len]` is not preceded or followed by an alphanumeric char.
+fn is_word_at(haystack: &str, idx: usize, len: usize) -> bool {
+    let before_ok = haystack[..idx]
+        .chars()
+        .next_back()
+        .is_none_or(|c| !c.is_alphanumeric());
+    let after_ok = haystack[idx + len..]
+        .chars()
+        .next()
+        .is_none_or(|c| !c.is_alphanumeric());
+    before_ok && after_ok
 }
 
 /// Escape characters that would be interpreted as Discord markdown.
@@ -110,6 +131,24 @@ mod tests {
         assert!(contains_word("x sudo", "sudo"));
         assert!(contains_word("中文 nginx", "nginx"));
         assert!(!contains_word("anything", ""));
+    }
+
+    #[test]
+    fn masks_whole_words_only() {
+        let terms = vec!["ingress-nginx".to_string(), "nginx ui".to_string()];
+        let masked = mask_words("kubernetes ingress-nginx", &terms);
+        assert!(!contains_word(&masked, "nginx"), "{masked}");
+        assert!(contains_word(&masked, "kubernetes"));
+        // A real `nginx` next to an excluded term survives.
+        let masked = mask_words("nginx and ingress-nginx", &terms);
+        assert!(contains_word(&masked, "nginx"), "{masked}");
+        let masked = mask_words("nginx ui: xss in nginx uis", &terms);
+        assert!(contains_word(&masked, "nginx"), "{masked}");
+        assert!(!contains_word(&masked, "ui"), "{masked}");
+        // Not a whole word: left alone.
+        assert_eq!(mask_words("myingress-nginx", &terms), "myingress-nginx");
+        assert_eq!(mask_words("中文 nginx ui", &terms), "中文         ");
+        assert_eq!(mask_words("abc", &[String::new()]), "abc");
     }
 
     #[test]
