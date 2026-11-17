@@ -441,13 +441,36 @@ fn fetch_live(
                     Err(e) => out.push(format!("{label}: fetch failed: {e:#}")),
                 }
             }
-            let url = format!("{ghsa_api}?cve_id={cve}");
-            ghsa_from(
-                out,
-                &format!("GitHub advisories for {cve}"),
-                &url,
-                &mut found,
-            );
+            // The API returns reviewed advisories unless `type` says otherwise: ask for each
+            // type the enabled ghsa sources read.
+            let mut types: Vec<String> = Vec::new();
+            for src in cfg
+                .sources
+                .iter()
+                .filter(|s| s.enabled && s.kind == SourceKind::Ghsa)
+            {
+                let t = ghsa::list_type(src.url.as_deref().unwrap_or(ghsa::DEFAULT_URL));
+                if !types.contains(&t) {
+                    types.push(t);
+                }
+            }
+            if types.is_empty() {
+                types.push("reviewed".to_string());
+            }
+            for t in types {
+                let url = reqwest::Url::parse_with_params(
+                    ghsa_api,
+                    [("cve_id", cve.as_str()), ("type", &t)],
+                )
+                .map(String::from)
+                .unwrap_or_else(|_| format!("{ghsa_api}?cve_id={cve}&type={t}"));
+                ghsa_from(
+                    out,
+                    &format!("GitHub {t} advisories for {cve}"),
+                    &url,
+                    &mut found,
+                );
+            }
         }
         Id::Ghsa(g) => {
             let url = format!("{ghsa_api}/{g}");
@@ -792,6 +815,47 @@ mod tests {
     }
 
     #[test]
+    fn cve_lookup_asks_for_each_advisory_type_the_sources_read() {
+        let malware = r#"[{"ghsa_id": "GHSA-mmmm-mmmm-mmmm", "cve_id": "CVE-2026-9999",
+            "summary": "m", "type": "malware", "vulnerabilities": []}]"#;
+        let base = serve(vec![
+            ("/advisories?cve_id=CVE-2026-9999&type=reviewed", 200, "[]"),
+            (
+                "/advisories?cve_id=CVE-2026-9999&type=malware",
+                200,
+                malware,
+            ),
+        ]);
+        let mut cfg = mirror_config(&base);
+        let mut m = cfg
+            .sources
+            .iter()
+            .find(|s| s.kind == SourceKind::Ghsa)
+            .unwrap()
+            .clone();
+        m.name = Some("ghsa-malware".into());
+        m.url = Some("https://api.github.com/advisories?type=malware&per_page=100".into());
+        cfg.sources.push(m);
+        let http = Http::new(5).unwrap();
+        let mut out = Vec::new();
+        let id = Id::parse("CVE-2026-9999").unwrap();
+        let api = format!("{base}/advisories");
+        let found = fetch_live(&id, &cfg, &http, None, &api, &mut out);
+        assert!(
+            out.iter()
+                .any(|l| l == "GitHub reviewed advisories for CVE-2026-9999: no GitHub advisory"),
+            "{out:?}"
+        );
+        let g: Vec<_> = found
+            .iter()
+            .filter(|f| f.kind == SourceKind::Ghsa)
+            .collect();
+        assert_eq!(g.len(), 1);
+        assert_eq!(g[0].sources, Some(vec!["ghsa-malware".to_string()]));
+        assert!(g[0].ids.contains(&"GHSA-mmmm-mmmm-mmmm".to_string()));
+    }
+
+    #[test]
     fn finds_cve_record_and_its_advisories() {
         let record = r#"{"cveMetadata": {"cveId": "CVE-2026-7777", "state": "PUBLISHED"},
             "containers": {"cna": {"title": "nginx: overflow", "descriptions": []}}}"#;
@@ -801,7 +865,11 @@ mod tests {
             "type": "reviewed", "withdrawn_at": "2026-11-01T00:00:00Z"}]"#;
         let base = serve(vec![
             ("/CVE-2026-7777.json", 200, record),
-            ("/advisories?cve_id=CVE-2026-7777", 200, advisories),
+            (
+                "/advisories?cve_id=CVE-2026-7777&type=reviewed",
+                200,
+                advisories,
+            ),
         ]);
         let cfg = mirror_config(&base);
         let http = Http::new(5).unwrap();

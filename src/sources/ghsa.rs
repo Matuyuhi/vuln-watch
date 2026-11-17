@@ -410,6 +410,18 @@ pub enum Eligibility {
     Unchecked(Vec<String>),
 }
 
+/// The advisory type a list URL returns: its `type` filter, or "reviewed" (the API default).
+pub fn list_type(list_url: &str) -> String {
+    reqwest::Url::parse(list_url)
+        .ok()
+        .and_then(|u| {
+            u.query_pairs()
+                .find(|(k, _)| k == "type")
+                .map(|(_, v)| v.to_lowercase())
+        })
+        .unwrap_or_else(|| "reviewed".to_string())
+}
+
 /// Check the `type` (default "reviewed", as the API does) and `ecosystem` filters of a list
 /// URL against an advisory's type and package ecosystems.
 pub fn list_eligibility(list_url: &str, kind: Option<&str>, ecosystems: &[String]) -> Eligibility {
@@ -543,6 +555,12 @@ mod tests {
             Eligibility::Yes
         );
         assert_eq!(list_eligibility(DEFAULT_URL, None, &npm), Eligibility::Yes);
+        assert_eq!(list_type(DEFAULT_URL), "reviewed");
+        assert_eq!(
+            list_type("https://api.github.com/advisories?type=Malware"),
+            "malware"
+        );
+        assert_eq!(list_type("https://api.github.com/advisories"), "reviewed");
         assert_eq!(
             list_eligibility(DEFAULT_URL, Some("malware"), &npm),
             Eligibility::No("type=reviewed".into())
