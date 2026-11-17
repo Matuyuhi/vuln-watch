@@ -111,6 +111,7 @@ pub fn run(http: &Http, opts: &Options) -> Result<()> {
     let cfg = check_config(&mut r, &opts.config);
     if let Some(cfg) = &cfg {
         check_credentials(&mut r, cfg, &secrets, file_env.is_some());
+        check_heartbeat(&mut r, cfg, &secrets, file_env.is_some());
         check_installed(&mut r, cfg);
     }
     check_systemd(&mut r);
@@ -485,6 +486,60 @@ fn check_credentials(r: &mut Report, cfg: &Config, secrets: &Secrets, from_file:
     }
 }
 
+/// Heartbeat findings as (status, detail, hint). The URL embeds a token and is never printed.
+fn heartbeat_findings(
+    cfg: &Config,
+    secrets: &Secrets,
+    from_file: bool,
+) -> Vec<(Status, String, Option<String>)> {
+    let source = if from_file {
+        ENV_FILE
+    } else {
+        "the environment"
+    };
+    let mut out = Vec::new();
+    if cfg.runtime.heartbeat_url.is_some() {
+        out.push((
+            Status::Warn,
+            "runtime.heartbeat_url is set in config.toml, which every local user can read \
+             (anyone who knows it can keep the heartbeat green)"
+                .to_string(),
+            Some(format!(
+                "move it to HEARTBEAT_URL in {ENV_FILE} (mode 600) and remove it from config.toml"
+            )),
+        ));
+    }
+    match app::heartbeat(
+        secrets.heartbeat_url.as_deref(),
+        cfg.runtime.heartbeat_url.as_deref(),
+    ) {
+        app::Heartbeat::Env(_) => {
+            out.push((Status::Ok, format!("HEARTBEAT_URL set in {source}"), None))
+        }
+        app::Heartbeat::Insecure => out.push((
+            // Without the env file we only see the shell's environment, which systemd does not use.
+            if from_file {
+                Status::Fail
+            } else {
+                Status::Warn
+            },
+            format!(
+                "HEARTBEAT_URL in {source} does not start with https:// ({}); it is not pinged",
+                crate::config::url_scheme(secrets.heartbeat_url.as_deref().unwrap_or(""))
+            ),
+            Some("use the https:// check-in URL; over http the token is sent in clear text".into()),
+        )),
+        app::Heartbeat::Config(_) | app::Heartbeat::None => {}
+    }
+    out
+}
+
+fn check_heartbeat(r: &mut Report, cfg: &Config, secrets: &Secrets, from_file: bool) {
+    for (status, detail, hint) in heartbeat_findings(cfg, secrets, from_file) {
+        r.add(status, "heartbeat", detail, hint.as_deref());
+    }
+}
+
 fn check_installed(r: &mut Report, cfg: &Config) {
     if !cfg.installed.enabled {
         return r.skip("installed", "installed.enabled = false");
@@ -794,6 +849,46 @@ mod tests {
         );
         assert!(!freshness("feed", "2020-01-01T00:00:00+00:00", 0, now).0);
         assert!(!freshness("x", "garbage", 1, now).0);
+    }
+
+    #[test]
+    fn heartbeat_warns_about_config_and_insecure_env() {
+        let secret = "secret-uuid";
+        let with = |env: Option<&str>, file: Option<&str>, from_file: bool| {
+            let mut cfg = Config::parse("").unwrap();
+            cfg.runtime.heartbeat_url = file.map(str::to_string);
+            let mut env_map = HashMap::new();
+            if let Some(v) = env {
+                env_map.insert("HEARTBEAT_URL".to_string(), v.to_string());
+            }
+            let found = heartbeat_findings(&cfg, &secrets_from(&env_map), from_file);
+            for (_, detail, hint) in &found {
+                assert!(!detail.contains(secret), "{detail}");
+                assert!(!hint.as_deref().unwrap_or("").contains(secret));
+            }
+            found.into_iter().map(|(s, _, _)| s).collect::<Vec<_>>()
+        };
+        let https = "https://hc-ping.com/secret-uuid";
+        let http = "http://hc-ping.com/secret-uuid";
+        assert!(with(None, None, true).is_empty());
+        assert_eq!(with(Some(https), None, true), [Status::Ok]);
+        assert_eq!(with(None, Some(https), true), [Status::Warn]);
+        assert_eq!(
+            with(Some(https), Some(https), true),
+            [Status::Warn, Status::Ok]
+        );
+        assert_eq!(with(Some(http), None, true), [Status::Fail]);
+        assert_eq!(
+            with(Some(http), Some(https), true),
+            [Status::Warn, Status::Fail]
+        );
+        assert_eq!(with(Some(http), None, false), [Status::Warn]);
+
+        let mut cfg = Config::parse("").unwrap();
+        cfg.runtime.heartbeat_url = Some(https.to_string());
+        let found = heartbeat_findings(&cfg, &secrets_from(&HashMap::new()), true);
+        assert!(found[0].1.contains("runtime.heartbeat_url"));
+        assert!(found[0].2.as_deref().unwrap().contains("HEARTBEAT_URL"));
     }
 
     #[test]

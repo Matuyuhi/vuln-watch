@@ -180,7 +180,7 @@ sudo ./deploy/install.sh
 | `DISCORD_USER_ID` | 送信先。`discord.user_id` より優先 |
 | `DISCORD_WEBHOOK_URL` | Webhook 送信に必須 |
 | `GITHUB_TOKEN` | 推奨。権限なしの fine-grained token で十分です。API 制限が 60 → 5,000 回/時になり、CVE List を CDN ではなく API から読むため最大 5 分速くなります。`https://api.github.com` にだけ送ります。`ghsa` / `advisory` の `url`（や次ページのリンク）が別のホストのときはトークンなしで読み、実行ごとに 1 回警告します。 |
-| `HEARTBEAT_URL` | 任意。実行成功ごとに ping します（healthchecks.io など） |
+| `HEARTBEAT_URL` | 任意。実行成功ごとに ping します（healthchecks.io など）。`https://` で始める必要があります（そうでないときは ping せず、警告をログに出します）。`config.toml` の `runtime.heartbeat_url` ではなく、ここに設定してください。`config.toml` はサーバー上のどのユーザーからも読めるため、URL を知った人が ping を送り続けると、vuln-watch が止まっても気づけなくなります。`runtime.heartbeat_url` も引き続き使えます（こちらも `https://` 必須）が、`run` が警告をログに出し、`doctor` も警告します。 |
 
 `/etc/vuln-watch/config.toml` でウォッチリストと情報源を調整します。ウォッチリストは `vuln-watch watch` でも編集できます（[使い方](#使い方)を参照）。情報源の `url` は `https://` で始める必要があります（`http://` を使えるのは `kind = "feed"` だけです）。
 
@@ -236,7 +236,7 @@ dpkg のない環境では `installed.enabled = false` にしてください。
 
 ## 運用
 
-- **診断**: `sudo vuln-watch doctor` でインストール状態を項目ごとに ok / warn / FAIL で表示します。PATH 上で先に見つかる古い `vuln-watch`、新しいリリースの有無、パースできなくなった設定、`/etc/vuln-watch/env` の認証情報の不足や例のままの値、systemd が無視する行や使われない変数、パーミッション、unit ファイルと `daemon-reload` の要否、タイマーが有効か、直近の実行が成功したか、連続して失敗しているソース、各ソースに最後に新しい項目が届いた時刻（`stale_after_hours` を超えていれば警告）、未送信の緊急通知、中断された upgrade の残骸を確認します。Discord には何も送りません。FAIL があれば終了コード 1 で終わり、`--offline` でリリース確認を省きます。インストール後や upgrade 後に実行してください。
+- **診断**: `sudo vuln-watch doctor` でインストール状態を項目ごとに ok / warn / FAIL で表示します。PATH 上で先に見つかる古い `vuln-watch`、新しいリリースの有無、パースできなくなった設定、`/etc/vuln-watch/env` の認証情報の不足や例のままの値、systemd が無視する行や使われない変数、パーミッション、`https://` でない heartbeat URL や誰でも読める `config.toml` に書かれた heartbeat URL、unit ファイルと `daemon-reload` の要否、タイマーが有効か、直近の実行が成功したか、連続して失敗しているソース、各ソースに最後に新しい項目が届いた時刻（`stale_after_hours` を超えていれば警告）、未送信の緊急通知、中断された upgrade の残骸を確認します。Discord には何も送りません。FAIL があれば終了コード 1 で終わり、`--offline` でリリース確認を省きます。インストール後や upgrade 後に実行してください。
 - **更新**: `sudo vuln-watch upgrade` で最新リリースを `install.sh` と同じ手順で入れ直します（`--check` は確認のみ、`--version 1.2.0` でバージョン指定、`--pre` でプレリリースも対象）。設定と状態はそのまま残ります。`config.example.toml` の変更は [CHANGELOG.md](CHANGELOG.md) で確認してください。ソースから入れた場合は `git pull && sudo ./deploy/install.sh`。
 - **サンドボックス**: ユニットは `DynamicUser`、`ProtectSystem=strict`、syscall フィルタを使います。プロセスができるのは外向き通信と状態ディレクトリへの書き込みだけです。
 - **アンインストール**:

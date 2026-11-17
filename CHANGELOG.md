@@ -17,6 +17,11 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 
 - A digest line with a very long feed GUID, title or reason (or many Markdown characters) was cut at 600 characters, which could drop its link, score and reason. Each field is now bounded on its own instead (id 80, title 90, severity 20, reason 120, actions 150 characters; a link longer than 300 characters is left out), and the line is no longer cut as a whole.
 
+### Security
+
+- The heartbeat URL must start with `https://`. `runtime.heartbeat_url` in `config.toml` with another scheme fails config validation (the error shows only the scheme, never the URL). A `HEARTBEAT_URL` that is not `https://` is not pinged; `run` logs a warning and `vuln-watch doctor` reports it as a failure. Over `http://`, the token in the URL was sent in clear text on every run.
+- `runtime.heartbeat_url` in `config.toml` (world-readable, so the service user can read it) is discouraged: `run` logs one warning per run and `vuln-watch doctor` warns, advising to move it to `HEARTBEAT_URL` in `/etc/vuln-watch/env` (mode 600). It still works. Anyone who knows the URL can keep the heartbeat green while vuln-watch is not running. `config.example.toml` no longer suggests setting it there.
+
 ## [1.2.0] - 2026-11-03
 
 ### Added

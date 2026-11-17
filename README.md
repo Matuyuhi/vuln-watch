@@ -180,7 +180,7 @@ sudo ./deploy/install.sh
 | `DISCORD_USER_ID` | recipient; overrides `discord.user_id` |
 | `DISCORD_WEBHOOK_URL` | required for webhook delivery |
 | `GITHUB_TOKEN` | recommended; a fine-grained token with no permissions is enough. Raises the API limit from 60 to 5,000 requests/hour and reads the CVE List through the API instead of the CDN (up to 5 min faster). Only sent to `https://api.github.com`: a `ghsa` / `advisory` `url` (or a `next` page link) on another host is read without it, with one warning per run. |
-| `HEARTBEAT_URL` | optional; pinged after every successful run (e.g. healthchecks.io) |
+| `HEARTBEAT_URL` | optional; pinged after every successful run (e.g. healthchecks.io). Must start with `https://`; otherwise it is not pinged and a warning is logged. Set it here, not as `runtime.heartbeat_url` in `config.toml`: that file is readable by every local user, and anyone who knows the URL can keep the heartbeat green while vuln-watch is down. `runtime.heartbeat_url` still works (it must also be `https://`), but `run` logs a warning and `doctor` warns about it. |
 
 `/etc/vuln-watch/config.toml`: adjust the watch list and sources. The watch list can also be edited with `vuln-watch watch` (see [Usage](#usage)). A source `url` must start with `https://` (only `kind = "feed"` may use `http://`).
 
@@ -236,7 +236,7 @@ Set `installed.enabled = false` on machines without dpkg.
 
 ## Operations
 
-- **Diagnose**: `sudo vuln-watch doctor` checks the installation and prints ok / warn / FAIL per item: a stale `vuln-watch` earlier on PATH, a newer release, a config that no longer parses, missing or example credentials in `/etc/vuln-watch/env`, lines in it that systemd ignores or that vuln-watch does not read, and its permissions, unit files and `daemon-reload`, whether the timers are enabled and the last run succeeded, sources failing repeatedly, when each source last returned something new (warning when it is over `stale_after_hours`), undelivered urgent messages, and leftovers of an interrupted upgrade. It sends nothing to Discord and exits with 1 when something fails; `--offline` skips the release check. Run it after installing or upgrading.
+- **Diagnose**: `sudo vuln-watch doctor` checks the installation and prints ok / warn / FAIL per item: a stale `vuln-watch` earlier on PATH, a newer release, a config that no longer parses, missing or example credentials in `/etc/vuln-watch/env`, lines in it that systemd ignores or that vuln-watch does not read, and its permissions, a heartbeat URL that is not `https://` or is set in the world-readable `config.toml`, unit files and `daemon-reload`, whether the timers are enabled and the last run succeeded, sources failing repeatedly, when each source last returned something new (warning when it is over `stale_after_hours`), undelivered urgent messages, and leftovers of an interrupted upgrade. It sends nothing to Discord and exits with 1 when something fails; `--offline` skips the release check. Run it after installing or upgrading.
 - **Update**: `sudo vuln-watch upgrade` installs the latest release the same way as `install.sh` (`--check` only reports, `--version 1.2.0` picks a version, `--pre` includes pre-releases). Config and state are kept; check [CHANGELOG.md](CHANGELOG.md) for changes to `config.example.toml`. From source: `git pull && sudo ./deploy/install.sh`.
 - **Sandbox**: the unit uses `DynamicUser`, `ProtectSystem=strict` and a syscall filter; the process can only make outbound connections and write its state directory.
 - **Uninstall**:
