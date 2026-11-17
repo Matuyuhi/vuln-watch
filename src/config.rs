@@ -329,6 +329,15 @@ impl Config {
         if cfg.sources.is_empty() {
             cfg.sources = default_sources();
         }
+        // Like an empty HEARTBEAT_URL, an empty value means "not set".
+        if cfg
+            .runtime
+            .heartbeat_url
+            .as_deref()
+            .is_some_and(|u| u.trim().is_empty())
+        {
+            cfg.runtime.heartbeat_url = None;
+        }
         cfg.validate()?;
         Ok(cfg)
     }
@@ -352,13 +361,19 @@ impl Config {
             // Only feeds may be plain http: the other sources are HTTPS APIs, and ghsa /
             // advisory would send GITHUB_TOKEN to the first request.
             if let (false, Some(url)) = (s.kind == SourceKind::Feed, &s.url) {
-                if !url
-                    .trim_start()
-                    .to_ascii_lowercase()
-                    .starts_with("https://")
-                {
+                if !is_https(url) {
                     bail!("source `{name}`: `url` must start with https:// (got {url})");
                 }
+            }
+        }
+        // The heartbeat URL embeds a token: never echo it, only its scheme.
+        if let Some(url) = &self.runtime.heartbeat_url {
+            if !is_https(url) {
+                bail!(
+                    "runtime.heartbeat_url must start with https:// (got {}); \
+                     set it as HEARTBEAT_URL in /etc/vuln-watch/env instead",
+                    url_scheme(url)
+                );
             }
         }
         for w in &self.watches {
@@ -372,6 +387,29 @@ impl Config {
             }
         }
         Ok(())
+    }
+}
+
+/// Whether `url` uses https (case-insensitive, leading whitespace ignored).
+pub fn is_https(url: &str) -> bool {
+    url.trim_start()
+        .get(..8)
+        .is_some_and(|p| p.eq_ignore_ascii_case("https://"))
+}
+
+/// A printable description of the scheme of a secret URL, without any other part of it.
+pub fn url_scheme(url: &str) -> String {
+    match url.trim_start().split_once("://") {
+        Some((scheme, _))
+            if !scheme.is_empty()
+                && scheme.len() <= 16
+                && scheme
+                    .chars()
+                    .all(|c| c.is_ascii_alphanumeric() || "+-.".contains(c)) =>
+        {
+            format!("{}://", scheme.to_ascii_lowercase())
+        }
+        _ => "no scheme".to_string(),
     }
 }
 
@@ -412,6 +450,42 @@ mod tests {
         let bad = "[[source]]\nkind = \"ghsa\"\nrequire_watch = true\n";
         let err = Config::parse(bad).unwrap_err().to_string();
         assert!(err.contains("require_watch"), "{err}");
+    }
+
+    #[test]
+    fn heartbeat_url_must_be_https_and_is_not_echoed() {
+        let ok = "[runtime]\nheartbeat_url = \"https://hc-ping.com/secret-uuid\"\n";
+        assert!(Config::parse(ok).unwrap().runtime.heartbeat_url.is_some());
+        let upper = "[runtime]\nheartbeat_url = \"HTTPS://hc-ping.com/secret-uuid\"\n";
+        assert!(Config::parse(upper).is_ok());
+        let empty = "[runtime]\nheartbeat_url = \" \"\n";
+        assert!(Config::parse(empty)
+            .unwrap()
+            .runtime
+            .heartbeat_url
+            .is_none());
+        for (url, scheme) in [
+            ("http://hc-ping.com/secret-uuid", "http://"),
+            ("hc-ping.com/secret-uuid", "no scheme"),
+            ("ftp://user:secret-uuid@host/", "ftp://"),
+        ] {
+            let text = format!("[runtime]\nheartbeat_url = \"{url}\"\n");
+            let err = format!("{:#}", Config::parse(&text).unwrap_err());
+            assert!(err.contains("heartbeat_url"), "{err}");
+            assert!(err.contains(scheme), "{err}");
+            assert!(!err.contains("secret-uuid"), "{err}");
+            assert!(!err.contains("hc-ping.com"), "{err}");
+        }
+    }
+
+    #[test]
+    fn url_helpers() {
+        assert!(is_https(" https://x/"));
+        assert!(!is_https("http://x/"));
+        assert!(!is_https("https:/x"));
+        assert_eq!(url_scheme("HTTP://a/b"), "http://");
+        assert_eq!(url_scheme("a/b://c"), "no scheme");
+        assert_eq!(url_scheme(""), "no scheme");
     }
 
     #[test]

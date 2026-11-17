@@ -31,6 +31,29 @@ impl Secrets {
     }
 }
 
+/// Which heartbeat URL a run pings. The URL embeds a token, so callers never log it.
+#[derive(Debug, PartialEq, Eq)]
+pub enum Heartbeat<'a> {
+    None,
+    /// HEARTBEAT_URL from the (private) env file.
+    Env(&'a str),
+    /// runtime.heartbeat_url from the world-readable config.toml.
+    Config(&'a str),
+    /// HEARTBEAT_URL is set but not https: the token would travel in clear text.
+    Insecure,
+}
+
+/// HEARTBEAT_URL overrides runtime.heartbeat_url; a non-https HEARTBEAT_URL is not pinged and
+/// does not fall back to the config value. (Config::validate already rejects non-https there.)
+pub fn heartbeat<'a>(env: Option<&'a str>, config: Option<&'a str>) -> Heartbeat<'a> {
+    match (env, config) {
+        (Some(url), _) if crate::config::is_https(url) => Heartbeat::Env(url),
+        (Some(_), _) => Heartbeat::Insecure,
+        (None, Some(url)) => Heartbeat::Config(url),
+        (None, None) => Heartbeat::None,
+    }
+}
+
 pub fn build_target(cfg: &Config, secrets: &Secrets, dry_run: bool) -> Result<Target> {
     if dry_run {
         return Ok(Target::Stdout);
@@ -184,12 +207,29 @@ fn locked_run(
     }
 
     if !opts.dry_run {
-        let hb = secrets
-            .heartbeat_url
-            .clone()
-            .or_else(|| cfg.runtime.heartbeat_url.clone());
-        if let Some(url) = hb {
-            if let Err(e) = http.ping(&url) {
+        let url = match heartbeat(
+            secrets.heartbeat_url.as_deref(),
+            cfg.runtime.heartbeat_url.as_deref(),
+        ) {
+            Heartbeat::None => None,
+            Heartbeat::Env(url) => Some(url),
+            Heartbeat::Config(url) => {
+                tracing::warn!(
+                    "runtime.heartbeat_url is set in config.toml, which every local user can read; \
+                     move it to HEARTBEAT_URL in /etc/vuln-watch/env"
+                );
+                Some(url)
+            }
+            Heartbeat::Insecure => {
+                tracing::warn!(
+                    "HEARTBEAT_URL does not start with https:// ({}); not pinging it",
+                    crate::config::url_scheme(secrets.heartbeat_url.as_deref().unwrap_or(""))
+                );
+                None
+            }
+        };
+        if let Some(url) = url {
+            if let Err(e) = http.ping(url) {
                 tracing::warn!("heartbeat ping failed: {e:#}");
             }
         }
@@ -1469,6 +1509,23 @@ stale_after_hours = 0
         cfg.sources.clear();
         cfg.installed.enabled = false;
         cfg
+    }
+
+    #[test]
+    fn heartbeat_prefers_env_and_skips_insecure_env() {
+        let env = "https://hc-ping.com/env";
+        let file = "https://hc-ping.com/file";
+        assert_eq!(heartbeat(None, None), Heartbeat::None);
+        assert_eq!(heartbeat(Some(env), Some(file)), Heartbeat::Env(env));
+        assert_eq!(heartbeat(None, Some(file)), Heartbeat::Config(file));
+        assert_eq!(
+            heartbeat(Some("http://hc-ping.com/env"), Some(file)),
+            Heartbeat::Insecure
+        );
+        assert_eq!(
+            heartbeat(Some("hc-ping.com/env"), None),
+            Heartbeat::Insecure
+        );
     }
 
     fn secrets() -> Secrets {
