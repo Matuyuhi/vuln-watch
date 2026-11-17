@@ -1,0 +1,47 @@
+id = "VWA-2026-1117-optimizely-web-injection"
+revision = 1
+status = "active"
+published = 2026-11-17
+expires = 2026-12-17
+severity = "high"
+confidence = "confirmed"
+title = "Optimizely Web の配信スクリプトに不正な JavaScript が混入、BBC・CNN・Zoom など 178 組織のサイト訪問者に暗号資産アドレスすり替え・カード情報窃取・iOS 攻撃キット（2026-11-16）"
+summary = """
+Optimizely は 11-17、攻撃者が Web Experimentation の脆弱性を突いて一部顧客のプロジェクトに悪意ある JavaScript を追加したと公表し、脆弱性を修正して注入されたコードを削除したとしている（影響範囲は Snippet Delivery）。
+Report URI の調査では、11-16 04:21 UTC ごろから cdn.optimizely.com（および顧客ドメインから配信されるスニペット）の Project JavaScript に読み込みコードが入り、確認できた 1,611 件中 188 件・178 組織（BBC、CNN、Zoom、GitLab、Salesforce、HSBC、IKEA、Ledger など）が感染していた。
+配信されたスクリプトは、ページやクリップボード上の暗号資産アドレスを攻撃者のものにすり替え、サイト自身のフォームに入力されたカード情報や HttpOnly でない Cookie・画面のスクリーンショットを送信し、iPhone / iPad には iOS の攻撃キット（Coruna / DarkSword）を読み込ませた。11-16 21:52 UTC までにほぼすべてが除去されている。
+自分のサイトや CDN が侵害されていなくても第三者スクリプト経由で訪問者が攻撃されたサプライチェーン型の事例で、11-16 に該当サイトを訪れた利用者と、Optimizely Web を使うサイト運営者の双方に確認が必要。"""
+cves = []
+actions = [
+  "11-16 に該当サイトを訪れた iPhone / iPad は iOS 18.7.3 以降または iOS 26.3 以降に更新する（Report URI）",
+  "11-16 前後に暗号資産を送金した場合は送金先アドレスが意図したものか確認し、該当サイトでカード払いをした場合は明細を確認する（Report URI）",
+  "Optimizely Web を使うサイトは、すべてのプロジェクトの Project JavaScript と実験のカスタムコードに 1688360.cc や atob( などの覚えのないコードがないか確認し、Optimizely アカウントのユーザー・API トークン・連携の権限を見直して認証情報を入れ替える（Report URI）",
+  "自社フォームでカード情報を扱うサイトは 11-16 に入力されたカード情報を漏えいの可能性ありとして扱い、HttpOnly でない Cookie に入ったセッションや秘密情報を無効化する。CSP で connect-src を制限し、'unsafe-eval' を避ける（Report URI）",
+  "（独自提案）1688360.cc・webshell.lol などの攻撃者ドメインを DNS / プロキシで遮断する（Report URI が IoC を公開）",
+]
+
+[[affects]]
+name = "Optimizely Web Experimentation（スニペット配信）"
+keywords = ["optimizely"]
+
+[[affects]]
+name = "Apple iOS / iPadOS（古い版の訪問者）"
+keywords = ["ios", "ipados"]
+
+[[references]]
+url = "https://status.optimizely.com/incidents/ftw0fh9wx43z"
+kind = "primary"
+title = "Web Experimentation Security Incident（Optimizely Status, 2026-11-17 01:02 UTC）"
+quote = "an unauthorized party exploited a vulnerability in Experimentation and used it to add malicious JavaScript to some customer projects."
+
+[[references]]
+url = "https://blog.report-uri.com/worlds-largest-brands-infected-with-malware-via-optimizely/"
+kind = "secondary"
+title = "World's Largest Brands Infected With Malware Via Optimizely（Report URI / Scott Helme, 2026-11-16、IoC と対策つき）"
+quote = "188 snippets belonging to 178 organisations were infected."
+
+[[references]]
+url = "https://www.securityweek.com/optimizely-vulnerability-exploited-to-serve-malware-on-major-websites/"
+kind = "secondary"
+title = "Optimizely Vulnerability Exploited to Serve Malware on Major Websites（SecurityWeek, 2026-11-17）"
+quote = "We've fixed the vulnerability and removed the injected code from affected projects."
