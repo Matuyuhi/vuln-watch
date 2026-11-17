@@ -439,12 +439,28 @@ fn digest_line(e: &DigestEntry, show_reason: bool) -> String {
     // A "fix available" follow-up over the cap (or moved to the digest) is sent only as
     // this line, so it must carry the fixed version itself.
     if e.reason.starts_with(REMEDY_FOLLOWUP) {
+        let mut parts = Vec::new();
+        // Score-only lines hide the reason, which is what labels a follow-up.
+        if !show_reason {
+            parts.push(REMEDY_FOLLOWUP.to_string());
+        }
         if let Some((k, v)) = item.extra.iter().find(|(k, _)| k == "修正バージョン") {
             let v = v.replace('\n', " / ");
-            line.push_str(&format!("\n　{k}: {}", escape_md(&truncate(&v, 150))));
+            parts.push(format!("{k}: {}", escape_md(&truncate(&v, 150))));
+        }
+        if !parts.is_empty() {
+            line.push_str(&format!("\n　{}", parts.join(" · ")));
         }
     }
     line
+}
+
+/// The rules' reason without the follow-up prefix, for classifying an entry.
+fn base_reason(reason: &str) -> &str {
+    reason
+        .strip_prefix(REMEDY_FOLLOWUP)
+        .and_then(|r| r.strip_prefix(": "))
+        .unwrap_or(reason)
 }
 
 /// Longest embed description a digest or list message uses (Discord allows 4096).
@@ -507,7 +523,7 @@ pub fn digest_messages(entries: &[DigestEntry], resumed: bool) -> Vec<(Message, 
     // Items tied to you first, then the ones picked up only by their score.
     let (score_only, relevant): (Vec<&DigestEntry>, Vec<&DigestEntry>) = entries
         .iter()
-        .partition(|e| crate::rules::is_score_only(&e.reason));
+        .partition(|e| crate::rules::is_score_only(base_reason(&e.reason)));
     let mut sections: Vec<(&str, bool, Vec<&DigestEntry>)> = Vec::new();
     if !relevant.is_empty() {
         sections.push((RELEVANT, true, relevant));
@@ -621,15 +637,43 @@ mod tests {
             item: it,
             reason: format!("{REMEDY_FOLLOWUP}: watch: foo（即時通知の上限超過）"),
         };
-        for show_reason in [true, false] {
-            let line = digest_line(&e, show_reason);
-            assert!(
-                line.ends_with("\n　修正バージョン: foo < 1.2.4 → 1.2.4 / bar < 2.0 → 2.0"),
-                "{line}"
-            );
-        }
+        let line = digest_line(&e, true);
+        assert!(
+            line.ends_with("\n　修正バージョン: foo < 1.2.4 → 1.2.4 / bar < 2.0 → 2.0"),
+            "{line}"
+        );
+        // Without the reason (score-only section) the line still says it is a follow-up.
+        let line = digest_line(&e, false);
+        assert!(
+            line.ends_with(&format!(
+                "\n　{REMEDY_FOLLOWUP} · 修正バージョン: foo < 1.2.4 → 1.2.4 / bar < 2.0 → 2.0"
+            )),
+            "{line}"
+        );
         e.reason = "watch: foo".into();
         assert!(!digest_line(&e, true).contains("修正バージョン"));
+    }
+
+    #[test]
+    fn score_only_follow_up_stays_in_the_score_only_section() {
+        let entries = vec![
+            DigestEntry {
+                key: "1".into(),
+                item: item(1),
+                reason: "watch: foo".into(),
+            },
+            DigestEntry {
+                key: "2#remedy".into(),
+                item: item(2),
+                reason: format!("{REMEDY_FOLLOWUP}: CVSS 9.8 ≥ 9.0（即時通知の上限超過）"),
+            },
+        ];
+        let msgs = digest_messages(&entries, false);
+        let d = msgs[0].0.embeds[0]["description"].as_str().unwrap();
+        let other = d.find("その他の高 CVSS").expect(d);
+        assert!(d.find("CVE-2026-00002").unwrap() > other, "{d}");
+        assert!(d.find("CVE-2026-00001").unwrap() < other, "{d}");
+        assert_eq!(base_reason("watch: foo"), "watch: foo");
     }
 
     #[test]

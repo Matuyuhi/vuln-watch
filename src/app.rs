@@ -437,7 +437,9 @@ fn handle_fetched(
         if followup_only && decision.level != Level::Urgent {
             continue;
         }
-        new += 1;
+        if !followup_only {
+            new += 1;
+        }
         if opts.dry_run {
             println!(
                 "[{name}] {:<7} {} — {} ({})",
@@ -1085,8 +1087,11 @@ kind = "ghsa"
 
         // The same GHSA, still marked seen, now with a patched version.
         let updated = fixed_item("ghsa", "GHSA-aaaa", "CVE-2026-0001");
+        db.set_kv("lastnew:ghsa", "x").unwrap();
         handle(&cfg, &mut db, "ghsa", fetched(vec![updated], "c2"), &mut s);
         assert_eq!(keys(&db, Queue::Outbox), ["CVE-2026-0001#remedy"]);
+        // Not a new item: the stale-source check is not reset by it.
+        assert_eq!(db.get_kv("lastnew:ghsa").unwrap().as_deref(), Some("x"));
         flush_outbox(&cfg, &db, &notifier, &mut s, &mut None).unwrap();
         assert_eq!(notifier.sent().len(), 2);
 
