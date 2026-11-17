@@ -820,9 +820,13 @@ mod tests {
         let malware = r#"[{"ghsa_id": "GHSA-mmmm-mmmm-mmmm", "cve_id": "CVE-2026-9999",
             "summary": "m", "type": "malware", "vulnerabilities": []}]"#;
         let base = serve(vec![
-            ("/advisories?cve_id=CVE-2026-9999&type=reviewed", 200, "[]"),
             (
-                "/advisories?cve_id=CVE-2026-9999&type=malware",
+                "/advisories?cve_id=CVE-2026-9999&per_page=100&type=reviewed",
+                200,
+                "[]",
+            ),
+            (
+                "/advisories?cve_id=CVE-2026-9999&per_page=100&type=malware",
                 200,
                 malware,
             ),
@@ -867,7 +871,7 @@ mod tests {
         let base = serve(vec![
             ("/CVE-2026-7777.json", 200, record),
             (
-                "/advisories?cve_id=CVE-2026-7777&type=reviewed",
+                "/advisories?cve_id=CVE-2026-7777&per_page=100&type=reviewed",
                 200,
                 advisories,
             ),
