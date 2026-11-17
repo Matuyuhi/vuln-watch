@@ -28,7 +28,7 @@ require_remedy = false
 digest = true
 
 [runtime]
-# Urgent messages per run; the rest go to the digest.
+# Individual urgent messages per run; the rest are sent at once as one list message.
 max_urgent_per_run = 10
 # Warn after this many consecutive failures of one source.
 alert_after_failures = 5

@@ -73,7 +73,7 @@ oss-security often carries a disclosure before a CVE record exists.
 - Rejected CVEs and withdrawn GHSAs are skipped.
 - On the first run each source records existing items without notifying.
 - A source failing repeatedly triggers a warning; recovery is reported too.
-- At most `max_urgent_per_run` urgent messages per run; the rest go to the digest.
+- At most `max_urgent_per_run` urgent messages per run; the rest are sent in the same run as one compact list message (id, link, title, score, reason). Only if Discord rejects the list do those items go to the digest.
 
 Thresholds, exclusions and the watch list are set in [`config.example.toml`](config.example.toml).
 
@@ -82,7 +82,7 @@ Thresholds, exclusions and the watch list are set in [`config.example.toml`](con
 Two `[rules]` switches turn vuln-watch into "tell me when there is a problem and something to do about it":
 
 - `require_remedy = true`: an urgent item is sent only when a fix or mitigation is published: a GHSA with a patched version, a USN, a KEV entry (its required action), or an advisory with actions or fixed versions. CVE records and plain feeds (oss-security, release feeds) carry no fix, so they no longer notify on their own. A CVE dropped this way is not marked as notified, so it is sent when USN or GHSA later brings the fix, or when the same advisory is updated with a patched version. Sources with `mode = "urgent"` are not affected.
-- `digest = false`: items that would go to the digest are dropped, urgent messages over `max_urgent_per_run` wait in the outbox for the next run, and a cvelist record given up after 48 hours is only logged. `vuln-watch digest` and the digest retry in `run` send nothing; items queued before the switch stay in the queue. Disable the digest timer too: `sudo systemctl disable --now vuln-watch-digest.timer`.
+- `digest = false`: items that would go to the digest are dropped, urgent items over `max_urgent_per_run` whose list message Discord rejects wait in the outbox for the next run, and a cvelist record given up after 48 hours is only logged. `vuln-watch digest` and the digest retry in `run` send nothing; items queued before the switch stay in the queue. Disable the digest timer too: `sudo systemctl disable --now vuln-watch-digest.timer`.
 
 ### Installed packages
 
