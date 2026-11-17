@@ -110,6 +110,25 @@ pub fn escape_md(s: &str) -> String {
     out
 }
 
+/// Wrap untrusted text in a Discord code block of at most `max` characters, fences included.
+///
+/// A zero-width space is put after every backtick, so no run of backticks in `s` can close the
+/// block early and let the rest render as Markdown (e.g. a masked link). When the text is
+/// too long it is cut (with "…") before the closing fence, which is always kept.
+pub fn code_block(s: &str, max: usize) -> String {
+    const OPEN: &str = "```\n";
+    const CLOSE: &str = "\n```";
+    let mut inner = String::with_capacity(s.len());
+    for c in s.chars() {
+        inner.push(c);
+        if c == '`' {
+            inner.push('\u{200b}');
+        }
+    }
+    let room = max.saturating_sub(OPEN.len() + CLOSE.len());
+    format!("{OPEN}{}{CLOSE}", truncate(&inner, room))
+}
+
 /// Validate a source-provided URL for use in a Discord link: only `http`/`https`, no
 /// credentials. Returns the normalized form, in which `<`, `>`, quotes and whitespace are
 /// percent-encoded, so it cannot close a `[text](<url>)` link or an embed field early.
@@ -186,6 +205,23 @@ mod tests {
     #[test]
     fn escapes_markdown() {
         assert_eq!(escape_md("a*b_[c]"), "a\\*b\\_(c)");
+    }
+
+    #[test]
+    fn code_block_cannot_be_closed_from_inside() {
+        let b = code_block("a ```\n[x](https://evil.example) ``", 100);
+        assert!(b.starts_with("```\n") && b.ends_with("\n```"), "{b}");
+        assert_eq!(b.matches("```").count(), 2, "{b}");
+        assert!(b.contains("[x](https://evil.example)"), "{b}");
+    }
+
+    #[test]
+    fn code_block_keeps_closing_fence_when_cut() {
+        let b = code_block(&"`".repeat(500), 50);
+        assert_eq!(b.chars().count(), 50);
+        assert!(b.ends_with("…\n```"), "{b}");
+        assert_eq!(b.matches("```").count(), 2);
+        assert_eq!(code_block("abc", 100), "```\nabc\n```");
     }
 
     #[test]

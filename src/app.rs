@@ -8,7 +8,7 @@ use crate::installed::Installed;
 use crate::model::{Decision, Item, Level};
 use crate::rules::{self, InstalledMatch};
 use crate::sources::{self, Ctx, Fetched};
-use crate::text::truncate;
+use crate::text::{code_block, truncate};
 
 pub struct Secrets {
     pub bot_token: Option<String>,
@@ -586,18 +586,21 @@ fn source_failed(
         + 1;
     db.set_kv(&fail_key, &count.to_string())?;
     if !dry_run && count >= cfg.runtime.alert_after_failures && db.get_kv(&alert_key)?.is_none() {
-        notifier.send(
-            db,
-            &Message::text(truncate(
-                &format!(
-                    "⚠️ ソース `{name}` の取得が{count}回連続で失敗しています。\n```\n{err:#}\n```"
-                ),
-                1900,
-            )),
-        )?;
+        notifier.send(db, &Message::text(source_failed_message(name, count, err)))?;
         db.set_kv(&alert_key, "1")?;
     }
     Ok(())
+}
+
+/// The "source failing" text. The error often holds a remote response body, so it goes
+/// through `code_block`: a body with ``` must not close the block and render as Markdown.
+fn source_failed_message(name: &str, count: u32, err: &anyhow::Error) -> String {
+    // Source names have no length limit in the config; bound only the name so the fixed
+    // text and Markdown delimiters always survive.
+    let name = truncate(name, 100);
+    let head = format!("⚠️ ソース `{name}` の取得が{count}回連続で失敗しています。\n");
+    let room = 1900 - head.chars().count();
+    format!("{head}{}", code_block(&format!("{err:#}"), room))
 }
 
 /// Set when a digest fails to send (value: time of the failed attempt); `run` then retries it.
@@ -1308,6 +1311,39 @@ kind = "ghsa"
         assert!(sent[1].content.contains("復旧"), "{}", sent[1].content);
         assert_eq!(db.get_kv("fail:kev").unwrap(), None);
         assert_eq!(db.get_kv("failalert:kev").unwrap(), None);
+    }
+
+    #[test]
+    fn source_failed_message_keeps_error_body_inside_code_block() {
+        let err = anyhow::Error::new(crate::http::StatusError {
+            url: "http://feed.example/rss".into(),
+            status: 500,
+            body: "oops ```\n[x](https://evil.example) ```".into(),
+        });
+        let m = source_failed_message("feed", 5, &err);
+        assert_eq!(m.matches("```").count(), 2, "{m}");
+        let (_, after_open) = m.split_once("```").unwrap();
+        let (inside, after_close) = after_open.split_once("```").unwrap();
+        assert!(!m.split("```").next().unwrap().contains("]("), "{m}");
+        assert_eq!(after_close, "", "{m}");
+        assert!(inside.contains("http://feed.example/rss"), "{m}");
+        assert!(inside.contains("HTTP 500"), "{m}");
+        assert!(inside.contains("oops"), "{m}");
+        assert!(inside.contains("[x](https://evil.example)"), "{m}");
+
+        let long = anyhow::anyhow!("{}", "`".repeat(5000));
+        let m = source_failed_message("feed", 5, &long);
+        assert!(m.chars().count() <= 2000, "{}", m.chars().count());
+        assert!(m.ends_with("\n```"));
+        assert_eq!(m.matches("```").count(), 2);
+
+        let m = source_failed_message(&"n".repeat(1000), 7, &long);
+        assert!(m.chars().count() <= 2000, "{}", m.chars().count());
+        assert!(
+            m.contains("…` の取得が7回連続で失敗しています。\n```\n"),
+            "{m}"
+        );
+        assert!(m.ends_with("\n```"));
     }
 
     fn hours_before(now: chrono::DateTime<chrono::Utc>, h: i64) -> String {
