@@ -263,7 +263,8 @@ fn parse_env_file(text: &str) -> HashMap<String, String> {
             let (k, v) = l.split_once('=')?;
             let k = k.trim();
             let v = unquote_env_value(v.trim());
-            (!v.is_empty()).then(|| (k.to_string(), v))
+            // Like `Secrets::from_env`, a blank value (also `"  "`) is unset.
+            (!v.trim().is_empty()).then(|| (k.to_string(), v))
         })
         .collect()
 }
@@ -967,6 +968,10 @@ mod tests {
                 .collect::<Vec<_>>(),
             [Status::Ok]
         );
+        // A quoted blank value is unset too, so doctor does not report it as insecure.
+        let env = parse_env_file("HEARTBEAT_URL=\"   \"\n");
+        assert!(!env.contains_key("HEARTBEAT_URL"));
+        assert!(heartbeat_findings(&cfg, &secrets_from(&env), true).is_empty());
     }
 
     #[test]
