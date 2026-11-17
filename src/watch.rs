@@ -30,7 +30,7 @@ pub enum WatchCommand {
         #[arg(long)]
         dry_run: bool,
     },
-    /// Add or remove keywords, packages and sources of a watch entry
+    /// Add or remove keywords, packages, sources and exclude terms of a watch entry
     Edit {
         /// Entry name (case-insensitive)
         name: String,
@@ -45,6 +45,9 @@ pub enum WatchCommand {
         /// Remove a source (repeatable)
         #[arg(long, value_name = "SOURCE")]
         rm_source: Vec<String>,
+        /// Remove an exclude term (repeatable)
+        #[arg(long, value_name = "WORD")]
+        rm_exclude: Vec<String>,
         /// Print the result without writing the config
         #[arg(long)]
         dry_run: bool,
@@ -70,6 +73,9 @@ pub struct SetArgs {
     /// Only apply to this source name (repeatable)
     #[arg(short, long, value_name = "SOURCE")]
     source: Vec<String>,
+    /// Word blanked out before matching keywords, e.g. ingress-nginx (repeatable)
+    #[arg(long, value_name = "WORD")]
+    exclude: Vec<String>,
     /// Matches are urgent (the default)
     #[arg(long, conflicts_with = "no_urgent")]
     urgent: bool,
@@ -107,6 +113,7 @@ pub fn run(config: &Path, cmd: WatchCommand) -> Result<()> {
             rm_keyword,
             rm_package,
             rm_source,
+            rm_exclude,
             dry_run,
         } => (
             Edit::Change {
@@ -115,6 +122,7 @@ pub fn run(config: &Path, cmd: WatchCommand) -> Result<()> {
                 rm_keyword,
                 rm_package,
                 rm_source,
+                rm_exclude,
             },
             dry_run,
         ),
@@ -148,6 +156,7 @@ enum Edit {
         rm_keyword: Vec<String>,
         rm_package: Vec<String>,
         rm_source: Vec<String>,
+        rm_exclude: Vec<String>,
     },
     Remove {
         name: String,
@@ -206,19 +215,22 @@ fn apply(original: &str, edit: &Edit) -> Result<Outcome> {
             rm_keyword,
             rm_package,
             rm_source,
+            rm_exclude,
         } => {
             let rm = Removals {
                 keyword: rm_keyword,
                 package: rm_package,
                 source: rm_source,
+                exclude: rm_exclude,
             };
             if set.keyword.is_empty()
                 && set.package.is_empty()
                 && set.source.is_empty()
+                && set.exclude.is_empty()
                 && set.urgent().is_none()
                 && rm.is_empty()
             {
-                bail!("nothing to change: give --keyword, --package, --source, --urgent / --no-urgent or --rm-*");
+                bail!("nothing to change: give --keyword, --package, --source, --exclude, --urgent / --no-urgent or --rm-*");
             }
             let i = find_or_explain(watches, name)?;
             let display = entry_name(watches, i);
@@ -252,11 +264,15 @@ struct Removals<'a> {
     keyword: &'a [String],
     package: &'a [String],
     source: &'a [String],
+    exclude: &'a [String],
 }
 
 impl Removals<'_> {
     fn is_empty(&self) -> bool {
-        self.keyword.is_empty() && self.package.is_empty() && self.source.is_empty()
+        self.keyword.is_empty()
+            && self.package.is_empty()
+            && self.source.is_empty()
+            && self.exclude.is_empty()
     }
 }
 
@@ -337,6 +353,11 @@ fn update_table(
         .iter()
         .map(|p| clean("package", p, warnings))
         .collect::<Result<Vec<_>>>()?;
+    let exclude = set
+        .exclude
+        .iter()
+        .map(|e| clean("exclude", e, warnings))
+        .collect::<Result<Vec<_>>>()?;
     let new_sources = set
         .source
         .iter()
@@ -358,6 +379,7 @@ fn update_table(
     )?;
     edit_list(table, "packages", &packages, rm.package, same, warnings)?;
     edit_list(table, "sources", &new_sources, rm.source, same, warnings)?;
+    edit_list(table, "exclude", &exclude, rm.exclude, same_word, warnings)?;
 
     match set.urgent() {
         Some(false) => {
@@ -454,7 +476,7 @@ fn list_table(cfg: &Config) -> String {
     if cfg.watches.is_empty() {
         return "no watch entries (add one with `vuln-watch watch add`)\n".to_string();
     }
-    let rows: Vec<[String; 5]> = cfg
+    let rows: Vec<[String; 6]> = cfg
         .watches
         .iter()
         .map(|w| {
@@ -473,11 +495,15 @@ fn list_table(cfg: &Config) -> String {
                 keywords,
                 w.packages.join(", "),
                 sources,
+                w.exclude.join(", "),
                 if w.urgent { "yes" } else { "no" }.to_string(),
             ]
         })
         .collect();
-    let header = ["NAME", "KEYWORDS", "PACKAGES", "SOURCES", "URGENT"].map(String::from);
+    let header = [
+        "NAME", "KEYWORDS", "PACKAGES", "SOURCES", "EXCLUDE", "URGENT",
+    ]
+    .map(String::from);
     let mut widths = header.clone().map(|h| h.chars().count());
     for row in &rows {
         for (w, cell) in widths.iter_mut().zip(row) {
@@ -650,6 +676,7 @@ sources = ["kev"]
                 rm_keyword: vec![],
                 rm_package: vec![],
                 rm_source: vec!["kev".into()],
+                rm_exclude: vec![],
             },
         )
         .unwrap();
@@ -662,6 +689,79 @@ sources = ["kev"]
     }
 
     #[test]
+    fn add_and_edit_exclude_terms() {
+        let out = apply(
+            BASE,
+            &Edit::Add {
+                name: "OpenSSL".into(),
+                set: SetArgs {
+                    exclude: vec!["rust-openssl".into()],
+                    ..Default::default()
+                },
+            },
+        )
+        .unwrap();
+        assert!(out.text.starts_with(BASE), "{}", out.text);
+        assert!(out
+            .text
+            .ends_with("\n[[watch]]\nname = \"OpenSSL\"\nexclude = [\"rust-openssl\"]\n"));
+
+        let out = apply(
+            BASE,
+            &Edit::Change {
+                name: "nginx".into(),
+                set: SetArgs {
+                    exclude: vec!["ingress-nginx".into(), "nginx-ui".into()],
+                    ..Default::default()
+                },
+                rm_keyword: vec![],
+                rm_package: vec![],
+                rm_source: vec![],
+                rm_exclude: vec![],
+            },
+        )
+        .unwrap();
+        assert!(out.text.contains("# Watch list\n[[watch]]\nname = \"nginx\"\nexclude = [\"ingress-nginx\", \"nginx-ui\"]\n\n# kernel comment\n"), "{}", out.text);
+        let cfg = Config::parse(&out.text).unwrap();
+        assert_eq!(cfg.watches[0].exclude, ["ingress-nginx", "nginx-ui"]);
+        let table = list_table(&cfg);
+        assert!(table.contains("EXCLUDE"), "{table}");
+        assert!(table.contains("ingress-nginx, nginx-ui"), "{table}");
+
+        let out = apply(
+            &out.text,
+            &Edit::Change {
+                name: "nginx".into(),
+                set: SetArgs::default(),
+                rm_keyword: vec![],
+                rm_package: vec![],
+                rm_source: vec![],
+                rm_exclude: vec!["NGINX-UI".into()],
+            },
+        )
+        .unwrap();
+        assert!(out.text.contains("# Watch list\n[[watch]]\nname = \"nginx\"\nexclude = [\"ingress-nginx\"]\n\n# kernel comment\n"), "{}", out.text);
+        // Removal is case-insensitive, like keywords.
+        assert!(
+            !out.warnings.iter().any(|w| w.contains("nothing removed")),
+            "{:?}",
+            out.warnings
+        );
+
+        let empty = apply(
+            BASE,
+            &Edit::Add {
+                name: "x".into(),
+                set: SetArgs {
+                    exclude: vec![" ".into()],
+                    ..Default::default()
+                },
+            },
+        );
+        assert!(empty.is_err());
+    }
+
+    #[test]
     fn edit_warns_when_name_becomes_the_keyword() {
         let out = apply(
             BASE,
@@ -671,6 +771,7 @@ sources = ["kev"]
                 rm_keyword: vec!["linux kernel".into()],
                 rm_package: vec![],
                 rm_source: vec![],
+                rm_exclude: vec![],
             },
         )
         .unwrap();
@@ -692,6 +793,7 @@ sources = ["kev"]
                 rm_keyword: vec![],
                 rm_package: vec![],
                 rm_source: vec![],
+                rm_exclude: vec![],
             },
         )
         .unwrap_err();

@@ -8,7 +8,7 @@ use crate::installed::Installed;
 use crate::model::{Decision, Item, Level};
 use crate::rules::{self, InstalledMatch};
 use crate::sources::{self, Ctx, Fetched};
-use crate::text::truncate;
+use crate::text::{code_block, truncate};
 
 pub struct Secrets {
     pub bot_token: Option<String>,
@@ -31,6 +31,29 @@ impl Secrets {
     }
 }
 
+/// Which heartbeat URL a run pings. The URL embeds a token, so callers never log it.
+#[derive(Debug, PartialEq, Eq)]
+pub enum Heartbeat<'a> {
+    None,
+    /// HEARTBEAT_URL from the (private) env file.
+    Env(&'a str),
+    /// runtime.heartbeat_url from the world-readable config.toml.
+    Config(&'a str),
+    /// HEARTBEAT_URL is set but not https: the token would travel in clear text.
+    Insecure,
+}
+
+/// HEARTBEAT_URL overrides runtime.heartbeat_url; a non-https HEARTBEAT_URL is not pinged and
+/// does not fall back to the config value. (Config::validate already rejects non-https there.)
+pub fn heartbeat<'a>(env: Option<&'a str>, config: Option<&'a str>) -> Heartbeat<'a> {
+    match (env, config) {
+        (Some(url), _) if crate::config::is_https(url) => Heartbeat::Env(url),
+        (Some(_), _) => Heartbeat::Insecure,
+        (None, Some(url)) => Heartbeat::Config(url),
+        (None, None) => Heartbeat::None,
+    }
+}
+
 pub fn build_target(cfg: &Config, secrets: &Secrets, dry_run: bool) -> Result<Target> {
     if dry_run {
         return Ok(Target::Stdout);
@@ -47,12 +70,16 @@ pub fn build_target(cfg: &Config, secrets: &Secrets, dry_run: bool) -> Result<Ta
                 .or_else(|| cfg.discord.user_id.clone())
                 .context("Discord user id is not set (discord.user_id or DISCORD_USER_ID)")?,
         },
-        DeliveryMode::Webhook => Target::Webhook {
-            url: secrets.webhook_url.clone().context(
+        DeliveryMode::Webhook => {
+            let url = secrets.webhook_url.clone().context(
                 "DISCORD_WEBHOOK_URL is not set (required for discord.mode = \"webhook\")",
-            )?,
-            username: cfg.discord.username.clone(),
-        },
+            )?;
+            discord::validate_webhook_url(&url)?;
+            Target::Webhook {
+                url,
+                username: cfg.discord.username.clone(),
+            }
+        }
     })
 }
 
@@ -188,12 +215,29 @@ fn locked_run(
     }
 
     if !opts.dry_run {
-        let hb = secrets
-            .heartbeat_url
-            .clone()
-            .or_else(|| cfg.runtime.heartbeat_url.clone());
-        if let Some(url) = hb {
-            if let Err(e) = http.ping(&url) {
+        let url = match heartbeat(
+            secrets.heartbeat_url.as_deref(),
+            cfg.runtime.heartbeat_url.as_deref(),
+        ) {
+            Heartbeat::None => None,
+            Heartbeat::Env(url) => Some(url),
+            Heartbeat::Config(url) => {
+                tracing::warn!(
+                    "runtime.heartbeat_url is set in config.toml, which every local user can read; \
+                     move it to HEARTBEAT_URL in /etc/vuln-watch/env"
+                );
+                Some(url)
+            }
+            Heartbeat::Insecure => {
+                tracing::warn!(
+                    "HEARTBEAT_URL does not start with https:// ({}); not pinging it",
+                    crate::config::url_scheme(secrets.heartbeat_url.as_deref().unwrap_or(""))
+                );
+                None
+            }
+        };
+        if let Some(url) = url {
+            if let Err(e) = http.ping(url) {
                 tracing::warn!("heartbeat ping failed: {e:#}");
             }
         }
@@ -604,18 +648,21 @@ fn source_failed(
         + 1;
     db.set_kv(&fail_key, &count.to_string())?;
     if !dry_run && count >= cfg.runtime.alert_after_failures && db.get_kv(&alert_key)?.is_none() {
-        notifier.send(
-            db,
-            &Message::text(truncate(
-                &format!(
-                    "⚠️ ソース `{name}` の取得が{count}回連続で失敗しています。\n```\n{err:#}\n```"
-                ),
-                1900,
-            )),
-        )?;
+        notifier.send(db, &Message::text(source_failed_message(name, count, err)))?;
         db.set_kv(&alert_key, "1")?;
     }
     Ok(())
+}
+
+/// The "source failing" text. The error often holds a remote response body, so it goes
+/// through `code_block`: a body with ``` must not close the block and render as Markdown.
+fn source_failed_message(name: &str, count: u32, err: &anyhow::Error) -> String {
+    // Source names have no length limit in the config; bound only the name so the fixed
+    // text and Markdown delimiters always survive.
+    let name = truncate(name, 100);
+    let head = format!("⚠️ ソース `{name}` の取得が{count}回連続で失敗しています。\n");
+    let room = 1900 - head.chars().count();
+    format!("{head}{}", code_block(&format!("{err:#}"), room))
 }
 
 /// Set when a digest fails to send (value: time of the failed attempt); `run` then retries it.
@@ -1362,6 +1409,51 @@ kind = "ghsa"
     }
 
     #[test]
+    fn build_target_validates_webhook_url() {
+        let mut cfg = config();
+        cfg.discord.mode = DeliveryMode::Webhook;
+        let mut sec = secrets();
+        sec.webhook_url = Some("http://discord.com/api/webhooks/1/abc".into());
+        let err = format!("{:#}", build_target(&cfg, &sec, false).err().unwrap());
+        assert!(err.contains("got http://discord.com"), "{err}");
+        assert!(!err.contains("abc"), "{err}");
+        // --dry-run never sends, so it does not need a valid URL.
+        assert!(build_target(&cfg, &sec, true).is_ok());
+        sec.webhook_url = Some("https://discord.com/api/webhooks/1/abc?thread_id=123".into());
+        match build_target(&cfg, &sec, false).unwrap() {
+            Target::Webhook { url, .. } => {
+                assert_eq!(url, "https://discord.com/api/webhooks/1/abc?thread_id=123")
+            }
+            _ => panic!("not a webhook target"),
+        }
+    }
+
+    #[test]
+    fn redirected_webhook_post_keeps_item_in_outbox() {
+        let srv = crate::http::test_server::start(|path| match path {
+            "/ok" => (200, vec![], "{}".into()),
+            _ => (301, vec![("Location", "/ok".into())], String::new()),
+        });
+        let cfg = cfg();
+        let http = Http::new(5).unwrap();
+        let notifier = Notifier::new(
+            &http,
+            Target::Webhook {
+                url: format!("{}/api/webhooks/1/abc", srv.base),
+                username: None,
+            },
+        );
+        let mut db = Db::open_in_memory().unwrap();
+        let mut s = RunSummary::default();
+        outbox_with(&mut db, 1);
+        assert!(flush_outbox(&cfg, &db, &notifier, &mut s, &mut None).is_err());
+        assert_eq!(s.urgent, 0);
+        assert_eq!(keys(&db, Queue::Outbox), ["CVE-2026-0001#kev"]);
+        assert_eq!(db.alerted_level("CVE-2026-0001#kev").unwrap(), None);
+        assert_eq!(srv.requests().len(), 1, "{:?}", srv.requests());
+    }
+
+    #[test]
     fn overflow_list_rejected_goes_to_digest_with_one_notice() {
         let cfg = cfg();
         let http = Http::new(5).unwrap();
@@ -1568,6 +1660,39 @@ kind = "ghsa"
         assert_eq!(db.get_kv("failalert:kev").unwrap(), None);
     }
 
+    #[test]
+    fn source_failed_message_keeps_error_body_inside_code_block() {
+        let err = anyhow::Error::new(crate::http::StatusError {
+            url: "http://feed.example/rss".into(),
+            status: 500,
+            body: "oops ```\n[x](https://evil.example) ```".into(),
+        });
+        let m = source_failed_message("feed", 5, &err);
+        assert_eq!(m.matches("```").count(), 2, "{m}");
+        let (_, after_open) = m.split_once("```").unwrap();
+        let (inside, after_close) = after_open.split_once("```").unwrap();
+        assert!(!m.split("```").next().unwrap().contains("]("), "{m}");
+        assert_eq!(after_close, "", "{m}");
+        assert!(inside.contains("http://feed.example/rss"), "{m}");
+        assert!(inside.contains("HTTP 500"), "{m}");
+        assert!(inside.contains("oops"), "{m}");
+        assert!(inside.contains("[x](https://evil.example)"), "{m}");
+
+        let long = anyhow::anyhow!("{}", "`".repeat(5000));
+        let m = source_failed_message("feed", 5, &long);
+        assert!(m.chars().count() <= 2000, "{}", m.chars().count());
+        assert!(m.ends_with("\n```"));
+        assert_eq!(m.matches("```").count(), 2);
+
+        let m = source_failed_message(&"n".repeat(1000), 7, &long);
+        assert!(m.chars().count() <= 2000, "{}", m.chars().count());
+        assert!(
+            m.contains("…` の取得が7回連続で失敗しています。\n```\n"),
+            "{m}"
+        );
+        assert!(m.ends_with("\n```"));
+    }
+
     fn hours_before(now: chrono::DateTime<chrono::Utc>, h: i64) -> String {
         (now - chrono::Duration::hours(h)).to_rfc3339()
     }
@@ -1767,6 +1892,23 @@ stale_after_hours = 0
         cfg.sources.clear();
         cfg.installed.enabled = false;
         cfg
+    }
+
+    #[test]
+    fn heartbeat_prefers_env_and_skips_insecure_env() {
+        let env = "https://hc-ping.com/env";
+        let file = "https://hc-ping.com/file";
+        assert_eq!(heartbeat(None, None), Heartbeat::None);
+        assert_eq!(heartbeat(Some(env), Some(file)), Heartbeat::Env(env));
+        assert_eq!(heartbeat(None, Some(file)), Heartbeat::Config(file));
+        assert_eq!(
+            heartbeat(Some("http://hc-ping.com/env"), Some(file)),
+            Heartbeat::Insecure
+        );
+        assert_eq!(
+            heartbeat(Some("hc-ping.com/env"), None),
+            Heartbeat::Insecure
+        );
     }
 
     fn secrets() -> Secrets {

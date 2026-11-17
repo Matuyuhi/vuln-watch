@@ -65,6 +65,7 @@ oss-security often carries a disclosure before a CVE record exists.
 | Anything else | ignored |
 
 - Watch entries with `urgent = false` only go to the digest.
+- Keywords match whole words, and `-`, `/`, `.` and `_` are word boundaries, so `nginx` also matches `ingress-nginx` and `nginx-ui`. `exclude = ["ingress-nginx", "nginx-ui"]` on a watch entry blanks those terms out (whole-word, case-insensitive) of the product, package, title and description text before that entry's keywords are matched: `Kubernetes ingress-nginx` no longer matches `nginx`, while `nginx and ingress-nginx` still does. Exact `packages` matches are not affected. This also applies to advisories. `[rules] exclude_keywords` cannot do this, because it only applies to items that match no watch entry.
 - When several watch entries match, the order in the config does not matter: a strong match from an `urgent = true` entry wins over a strong match from an `urgent = false` entry, which wins over a description-only match. The same applies to advisories below.
 - The digest lists items that match a watch entry or an installed package first; items included only for their CVSS score follow under a separate heading.
 - Messages name the affected product when the title does not.
@@ -112,6 +113,7 @@ Some problems never get a CVE but still mean "update this now" for many products
 ## Reliability
 
 - Urgent messages go into an outbox before cursors and ETags are committed. If Discord is unreachable, they are retried on the next run. A message Discord refuses as invalid is resent as plain text, so it cannot block the ones queued after it.
+- Titles, descriptions, product names and other text from sources are shown as plain text: Markdown in them is escaped, so a crafted CVE or advisory cannot show a masked link (`[text](https://…)`) whose text hides its target. Item links are only `http`/`https` URLs without credentials; an item without one is shown without a link, and a link too long for the message is left out rather than cut.
 - The digest removes items from its queue as each message is sent, so a failure part way never resends what was already delivered. If the digest fails, the next `run` (at least 5 minutes later) resends the remaining items with a "（再送）" header; a failed retry is only logged and does not hold up urgent messages.
 - Only one `run` works at a time. A manual `sudo vuln-watch run` started while the timer's run is in progress is skipped (exit code 0, one line on stderr), so the same urgent message is never sent twice. A run killed by the unit timeout blocks later runs for at most 6 minutes.
 - GitHub advisories are read in `updated` order and paged back to the last position, so advisories reviewed long after publication are not missed. A catch-up walk stops after 20 pages (2,000 advisories, e.g. after long downtime or a bulk update by GitHub); the range it could not reach is then read on later runs, oldest first, up to 5 pages per run while more than 30 API requests remain in the rate-limit window (so polling keeps working without `GITHUB_TOKEN`), and goes through the usual rules and de-duplication. `vuln-watch doctor` warns while such a range is still unread.
@@ -179,9 +181,9 @@ sudo ./deploy/install.sh
 |---|---|
 | `DISCORD_BOT_TOKEN` | required for DM delivery |
 | `DISCORD_USER_ID` | recipient; overrides `discord.user_id` |
-| `DISCORD_WEBHOOK_URL` | required for webhook delivery |
+| `DISCORD_WEBHOOK_URL` | required for webhook delivery. Must be `https://discord.com/api/webhooks/…` (also `discordapp.com`, `ptb.` / `canary.discord.com`, `/api/v<N>/webhooks/…`, a `?thread_id=` query); anything else (e.g. `http://`) is refused at startup and by `doctor` |
 | `GITHUB_TOKEN` | recommended; a fine-grained token with no permissions is enough. Raises the API limit from 60 to 5,000 requests/hour and reads the CVE List through the API instead of the CDN (up to 5 min faster). Only sent to `https://api.github.com`: a `ghsa` / `advisory` `url` (or a `next` page link) on another host is read without it, with one warning per run. |
-| `HEARTBEAT_URL` | optional; pinged after every successful run (e.g. healthchecks.io) |
+| `HEARTBEAT_URL` | optional; pinged after every successful run (e.g. healthchecks.io). Must start with `https://`; otherwise it is not pinged and a warning is logged. Set it here, not as `runtime.heartbeat_url` in `config.toml`: that file is readable by every local user, and anyone who knows the URL can keep the heartbeat green while vuln-watch is down. `runtime.heartbeat_url` still works (it must also be `https://`), but `run` logs a warning and `doctor` warns about it. |
 
 `/etc/vuln-watch/config.toml`: adjust the watch list and sources. The watch list can also be edited with `vuln-watch watch` (see [Usage](#usage)). A source `url` must start with `https://` (only `kind = "feed"` may use `http://`).
 
@@ -219,11 +221,12 @@ vuln-watch [--config PATH] [--state-dir DIR] <COMMAND>
 
 On an installed host, `run`, `digest`, `test-notify` and `check-config` started from a shell run as the systemd service: with `sudo`, vuln-watch re-runs itself through `systemd-run` with the settings of `vuln-watch@.service`, so it gets the credentials from `/etc/vuln-watch/env` and shares state with the timers, while the output and exit code stay in your terminal (`sudo vuln-watch digest`, `sudo vuln-watch run --strict`). Without `sudo` they stop with a hint, except `run --dry-run`, which needs neither. Pass `--state-dir` to run locally against a separate state directory instead.
 
-`vuln-watch watch` edits the `[[watch]]` entries of config.toml in place, keeping comments and formatting, and writes nothing unless the result passes the same validation as the service (unknown sources, empty values, duplicate names are rejected; repeated or very short keywords get a warning). `add` / `edit` take `-k/--keyword`, `-p/--package`, `-s/--source` (repeatable) and `--urgent` / `--no-urgent`; `edit` also takes `--rm-keyword`, `--rm-package` and `--rm-source`. Names match case-insensitively. `--dry-run` prints the result without writing; otherwise the previous file is kept as `config.toml.bak`. Changes apply from the next timer run, no restart needed. `watch list` and `--dry-run` work without `sudo`.
+`vuln-watch watch` edits the `[[watch]]` entries of config.toml in place, keeping comments and formatting, and writes nothing unless the result passes the same validation as the service (unknown sources, empty values, duplicate names are rejected; repeated or very short keywords get a warning). `add` / `edit` take `-k/--keyword`, `-p/--package`, `-s/--source`, `--exclude` (repeatable) and `--urgent` / `--no-urgent`; `edit` also takes `--rm-keyword`, `--rm-package`, `--rm-source` and `--rm-exclude`. Names match case-insensitively. `--dry-run` prints the result without writing; otherwise the previous file is kept as `config.toml.bak`. Changes apply from the next timer run, no restart needed. `watch list` and `--dry-run` work without `sudo`.
 
 ```bash
 sudo vuln-watch watch add PHP -k php -p php/php-src
 sudo vuln-watch watch edit php -k laravel --no-urgent
+sudo vuln-watch watch edit nginx --exclude ingress-nginx --exclude nginx-ui
 sudo vuln-watch watch remove PHP
 ```
 
@@ -237,7 +240,7 @@ Set `installed.enabled = false` on machines without dpkg.
 
 ## Operations
 
-- **Diagnose**: `sudo vuln-watch doctor` checks the installation and prints ok / warn / FAIL per item: a stale `vuln-watch` earlier on PATH, a newer release, a config that no longer parses, missing or example credentials in `/etc/vuln-watch/env`, lines in it that systemd ignores or that vuln-watch does not read, and its permissions, unit files and `daemon-reload`, whether the timers are enabled and the last run succeeded, sources failing repeatedly, when each source last returned something new (warning when it is over `stale_after_hours`), undelivered urgent messages, and leftovers of an interrupted upgrade. It sends nothing to Discord and exits with 1 when something fails; `--offline` skips the release check. Run it after installing or upgrading.
+- **Diagnose**: `sudo vuln-watch doctor` checks the installation and prints ok / warn / FAIL per item: a stale `vuln-watch` earlier on PATH, a newer release, a config that no longer parses, missing or example credentials in `/etc/vuln-watch/env`, lines in it that systemd ignores or that vuln-watch does not read, and its permissions, a heartbeat URL that is not `https://` or is set in the world-readable `config.toml`, unit files and `daemon-reload`, whether the timers are enabled and the last run succeeded, sources failing repeatedly, when each source last returned something new (warning when it is over `stale_after_hours`), undelivered urgent messages, and leftovers of an interrupted upgrade. It sends nothing to Discord and exits with 1 when something fails; `--offline` skips the release check. Run it after installing or upgrading.
 - **Update**: `sudo vuln-watch upgrade` installs the latest release the same way as `install.sh` (`--check` only reports, `--version 1.2.0` picks a version, `--pre` includes pre-releases). Config and state are kept; check [CHANGELOG.md](CHANGELOG.md) for changes to `config.example.toml`. From source: `git pull && sudo ./deploy/install.sh`.
 - **Sandbox**: the unit uses `DynamicUser`, `ProtectSystem=strict` and a syscall filter; the process can only make outbound connections and write its state directory.
 - **Uninstall**:
