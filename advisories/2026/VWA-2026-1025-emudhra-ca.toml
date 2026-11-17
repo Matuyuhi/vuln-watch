@@ -1,12 +1,12 @@
 id = "VWA-2026-1025-emudhra-ca"
-revision = 5
+revision = 6
 status = "active"
 published = 2026-10-25
-updated = 2026-11-13
+updated = 2026-11-17
 expires = 2026-12-15
 severity = "high"
 confidence = "confirmed"
-title = "eMudhra の中間 CA 8 件の鍵が弱く失効、emSign ECC Root CA - G3 が各 CA ストアから削除（11-16 から残る eMudhra ルートも Microsoft が削除、Chrome / Firefox は G1 の新規証明書を不信頼に、Apple は 11-30 に G1 を削除）"
+title = "eMudhra の中間 CA 8 件の鍵が弱く失効、emSign ECC Root CA - G3 が各 CA ストアから削除（11-16 から残る eMudhra ルートも Microsoft が削除、Chrome / Firefox は G1 の新規証明書を不信頼に、Apple は 11-30 に G1 を削除、11-07 に RSA 中間 CA 8 件も追加失効し Electron が再対応）"
 summary = """
 eMudhra（emSign）の Global TLS 中間 CA 8 件の秘密鍵が復元可能なほど弱いことが 2026-10-17 に報告され、eMudhra は翌日 8 件すべてを失効させた。
 Firefox は OneCRL で即日ブロックし、OneCRL を受け取れない環境向けに Firefox 158.0.1 / ESR 153.5.1 / ESR 115.43.1 を出した（CVE-2026-113470）。
@@ -19,14 +19,16 @@ Chrome は CRLSet で中間 CA を即日ブロックしたうえで、emSign ECC
 同時期に Go 1.27.3 / 1.26.10 が crypto/x509 で特定 CA の中間証明書を拒否する修正（CVE-2026-111943）を出しているが、Go の告知は CA 名を明記していない。
 eMudhra によれば失効した中間 CA から発行された証明書はなく、悪用は確認されていないが、Mozilla は失効情報を確実に確認しないクライアントに向けて、鍵の悪用は近いうちに起こり得ると警告している。
 その後 eMudhra は公開 TLS 証明書事業から撤退すると表明し、11-05 の更新で、残る emSign G1 階層について Chrome と Firefox が 2026-11-16 以降に発行（SCT 付与）された証明書を信頼しなくなり、Apple は 2026-11-30 に G1 を削除して発行時期にかかわらず G1 につながる証明書をすべて信頼しなくなると告知した。
-Microsoft も 11-12 の更新で、2026-11-16 から残る eMudhra のルート証明書 10 件を Windows の信頼済みルート一覧と Microsoft Trusted Root Program から削除し、Edge / WebView2 でも emSign Root CA - G1 / C1、emSign ECC Root CA、emSign Root TLS CA - G1 の既定の信頼を外すとした。Azure Linux のイメージ、Azure CLI 2.93.0（11-16）、VS Code 1.147.0（11-18）なども順次対応し、.NET コンテナイメージや Microsoft Build of OpenJDK は 11-16 の Mozilla のリリースを受けて更新される予定。"""
+Microsoft も 11-12 の更新で、2026-11-16 から残る eMudhra のルート証明書 10 件を Windows の信頼済みルート一覧と Microsoft Trusted Root Program から削除し、Edge / WebView2 でも emSign Root CA - G1 / C1、emSign ECC Root CA、emSign Root TLS CA - G1 の既定の信頼を外すとした。Azure Linux のイメージ、Azure CLI 2.93.0（11-16）、VS Code 1.147.0（11-18）なども順次対応し、.NET コンテナイメージや Microsoft Build of OpenJDK は 11-16 の Mozilla のリリースを受けて更新される予定。
+さらに eMudhra は Mozilla の Bugzilla で 11-10 に出した報告で、同じ 2025-04-30 の鍵生成で作られた RSA-4096 の中間 CA 8 件（EM DV / OV / EV TLS CA - G2B / G2C、EM OV CS CA - G2B / G2C）も、鍵を HSM の外の Python プロセスのメモリ上で扱っていたとして 2026-11-07 に失効（理由は cessationOfOperation）させたと報告した。このうち G2C の TLS / コード署名用中間 CA は 2026-05 から実際に証明書を発行していた（eMudhra は利用者の移行は完了したとしている）。
+Electron はこの RSA 中間 CA 8 件も信頼しない修正を 45.3.1 / 44.11.2 / 43.8.9（2026-11-11〜12）に入れたため、Electron 製アプリは 10 月の対策版からもう一度更新が必要になる。"""
 cves = ["CVE-2026-113470", "CVE-2026-111943", "CVE-2026-91403", "CVE-2026-114820"]
 actions = [
   "Ubuntu の ca-certificates と libnss3 を USN-8944-1 / USN-8947-1 の版以降に更新する",
   "Firefox / Thunderbird を 158.0.1（ESR は 153.5.1 / 115.43.1）以降に更新する",
   "Go を 1.27.3 / 1.26.10 以降に更新し、Go 製バイナリは再ビルドされた版に更新する",
   "Python 環境では certifi 2026.10.19・pip 26.2.2・uv 0.13.4・sigstore 4.5.1・conda 26.9.4・pixi 0.82.1 以降に更新し、既存の各 venv の pip / uv も更新する。コンテナイメージはレイヤーキャッシュを無効にして再ビルドする（Python）",
-  "Electron 製アプリは Electron 44.9.1 / 43.8.1 / 42.11.16 以降を同梱した版に更新する。自作の Electron アプリは該当版に上げて再配布する",
+  "Electron 製アプリ（Slack / Discord / VS Code など）は、11-07 に失効した RSA 中間 CA もブロックする Electron 45.3.1 / 44.11.2 / 43.8.9 以降を同梱した版に更新する（10 月の 44.9.1 / 43.8.1 / 42.11.16 では不十分）。自作の Electron アプリは該当版に上げて再配布する",
   "Oracle Java SE / GraalVM を最新の版に更新する。10-21 の更新（CVE-2026-91403）を適用済みでも、10-24 のルート CA 削除（CVE-2026-114820）を含む版まで上げる（Oracle）",
   "Node.js を 22.23.4 / 24.22.1 / 26.12.1 以降に更新する。サポート終了した版は更新されないので、サポート中の版へ移行する",
   "emSign ECC Root CA - G3 につながる TLS 証明書を使っているサイトは、Chrome Root Store に含まれる別の PKI の証明書を直ちに取得して入れ替える（Google）",
@@ -72,7 +74,7 @@ fixed_versions = ["2026.10.19", "26.2.2", "0.13.4"]
 name = "Electron"
 keywords = ["electron"]
 packages = ["npm:electron"]
-fixed_versions = ["44.9.1", "43.8.1", "42.11.16"]
+fixed_versions = ["45.3.1", "44.11.2", "43.8.9"]
 
 [[affects]]
 name = "Oracle Java SE / GraalVM"
@@ -147,6 +149,18 @@ url = "https://releases.electronjs.org/release/v43.8.1"
 kind = "primary"
 title = "Electron v43.8.1 リリースノート（44.9.1 / 42.11.16 も同じ注記、GHSA-jr5w-w6x2-84p9）"
 quote = "This release contains the fix for https://github.com/electron/electron/security/advisories/GHSA-jr5w-w6x2-84p9, the mitigation for compromised eMudhra intermediate certificates"
+
+[[references]]
+url = "https://releases.electronjs.org/release/v45.3.1"
+kind = "primary"
+title = "Electron v45.3.1 リリースノート（44.11.2 / 43.8.9 / 46.0.0-alpha.10 も同じ修正、2026-11-11〜12）"
+quote = "revoked RSA intermediates."
+
+[[references]]
+url = "https://bugzilla.mozilla.org/show_bug.cgi?id=2083449"
+kind = "primary"
+title = "Bug 2083449 - eMudhra: Private key compromise of Intermediate Certificates（Mozilla Bugzilla、comment 82 で eMudhra が RSA G2B / G2C の 11-07 失効を報告）"
+quote = "07 November 2026 for the eight RSA issuers (revoked with cessation of operation)"
 
 [[references]]
 url = "https://support.apple.com/en-us/149555"
