@@ -262,10 +262,35 @@ fn parse_env_file(text: &str) -> HashMap<String, String> {
         .filter_map(|l| {
             let (k, v) = l.split_once('=')?;
             let k = k.trim();
-            let v = v.trim();
-            (!v.is_empty()).then(|| (k.to_string(), v.to_string()))
+            let v = unquote_env_value(v.trim());
+            (!v.is_empty()).then(|| (k.to_string(), v))
         })
         .collect()
+}
+
+/// systemd removes quotes around a whole EnvironmentFile value (`KEY="v"` / `KEY='v'`) and,
+/// inside double quotes, the backslash before `"` and `\`; do the same so doctor sees the value
+/// the service gets.
+fn unquote_env_value(v: &str) -> String {
+    let quoted = |q: char| v.len() >= 2 && v.starts_with(q) && v.ends_with(q);
+    if quoted('\'') {
+        v[1..v.len() - 1].to_string()
+    } else if quoted('"') {
+        let mut out = String::new();
+        let mut chars = v[1..v.len() - 1].chars();
+        while let Some(c) = chars.next() {
+            match (c, chars.clone().next()) {
+                ('\\', Some(n @ ('"' | '\\'))) => {
+                    out.push(n);
+                    chars.next();
+                }
+                _ => out.push(c),
+            }
+        }
+        out
+    } else {
+        v.to_string()
+    }
 }
 
 /// Variables vuln-watch (or its HTTP client) reads from the environment.
@@ -910,6 +935,38 @@ mod tests {
         assert!(!env.contains_key("DISCORD_USER_ID"));
         // systemd rejects `export`, so the variable is not set.
         assert!(!env.contains_key("HEARTBEAT_URL"));
+
+        // systemd removes surrounding quotes; a quoted empty value is unset.
+        let env = parse_env_file(
+            "HEARTBEAT_URL=\"https://hc-ping.com/x\"\n\
+             GITHUB_TOKEN='ghp_y'\n\
+             DISCORD_USER_ID=\"\"\n\
+             DISCORD_BOT_TOKEN=\"a\\\"b\\\\c\"\n\
+             DISCORD_WEBHOOK_URL=\"\n",
+        );
+        assert_eq!(
+            env.get("HEARTBEAT_URL").map(String::as_str),
+            Some("https://hc-ping.com/x")
+        );
+        assert_eq!(env.get("GITHUB_TOKEN").map(String::as_str), Some("ghp_y"));
+        assert!(!env.contains_key("DISCORD_USER_ID"));
+        assert_eq!(
+            env.get("DISCORD_BOT_TOKEN").map(String::as_str),
+            Some("a\"b\\c")
+        );
+        assert_eq!(
+            env.get("DISCORD_WEBHOOK_URL").map(String::as_str),
+            Some("\"")
+        );
+        let secrets = secrets_from(&env);
+        let cfg = Config::parse("").unwrap();
+        assert_eq!(
+            heartbeat_findings(&cfg, &secrets, true)
+                .into_iter()
+                .map(|(s, _, _)| s)
+                .collect::<Vec<_>>(),
+            [Status::Ok]
+        );
     }
 
     #[test]
