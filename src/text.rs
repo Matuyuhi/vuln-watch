@@ -56,19 +56,22 @@ pub fn contains_word(haystack: &str, needle: &str) -> bool {
 /// `contains_word` no longer finds words that are only part of them. Matched bytes
 /// become spaces, which are word boundaries. Both arguments are expected to be
 /// lowercase already; empty terms are skipped.
-/// Every term is matched against the original text, so overlapping terms
-/// (`ingress`, `ingress-nginx`) give the same result in any order.
+/// Every term is matched against the original text, and overlapping occurrences
+/// are found too, so overlapping terms (`ingress`, `ingress-nginx`) give the same
+/// result in any order.
 pub fn mask_words(haystack: &str, terms: &[String]) -> String {
-    let ranges: Vec<(usize, usize)> = terms
-        .iter()
-        .filter(|t| !t.is_empty())
-        .flat_map(|term| {
-            haystack
-                .match_indices(term.as_str())
-                .filter(|(idx, m)| is_word_at(haystack, *idx, m.len()))
-                .map(|(idx, m)| (idx, idx + m.len()))
-        })
-        .collect();
+    let mut ranges = Vec::new();
+    for term in terms.iter().filter(|t| !t.is_empty()) {
+        let mut from = 0;
+        while let Some(pos) = haystack[from..].find(term.as_str()) {
+            let idx = from + pos;
+            if is_word_at(haystack, idx, term.len()) {
+                ranges.push((idx, idx + term.len()));
+            }
+            // Next char boundary, so overlapping occurrences are not skipped.
+            from = idx + haystack[idx..].chars().next().map_or(1, char::len_utf8);
+        }
+    }
     let mut out = haystack.to_string();
     for (start, end) in ranges {
         out.replace_range(start..end, &" ".repeat(end - start));
@@ -154,6 +157,10 @@ mod tests {
         assert_eq!(mask_words("myingress-nginx", &terms), "myingress-nginx");
         assert_eq!(mask_words("中文 nginx ui", &terms), "中文         ");
         assert_eq!(mask_words("abc", &[String::new()]), "abc");
+        // Overlapping occurrences of the same term.
+        let terms = vec!["nginx-nginx".to_string()];
+        let masked = mask_words("nginx-nginx-nginx", &terms);
+        assert!(!contains_word(&masked, "nginx"), "{masked}");
         // Overlapping terms: the result does not depend on their order.
         for terms in [["ingress", "ingress-nginx"], ["ingress-nginx", "ingress"]] {
             let terms: Vec<String> = terms.iter().map(|t| t.to_string()).collect();
