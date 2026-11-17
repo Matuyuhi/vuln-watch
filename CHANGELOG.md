@@ -8,6 +8,7 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 ### Added
 
 - `require_watch = true` on a `kind = "advisory"` source notifies only Claude advisories that match a `[[watch]]` entry, or that list a `deb` package installed here and older than its fixed version. Others are ignored ("ウォッチ不一致"), also with `mode = "urgent"`. Default `false` (every advisory, as before). Other kinds reject the setting.
+- One "🩹 【修正版が公開・既報】" follow-up when a fix appears for a CVE already sent urgent without one: a later item for the same CVE that has a fix (e.g. a GHSA with a patched version) and is decided urgent is sent once more, with the reason prefixed "修正版が公開（既報）" and the fixed-version field (also in the plain-text fallback). It was dropped as a duplicate before. Sent once per CVE (recorded as `<CVE>#remedy`), only within 30 days of the first urgent message, not for KEV items, and not when the first message already had a fix. `[rules] remedy_followup = false` turns it off. Default `true`.
 
 ### Changed
 

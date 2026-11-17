@@ -275,13 +275,32 @@ fn cvss_label(item: &Item) -> String {
     }
 }
 
+/// Reason prefix of the one-off follow-up sent when a fix appears for a CVE already sent
+/// urgent without one (`rules.remedy_followup`).
+pub const REMEDY_FOLLOWUP: &str = "修正版が公開（既報）";
+
+/// Icon and label at the start of an urgent message.
+fn urgent_head(item: &Item, decision: &Decision) -> (&'static str, &'static str) {
+    if decision.reason.starts_with(REMEDY_FOLLOWUP) {
+        ("🩹", "【修正版が公開・既報】")
+    } else if item.kev {
+        ("🔥", "")
+    } else {
+        ("🚨", "")
+    }
+}
+
 pub fn urgent_message(item: &Item, decision: &Decision) -> Message {
-    let icon = if item.kev { "🔥" } else { "🚨" };
+    let (icon, label) = urgent_head(item, decision);
     let product = product_hint(item)
         .map(|p| format!("[{p}] "))
         .unwrap_or_default();
     let content = truncate(
-        &format!("{icon} {} — {product}{}", item.display_id(), item.title),
+        &format!(
+            "{icon} {label}{} — {product}{}",
+            item.display_id(),
+            item.title
+        ),
         200,
     );
 
@@ -326,17 +345,23 @@ pub fn urgent_message(item: &Item, decision: &Decision) -> Message {
 
 /// Plain-text variant of `urgent_message` for when Discord rejects the embed.
 pub fn urgent_fallback_message(item: &Item, decision: &Decision) -> Message {
-    let icon = if item.kev { "🔥" } else { "🚨" };
+    let (icon, label) = urgent_head(item, decision);
     let product = product_hint(item)
         .map(|p| format!("[{}] ", escape_md(&p)))
         .unwrap_or_default();
     let mut text = format!(
-        "{icon} {} — {}{}\n{}",
+        "{icon} {label}{} — {}{}\n{}",
         escape_md(&truncate(item.display_id(), 200)),
         product,
         escape_md(&truncate(&item.title, 300)),
         escape_md(&truncate(&decision.reason, 300)),
     );
+    // The fixed version is what a follow-up is for; the embed shows it as a field.
+    if decision.reason.starts_with(REMEDY_FOLLOWUP) {
+        if let Some((k, v)) = item.extra.iter().find(|(k, _)| k == "修正バージョン") {
+            text.push_str(&format!("\n{k}: {}", escape_md(&truncate(v, 500))));
+        }
+    }
     if item.url.starts_with("http") {
         text.push_str(&format!("\n<{}>", truncate(&item.url, 1000)));
     }
@@ -789,6 +814,33 @@ mod tests {
             .unwrap()
             .to_string();
         assert!(d.starts_with("• "), "{d}");
+    }
+
+    #[test]
+    fn remedy_follow_up_is_labelled_and_shows_the_fix() {
+        let mut it = item(1);
+        it.remedy = true;
+        it.extra = vec![("修正バージョン".into(), "foo < 1.2.4 → 1.2.4".into())];
+        let d = Decision::new(Level::Urgent, format!("{REMEDY_FOLLOWUP}: watch: foo"));
+        let m = urgent_message(&it, &d);
+        assert!(
+            m.content
+                .starts_with("🩹 【修正版が公開・既報】CVE-2026-00001"),
+            "{}",
+            m.content
+        );
+        let text = urgent_fallback_message(&it, &d).content;
+        assert!(text.contains("【修正版が公開・既報】"), "{text}");
+        assert!(
+            text.contains("修正バージョン: foo < 1.2.4 → 1.2.4"),
+            "{text}"
+        );
+
+        // An ordinary urgent message is unchanged.
+        let m = urgent_message(&it, &Decision::new(Level::Urgent, "watch: foo"));
+        assert!(m.content.starts_with("🚨 CVE-2026-00001"), "{}", m.content);
+        let text = urgent_fallback_message(&it, &Decision::new(Level::Urgent, "x")).content;
+        assert!(!text.contains("修正バージョン"), "{text}");
     }
 
     #[test]

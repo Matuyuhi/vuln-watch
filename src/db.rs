@@ -245,6 +245,20 @@ impl Db {
         Ok(v.map(Level::from_i64))
     }
 
+    /// When `key` was last recorded in `alerted`.
+    pub fn alerted_at(&self, key: &str) -> Result<Option<chrono::DateTime<chrono::Utc>>> {
+        let v: Option<String> = self
+            .conn
+            .query_row("SELECT at FROM alerted WHERE key = ?1", params![key], |r| {
+                r.get(0)
+            })
+            .optional()?;
+        Ok(
+            v.and_then(|s| chrono::DateTime::parse_from_rfc3339(&s).ok())
+                .map(|t| t.with_timezone(&chrono::Utc)),
+        )
+    }
+
     pub fn set_alerted(&self, key: &str, level: Level) -> Result<()> {
         self.conn.execute(
             "INSERT INTO alerted (key, level, at) VALUES (?1, ?2, ?3)
