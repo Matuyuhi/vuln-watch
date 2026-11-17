@@ -140,12 +140,7 @@ pub fn state_lines(s: &StateSummary, sources: &[String]) -> Vec<String> {
             out.push(format!("{label:<10} {} {} at {}", r.key, r.detail, r.at));
         }
     };
-    keyed(
-        "alerted",
-        &s.alerted,
-        "none (never sent or queued)",
-        &mut out,
-    );
+    keyed("alerted", &s.alerted, "none recorded", &mut out);
     keyed("outbox", &s.outbox, "not waiting", &mut out);
     keyed("digest", &s.digest, "not queued", &mut out);
     if s.pending.is_empty() {
@@ -227,6 +222,10 @@ pub fn decision_lines(
         .filter(|s| only.is_none_or(|names| names.contains(&s.name())))
         .collect();
     let mut out = Vec::new();
+    if sources.is_empty() && only.is_some() {
+        out.push(format!("no enabled `{}` source reads it", kind.as_str()));
+        return out;
+    }
     let sources: Vec<(String, SourcePolicy, Option<&str>)> = if sources.is_empty() {
         out.push(format!(
             "(no enabled `{}` source: decided with the default mode \"filter\")",
@@ -302,6 +301,37 @@ struct Found {
     item: Option<Item>,
 }
 
+/// The enabled ghsa sources whose list can contain the advisory (None: no ghsa source is
+/// enabled), and a line for each that cannot or whose filters were not all checked.
+fn ghsa_sources(cfg: &Config, l: &ghsa::Lookup) -> (Option<Vec<String>>, Vec<String>) {
+    let mut names = Vec::new();
+    let mut notes = Vec::new();
+    let mut any = false;
+    for src in cfg
+        .sources
+        .iter()
+        .filter(|s| s.enabled && s.kind == SourceKind::Ghsa)
+    {
+        any = true;
+        let url = src.url.as_deref().unwrap_or(ghsa::DEFAULT_URL);
+        let name = src.name();
+        match ghsa::list_eligibility(url, l.kind.as_deref(), &l.ecosystems) {
+            ghsa::Eligibility::Yes => names.push(name),
+            ghsa::Eligibility::No(why) => {
+                notes.push(format!("not read by source `{name}` ({why})"));
+            }
+            ghsa::Eligibility::Unchecked(params) => {
+                notes.push(format!(
+                    "source `{name}`: filter {} not checked; its decision assumes it reads this advisory",
+                    params.join(", ")
+                ));
+                names.push(name);
+            }
+        }
+    }
+    (any.then_some(names), notes)
+}
+
 fn is_not_found(e: &anyhow::Error) -> bool {
     e.downcast_ref::<StatusError>()
         .is_some_and(|s| s.status == 404)
@@ -343,17 +373,11 @@ fn fetch_live(
             }
             Ok(list) => {
                 for l in list {
-                    let note = match l.kind.as_deref() {
-                        Some("reviewed") | None => None,
-                        Some(k) => Some(format!(
-                            "type {k}: the default ghsa source reads reviewed advisories only"
-                        )),
-                    };
-                    let note = if l.item.is_none() {
-                        Some("withdrawn: no source reports it".to_string())
-                    } else {
-                        note
-                    };
+                    let (sources, mut notes) = ghsa_sources(cfg, &l);
+                    if l.item.is_none() {
+                        notes.insert(0, "withdrawn: no source reports it".to_string());
+                    }
+                    let note = (!notes.is_empty()).then(|| notes.join("\n"));
                     found.push(Found {
                         label: format!("GitHub advisory {}", l.ghsa_id),
                         ids: [Some(l.ghsa_id.clone()), l.cve_id.clone()]
@@ -361,7 +385,7 @@ fn fetch_live(
                             .flatten()
                             .collect(),
                         kind: SourceKind::Ghsa,
-                        sources: None,
+                        sources,
                         note,
                         item: l.item,
                     });
@@ -660,7 +684,7 @@ mod tests {
         let s = state_summary(&db, &["CVE-2026-1".to_string()]).unwrap();
         let text = state_lines(&s, &["cvelist".into()]).join("\n");
         assert!(text.contains("not seen   cvelist"));
-        assert!(text.contains("never sent or queued"));
+        assert!(text.contains("alerted    none recorded"), "{text}");
         assert!(text.contains("pending    not waiting"), "{text}");
     }
 
@@ -789,7 +813,25 @@ mod tests {
         assert_eq!(found.len(), 3);
         assert_eq!(found[0].kind, SourceKind::Cvelist);
         assert_eq!(found[0].item.as_ref().unwrap().title, "nginx: overflow");
-        assert!(found[1].note.as_deref().unwrap().contains("unreviewed"));
+        // The configured ghsa source reads reviewed advisories only.
+        assert!(
+            found[1]
+                .note
+                .as_deref()
+                .unwrap()
+                .contains("not read by source `ghsa` (type=reviewed)"),
+            "{:?}",
+            found[1].note
+        );
+        assert_eq!(found[1].sources, Some(vec![]));
+        let lines = decision_lines(
+            found[1].item.as_ref().unwrap(),
+            SourceKind::Ghsa,
+            found[1].sources.as_deref(),
+            &cfg,
+            None,
+        );
+        assert_eq!(lines, vec!["no enabled `ghsa` source reads it"]);
         assert_eq!(found[1].item.as_ref().unwrap().id, "GHSA-aaaa-bbbb-cccc");
         assert!(found[2].item.is_none());
         assert!(found[2].note.as_deref().unwrap().contains("withdrawn"));
