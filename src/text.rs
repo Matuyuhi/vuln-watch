@@ -81,6 +81,20 @@ pub fn escape_md(s: &str) -> String {
     out
 }
 
+/// Validate a source-provided URL for use in a Discord link: only `http`/`https`, no
+/// credentials. Returns the normalized form, in which `<`, `>`, quotes and whitespace are
+/// percent-encoded, so it cannot close a `[text](<url>)` link or an embed field early.
+pub fn safe_url(s: &str) -> Option<String> {
+    let u = reqwest::Url::parse(s.trim()).ok()?;
+    if !matches!(u.scheme(), "http" | "https") || u.host_str().is_none() {
+        return None;
+    }
+    if !u.username().is_empty() || u.password().is_some() {
+        return None;
+    }
+    Some(u.to_string())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -115,5 +129,24 @@ mod tests {
     #[test]
     fn escapes_markdown() {
         assert_eq!(escape_md("a*b_[c]"), "a\\*b\\_(c)");
+    }
+
+    #[test]
+    fn safe_url_accepts_only_http() {
+        assert_eq!(
+            safe_url("https://www.cve.org/CVERecord?id=CVE-2026-1").as_deref(),
+            Some("https://www.cve.org/CVERecord?id=CVE-2026-1")
+        );
+        assert_eq!(
+            safe_url(" http://example.com/a b>c\"x ").as_deref(),
+            Some("http://example.com/a%20b%3Ec%22x")
+        );
+        let u = safe_url("https://example.com/x?q=>)#f>").unwrap();
+        assert!(!u.contains('>') && !u.contains(' '), "{u}");
+        assert_eq!(safe_url("javascript:alert(1)"), None);
+        assert_eq!(safe_url("ftp://example.com/x"), None);
+        assert_eq!(safe_url("not a url"), None);
+        assert_eq!(safe_url(""), None);
+        assert_eq!(safe_url("https://discord.com@evil.example/"), None);
     }
 }
