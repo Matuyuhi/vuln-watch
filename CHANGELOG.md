@@ -13,6 +13,10 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 
 - Urgent items over `max_urgent_per_run` are no longer moved to the digest (which waits for the 08:00 timer, up to ~24 hours). They are sent in the same run as one compact list message, "⚠️ 即時通知の上限（N件/回）を超えた残りM件", with the digest line format (id and link, product, title, score, reason), split into several messages under Discord limits when needed. Listed items count as notified urgently. If a list message fails transiently, its items stay in the outbox for the next run; if Discord rejects it, its items go to the digest as before (with `digest = false`, they stay in the outbox and are sent one by one by later runs), with one notice. The old "残りN件はダイジェストに回しました" notice is gone. `max_urgent_per_run` still caps the individual urgent messages per run.
 
+### Security
+
+- `vuln-watch doctor` printed up to 40 characters of a line of `/etc/vuln-watch/env` that has no `=`, so a token pasted on its own line (e.g. a 40-character `ghp_…` GitHub token in full, or the start of a Discord bot token) appeared in its output. Such a line is now reported by line number only ("not KEY=value; systemd ignores it (a token pasted on its own line?)"). Text from it is shown only when it is a `[section]` header or starts with a variable name vuln-watch reads (`GITHUB_TOKEN: x`). Lines with `=` still show only the part before `=`, with the same hints as before.
+
 ### Fixed
 
 - A digest line with a very long feed GUID, title or reason (or many Markdown characters) was cut at 600 characters, which could drop its link, score and reason. Each field is now bounded on its own instead (id 80, title 90, severity 20, reason 120, actions 150 characters; a link longer than 300 characters is left out), and the line is no longer cut as a whole.
