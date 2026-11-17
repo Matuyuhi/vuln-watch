@@ -5,6 +5,10 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 
 ## [Unreleased]
 
+### Fixed
+
+- An advisory file that failed to parse (e.g. `actions = "..."` as a string, an unknown key after a format change) was skipped forever with only a log line: no message, and no source failure alert. It is now sent once as an urgent message "アドバイザリを読み込めませんでした: <file name>" with a link to the file and the error as plain text (digest for `mode = "digest"` sources). Watches, `require_watch` and `require_remedy` do not apply to it. A fixed file (new blob SHA) is read as usual; on the first run of the source it is only marked seen.
+
 ## [1.2.1] - 2026-11-17
 
 ### Added

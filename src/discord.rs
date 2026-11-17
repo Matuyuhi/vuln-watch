@@ -8,7 +8,7 @@ use serde_json::{json, Value};
 use crate::db::{Db, DigestEntry};
 use crate::http::Http;
 use crate::model::{Decision, Item};
-use crate::text::{escape_md, safe_url, truncate};
+use crate::text::{collapse_ws, escape_md, safe_url, truncate};
 
 const API: &str = "https://discord.com/api/v10";
 
@@ -428,6 +428,10 @@ pub fn urgent_fallback_message(item: &Item, decision: &Decision) -> Message {
         escape_md(&truncate(&item.title, 300)),
         escape_md(&truncate(&decision.reason, 300)),
     );
+    // A file that could not be read: the error is the point of the message.
+    if item.load_error {
+        text.push_str(&format!("\n{}", escape_md(&truncate(&item.summary, 600))));
+    }
     // The fixed version is what a follow-up is for; the embed shows it as a field.
     if decision.reason.starts_with(REMEDY_FOLLOWUP) {
         if let Some((k, v)) = item.extra.iter().find(|(k, _)| k == "修正バージョン") {
@@ -547,6 +551,14 @@ fn digest_line(e: &DigestEntry, show_reason: bool) -> String {
     );
     if show_reason {
         line.push_str(&format!(" · {}", escape_md(&truncate(&e.reason, 120))));
+    }
+    // A file that could not be read: the error on a second line (the summary is not shown
+    // in list messages otherwise).
+    if item.load_error {
+        line.push_str(&format!(
+            "\n　エラー: {}",
+            escape_md(&truncate(&collapse_ws(&item.summary), 300))
+        ));
     }
     // Claude advisories: the actions on a second line; the linked file lists the sources.
     if item.confidence.is_some() {
@@ -745,6 +757,41 @@ mod tests {
         };
         let line = digest_line(&e, true);
         assert!(line.ends_with("\n　対策: ・Update Electron ・Update ca-certificates"));
+    }
+
+    #[test]
+    fn load_error_shows_the_error_escaped() {
+        let mut it = Item::new("adv", "advisories/x.toml@abc");
+        it.title = "アドバイザリを読み込めませんでした: x.toml".into();
+        it.url = "https://github.com/o/r/blob/advisories/advisories/x.toml".into();
+        it.summary = "invalid advisory: TOML parse error\n1 | title = \"[x](https://evil.example)\"\n  | ^^^".into();
+        it.load_error = true;
+        let e = DigestEntry {
+            key: "k".into(),
+            item: it.clone(),
+            reason: "ソースのファイルを読み込めませんでした".into(),
+        };
+        let line = digest_line(&e, true);
+        let err = line.split_once("\n　エラー: ").expect(&line).1;
+        assert!(err.contains("TOML parse error"), "{line}");
+        assert!(!err.contains("[x]("), "{line}");
+        assert!(!err.contains('\n'), "{line}");
+
+        let m = urgent_message(&it, &Decision::new(Level::Urgent, "r"));
+        let d = m.embeds[0]["description"].as_str().unwrap();
+        assert!(d.contains("TOML parse error"), "{d}");
+        assert!(!d.contains("[x]("), "{d}");
+        assert!(d.contains("\\|"), "{d}");
+
+        let m = urgent_fallback_message(&it, &Decision::new(Level::Urgent, "r"));
+        assert!(m.content.contains("TOML parse error"), "{}", m.content);
+        assert!(!m.content.contains("[x]("), "{}", m.content);
+        assert!(
+            m.content
+                .ends_with("<https://github.com/o/r/blob/advisories/advisories/x.toml>"),
+            "{}",
+            m.content
+        );
     }
 
     #[test]

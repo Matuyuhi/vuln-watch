@@ -107,6 +107,7 @@ Some problems never get a CVE but still mean "update this now" for many products
 - With `require_watch = true` on the source, only advisories that match a watch entry, or that list a `deb` package installed here and older than its fixed version, are notified. Others are ignored ("ウォッチ不一致"), also with `mode = "urgent"`. Matching advisories follow the table above. Default `false`: advisories are notified with or without a watch match.
 - Advisories with `confidence = "unverified"`, or without a `primary` reference, are never urgent.
 - Advisories past `expires`, and those with `status = "resolved"` or `"withdrawn"`, are skipped.
+- An advisory file that cannot be read (invalid TOML, a string where a list is expected such as `actions = "..."`, an unknown key, ...) is sent as an urgent message "アドバイザリを読み込めませんでした: <file name>" with a link to the file and the error (to the digest if the source has `mode = "digest"`). Watches, `require_watch` and `require_remedy` do not apply. The same file content is reported once; a fixed file is read as usual.
 - A new `revision` of an advisory is notified again; other edits are not.
 - Every message is labelled `Claude 調査` with its confidence. Urgent messages list the actions and sources; digest lines show the actions and link to the advisory file, which lists the sources. Check the sources before acting.
 
