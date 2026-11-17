@@ -184,6 +184,10 @@ pub struct Watch {
     /// false: matches only go to the digest (for noisy targets).
     #[serde(default = "default_true")]
     pub urgent: bool,
+    /// Words blanked out (case-insensitive, at word boundaries) before this entry's keywords
+    /// are matched, e.g. "ingress-nginx" for the nginx entry. Exact `packages` are not affected.
+    #[serde(default)]
+    pub exclude: Vec<String>,
 }
 
 impl Watch {
@@ -197,6 +201,10 @@ impl Watch {
         } else {
             self.keywords.iter().map(|k| k.to_lowercase()).collect()
         }
+    }
+
+    pub fn exclude_terms(&self) -> Vec<String> {
+        self.exclude.iter().map(|e| e.to_lowercase()).collect()
     }
 }
 
@@ -380,6 +388,9 @@ impl Config {
             if w.name.trim().is_empty() {
                 bail!("watch entry with empty name");
             }
+            if w.exclude.iter().any(|e| e.trim().is_empty()) {
+                bail!("watch `{}` has an empty `exclude` term", w.name);
+            }
             for s in &w.sources {
                 if !names.contains(s) {
                     bail!("watch `{}` refers to unknown source `{s}`", w.name);
@@ -511,6 +522,18 @@ mod tests {
     }
 
     #[test]
+    fn rejects_empty_watch_exclude() {
+        let ok = "[[watch]]\nname = \"nginx\"\nexclude = [\"ingress-nginx\"]\n";
+        assert_eq!(
+            Config::parse(ok).unwrap().watches[0].exclude,
+            ["ingress-nginx"]
+        );
+        let bad = "[[watch]]\nname = \"nginx\"\nexclude = [\" \"]\n";
+        let err = Config::parse(bad).unwrap_err().to_string();
+        assert!(err.contains("empty `exclude`"), "{err}");
+    }
+
+    #[test]
     fn rejects_feed_without_url() {
         let err = Config::parse("[[source]]\nkind = \"feed\"\nname = \"x\"\n").unwrap_err();
         assert!(format!("{err:#}").contains("needs `url`"));
@@ -551,6 +574,7 @@ mod tests {
             packages: vec![],
             sources: vec![],
             urgent: true,
+            exclude: vec![],
         };
         assert_eq!(w.effective_keywords(), vec!["nginx"]);
         assert!(w.applies_to("anything"));

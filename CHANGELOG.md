@@ -8,6 +8,7 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 ### Added
 
 - `require_watch = true` on a `kind = "advisory"` source notifies only Claude advisories that match a `[[watch]]` entry, or that list a `deb` package installed here and older than its fixed version. Others are ignored ("ウォッチ不一致"), also with `mode = "urgent"`. Default `false` (every advisory, as before). Other kinds reject the setting.
+- `exclude = [...]` on a `[[watch]]` entry: these terms are blanked out (whole-word, case-insensitive) of the product, package, title and description text before the entry's keywords are matched, so the `nginx` keyword no longer strong-matches `Kubernetes ingress-nginx` or `Nginx UI` and sends them as urgent DMs; an item that also names plain `nginx` still matches. Exact `packages` matches are not affected; Claude advisories use the same matching. Empty terms are rejected. `vuln-watch watch add/edit --exclude WORD`, `watch edit --rm-exclude WORD`, and a new EXCLUDE column in `watch list`. `config.example.toml` sets `exclude = ["ingress-nginx", "nginx-ui", "nginx ui", "nginx proxy manager"]` on the `nginx` entry.
 
 ### Changed
 

@@ -56,11 +56,14 @@ already_fixed = "digest"
 #   packages  exact package name (Maven: group:artifact)
 #   sources   limit to these source names (default: all)
 #   urgent    false = matches only go to the digest
+#   exclude   words blanked out before keywords are matched (whole-word, case-insensitive),
+#             for other products that contain the keyword; exact packages are not affected
 # With neither keywords nor packages, name is used as the keyword.
 
 # Server
 [[watch]]
 name = "nginx"
+exclude = ["ingress-nginx", "nginx-ui", "nginx ui", "nginx proxy manager"]
 
 # Dozens of kernel CVEs are published daily. Patches for the installed kernel are
 # covered by [installed]; exploited ones by KEV.
