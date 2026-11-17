@@ -167,6 +167,10 @@ fn locked_run(
 ) -> Result<RunSummary> {
     let mut summary = RunSummary::default();
 
+    if !opts.dry_run && db.get_kv(REMEDY_FOLLOWUP_SINCE)?.is_none() {
+        db.set_kv(REMEDY_FOLLOWUP_SINCE, &chrono::Utc::now().to_rfc3339())?;
+    }
+
     // Read on every run so upgrades done by apt / unattended-upgrades are reflected.
     let installed = if cfg.installed.enabled {
         Some(Installed::load(&cfg.installed)?)
@@ -370,10 +374,48 @@ fn flush_outbox(
 /// Record an outbox entry as sent at the urgent level and take it out of the queues.
 fn mark_sent_urgent(db: &Db, e: &DigestEntry) -> Result<()> {
     db.set_alerted(&e.key, Level::Urgent)?;
+    // The message already showed a fix: no "fix available" follow-up later.
+    if e.item.remedy {
+        db.set_alerted(&remedy_key(&e.item), Level::Urgent)?;
+    }
     // It may have been queued for the digest earlier at a lower level.
     db.dequeue(Queue::Digest, &e.key)?;
     db.dequeue(Queue::Digest, &e.item.dedupe_key())?;
     db.dequeue(Queue::Outbox, &e.key)
+}
+
+/// Follow-ups are sent only for CVEs first sent urgent within this many days, so the
+/// fixes for old CVEs don't arrive as a burst.
+const REMEDY_FOLLOWUP_DAYS: i64 = 30;
+
+/// kv: when this version first ran. Urgent messages sent before it have no `#remedy`
+/// record even if they showed a fix, so they never get a follow-up.
+const REMEDY_FOLLOWUP_SINCE: &str = "remedy-followup:since";
+
+/// `alerted` key recording that a fix for this item's CVE was already sent.
+fn remedy_key(item: &Item) -> String {
+    format!("{}#remedy", item.dedupe_key())
+}
+
+/// Whether an urgent `item` with a fix should be sent again as a "fix available"
+/// follow-up: its key was sent urgent recently, without a fix, and no follow-up was sent.
+fn remedy_followup_due(cfg: &Config, db: &Db, item: &Item, key: &str) -> Result<bool> {
+    if !cfg.rules.remedy_followup || !item.remedy || item.kev {
+        return Ok(false);
+    }
+    if db.alerted_level(key)? != Some(Level::Urgent)
+        || db.alerted_level(&remedy_key(item))?.is_some()
+    {
+        return Ok(false);
+    }
+    let mut cutoff = chrono::Utc::now() - chrono::Duration::days(REMEDY_FOLLOWUP_DAYS);
+    let since = db
+        .get_kv(REMEDY_FOLLOWUP_SINCE)?
+        .and_then(|s| chrono::DateTime::parse_from_rfc3339(&s).ok());
+    if let Some(since) = since {
+        cutoff = cutoff.max(since.with_timezone(&chrono::Utc));
+    }
+    Ok(db.alerted_at(key)?.is_some_and(|at| at >= cutoff))
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -437,15 +479,25 @@ fn handle_fetched(
     for item in std::mem::take(&mut fetched.items) {
         // An item held back for lack of a fix is only decided again once it has one.
         let awaiting_key = format!("{}#awaiting-remedy", item.id);
-        if db.is_seen(&name, &item.id)? || (!item.remedy && db.is_seen(&name, &awaiting_key)?) {
+        let seen =
+            db.is_seen(&name, &item.id)? || (!item.remedy && db.is_seen(&name, &awaiting_key)?);
+        // An advisory seen without a fix and since updated with one (same id) is decided
+        // again only for the "fix available" follow-up; it is not counted as new.
+        let followup_only = seen && remedy_followup_due(cfg, db, &item, &item.alert_key())?;
+        if seen && !followup_only {
             continue;
         }
-        new += 1;
         let policy = rules::SourcePolicy {
             mode: src.mode,
             require_watch: src.require_watch,
         };
         let decision = rules::evaluate_with(&item, policy, &cfg.rules, &cfg.watches, installed);
+        if followup_only && decision.level != Level::Urgent {
+            continue;
+        }
+        if !followup_only {
+            new += 1;
+        }
         if opts.dry_run {
             println!(
                 "[{name}] {:<7} {} — {} ({})",
@@ -464,6 +516,12 @@ fn handle_fetched(
             }
             Level::Ignore => {
                 summary.ignored += 1;
+                db.mark_seen(&name, &item.id)?;
+            }
+            Level::Urgent if remedy_followup_due(cfg, db, &item, &key)? => {
+                // Sent by flush_outbox; recording the `#remedy` key there makes it one-off.
+                let reason = format!("{}: {}", discord::REMEDY_FOLLOWUP, decision.reason);
+                db.enqueue(Queue::Outbox, &remedy_key(&item), &item, &reason)?;
                 db.mark_seen(&name, &item.id)?;
             }
             level if already.is_some_and(|a| a >= level) => {
@@ -1004,6 +1062,246 @@ kind = "ghsa"
         fixed.remedy = true;
         handle(&cfg, &mut db, "ghsa", fetched(vec![fixed], "c3"), &mut s);
         assert_eq!(keys(&db, Queue::Outbox), ["CVE-2026-0001"]);
+    }
+
+    /// Urgent when `urgent_cvss = 9.0` (see `followup_cfg`): CVSS 9.5, no fix (cvelist-style).
+    fn no_fix_item(source: &str, cve: &str) -> Item {
+        digest_item(source, cve)
+    }
+
+    /// GHSA-style item for the same CVE with a patched version.
+    fn fixed_item(source: &str, id: &str, cve: &str) -> Item {
+        let mut item = digest_item(source, cve);
+        item.id = id.into();
+        item.remedy = true;
+        item.extra = vec![("修正バージョン".into(), "foo < 1.2.4 → 1.2.4".into())];
+        item
+    }
+
+    fn followup_cfg() -> Config {
+        let mut cfg = cfg();
+        cfg.rules.urgent_cvss = Some(9.0);
+        cfg
+    }
+
+    #[test]
+    fn fix_after_urgent_without_fix_is_sent_once_as_follow_up() {
+        let cfg = followup_cfg();
+        let http = Http::new(5).unwrap();
+        let notifier = recorder(&http, vec![]);
+        let mut db = Db::open_in_memory().unwrap();
+        let mut s = RunSummary::default();
+        let first = no_fix_item("kev", "CVE-2026-0001");
+        handle(&cfg, &mut db, "kev", fetched(vec![first], "c1"), &mut s);
+        flush_outbox(&cfg, &db, &notifier, &mut s, &mut None).unwrap();
+        assert_eq!(notifier.sent().len(), 1);
+
+        let fixed = fixed_item("ghsa", "GHSA-aaaa", "CVE-2026-0001");
+        handle(&cfg, &mut db, "ghsa", fetched(vec![fixed], "c2"), &mut s);
+        assert_eq!(keys(&db, Queue::Outbox), ["CVE-2026-0001#remedy"]);
+        flush_outbox(&cfg, &db, &notifier, &mut s, &mut None).unwrap();
+        let sent = notifier.sent();
+        assert_eq!(sent.len(), 2);
+        assert!(
+            sent[1].content.contains("修正版が公開"),
+            "{}",
+            sent[1].content
+        );
+        let fields = sent[1].embeds[0]["fields"].as_array().unwrap();
+        assert!(fields
+            .iter()
+            .any(|f| f["name"] == "修正バージョン" && f["value"] == "foo < 1.2.4 → 1.2.4"));
+        assert!(fields.iter().any(|f| f["name"] == "理由"
+            && f["value"]
+                .as_str()
+                .unwrap()
+                .starts_with(discord::REMEDY_FOLLOWUP)));
+        assert_eq!(
+            db.alerted_level("CVE-2026-0001#remedy").unwrap(),
+            Some(Level::Urgent)
+        );
+
+        // A third item with a fix (another source, or the same advisory re-read).
+        let again = fixed_item("kev", "GHSA-bbbb", "CVE-2026-0001");
+        handle(&cfg, &mut db, "kev", fetched(vec![again], "c3"), &mut s);
+        db.execute_batch("DELETE FROM seen WHERE id = 'GHSA-aaaa'")
+            .unwrap();
+        let reread = fixed_item("ghsa", "GHSA-aaaa", "CVE-2026-0001");
+        handle(&cfg, &mut db, "ghsa", fetched(vec![reread], "c4"), &mut s);
+        assert_eq!(db.queue_len(Queue::Outbox).unwrap(), 0);
+        flush_outbox(&cfg, &db, &notifier, &mut s, &mut None).unwrap();
+        assert_eq!(notifier.sent().len(), 2);
+    }
+
+    #[test]
+    fn same_advisory_updated_with_a_fix_is_sent_as_follow_up() {
+        let cfg = followup_cfg();
+        let http = Http::new(5).unwrap();
+        let notifier = recorder(&http, vec![]);
+        let mut db = Db::open_in_memory().unwrap();
+        let mut s = RunSummary::default();
+        let mut first = no_fix_item("ghsa", "CVE-2026-0001");
+        first.id = "GHSA-aaaa".into();
+        handle(&cfg, &mut db, "ghsa", fetched(vec![first], "c1"), &mut s);
+        flush_outbox(&cfg, &db, &notifier, &mut s, &mut None).unwrap();
+        assert_eq!(notifier.sent().len(), 1);
+
+        // The same GHSA, still marked seen, now with a patched version.
+        let updated = fixed_item("ghsa", "GHSA-aaaa", "CVE-2026-0001");
+        db.set_kv("lastnew:ghsa", "x").unwrap();
+        handle(&cfg, &mut db, "ghsa", fetched(vec![updated], "c2"), &mut s);
+        assert_eq!(keys(&db, Queue::Outbox), ["CVE-2026-0001#remedy"]);
+        // Not a new item: the stale-source check is not reset by it.
+        assert_eq!(db.get_kv("lastnew:ghsa").unwrap().as_deref(), Some("x"));
+        flush_outbox(&cfg, &db, &notifier, &mut s, &mut None).unwrap();
+        assert_eq!(notifier.sent().len(), 2);
+
+        let again = fixed_item("ghsa", "GHSA-aaaa", "CVE-2026-0001");
+        handle(&cfg, &mut db, "ghsa", fetched(vec![again], "c3"), &mut s);
+        assert_eq!(db.queue_len(Queue::Outbox).unwrap(), 0);
+
+        // Re-read but decided digest: not counted as new, nothing queued.
+        let mut other = no_fix_item("ghsa", "CVE-2026-0002");
+        other.id = "GHSA-bbbb".into();
+        handle(&cfg, &mut db, "ghsa", fetched(vec![other], "c4"), &mut s);
+        flush_outbox(&cfg, &db, &notifier, &mut s, &mut None).unwrap();
+        let mut low = fixed_item("ghsa", "GHSA-bbbb", "CVE-2026-0002");
+        low.cvss = Some(3.0);
+        db.set_kv("lastnew:ghsa", "x").unwrap();
+        handle(&cfg, &mut db, "ghsa", fetched(vec![low], "c5"), &mut s);
+        assert_eq!(db.queue_len(Queue::Outbox).unwrap(), 0);
+        assert_eq!(db.get_kv("lastnew:ghsa").unwrap().as_deref(), Some("x"));
+    }
+
+    #[test]
+    fn no_follow_up_when_the_first_urgent_message_had_a_fix() {
+        let cfg = followup_cfg();
+        let http = Http::new(5).unwrap();
+        let notifier = recorder(&http, vec![]);
+        let mut db = Db::open_in_memory().unwrap();
+        let mut s = RunSummary::default();
+        let first = fixed_item("kev", "GHSA-aaaa", "CVE-2026-0001");
+        handle(&cfg, &mut db, "kev", fetched(vec![first], "c1"), &mut s);
+        flush_outbox(&cfg, &db, &notifier, &mut s, &mut None).unwrap();
+        let later = fixed_item("ghsa", "GHSA-bbbb", "CVE-2026-0001");
+        handle(&cfg, &mut db, "ghsa", fetched(vec![later], "c2"), &mut s);
+        assert_eq!(db.queue_len(Queue::Outbox).unwrap(), 0);
+        assert_eq!(notifier.sent().len(), 1);
+    }
+
+    #[test]
+    fn no_follow_up_for_a_fix_decided_digest_or_ignore() {
+        let cfg = followup_cfg();
+        let http = Http::new(5).unwrap();
+        let notifier = recorder(&http, vec![]);
+        let mut db = Db::open_in_memory().unwrap();
+        let mut s = RunSummary::default();
+        let first = no_fix_item("kev", "CVE-2026-0001");
+        handle(&cfg, &mut db, "kev", fetched(vec![first], "c1"), &mut s);
+        flush_outbox(&cfg, &db, &notifier, &mut s, &mut None).unwrap();
+
+        // Digest: CVSS 9.2 is under urgent_cvss but over digest_cvss.
+        let mut digest = fixed_item("ghsa", "GHSA-aaaa", "CVE-2026-0001");
+        digest.cvss = Some(9.2);
+        let mut lowered = cfg.clone();
+        lowered.rules.urgent_cvss = Some(9.3);
+        handle(
+            &lowered,
+            &mut db,
+            "ghsa",
+            fetched(vec![digest], "c2"),
+            &mut s,
+        );
+        // Ignore: CVSS too low for anything.
+        let mut ignore = fixed_item("ghsa", "GHSA-bbbb", "CVE-2026-0001");
+        ignore.cvss = Some(3.0);
+        handle(&cfg, &mut db, "ghsa", fetched(vec![ignore], "c3"), &mut s);
+
+        assert_eq!(db.queue_len(Queue::Outbox).unwrap(), 0);
+        assert!(keys(&db, Queue::Digest).is_empty());
+        assert_eq!(db.alerted_level("CVE-2026-0001#remedy").unwrap(), None);
+    }
+
+    #[test]
+    fn no_follow_up_after_30_days_or_when_switched_off() {
+        let cfg = followup_cfg();
+        let http = Http::new(5).unwrap();
+        let notifier = recorder(&http, vec![]);
+        let mut db = Db::open_in_memory().unwrap();
+        let mut s = RunSummary::default();
+        let first = no_fix_item("kev", "CVE-2026-0001");
+        handle(&cfg, &mut db, "kev", fetched(vec![first], "c1"), &mut s);
+        flush_outbox(&cfg, &db, &notifier, &mut s, &mut None).unwrap();
+
+        let mut off = cfg.clone();
+        off.rules.remedy_followup = false;
+        let fixed = fixed_item("ghsa", "GHSA-aaaa", "CVE-2026-0001");
+        handle(&off, &mut db, "ghsa", fetched(vec![fixed], "c2"), &mut s);
+        assert_eq!(db.queue_len(Queue::Outbox).unwrap(), 0);
+
+        let old = chrono::Utc::now() - chrono::Duration::days(REMEDY_FOLLOWUP_DAYS + 1);
+        db.execute_batch(&format!(
+            "UPDATE alerted SET at = '{}' WHERE key = 'CVE-2026-0001'",
+            old.to_rfc3339()
+        ))
+        .unwrap();
+        let fixed = fixed_item("ghsa", "GHSA-bbbb", "CVE-2026-0001");
+        handle(&cfg, &mut db, "ghsa", fetched(vec![fixed], "c3"), &mut s);
+        assert_eq!(db.queue_len(Queue::Outbox).unwrap(), 0);
+    }
+
+    #[test]
+    fn no_follow_up_for_a_message_sent_before_the_upgrade() {
+        let cfg = followup_cfg();
+        let http = Http::new(5).unwrap();
+        let notifier = recorder(&http, vec![]);
+        let mut db = Db::open_in_memory().unwrap();
+        let mut s = RunSummary::default();
+        // Sent by an older version: it may have shown a fix, but no `#remedy` was recorded.
+        let mut first = fixed_item("ghsa", "GHSA-aaaa", "CVE-2026-0001");
+        first.remedy = false;
+        handle(&cfg, &mut db, "ghsa", fetched(vec![first], "c1"), &mut s);
+        flush_outbox(&cfg, &db, &notifier, &mut s, &mut None).unwrap();
+        let old = chrono::Utc::now() - chrono::Duration::days(2);
+        db.execute_batch(&format!(
+            "UPDATE alerted SET at = '{}' WHERE key = 'CVE-2026-0001'",
+            old.to_rfc3339()
+        ))
+        .unwrap();
+        // The upgraded version runs for the first time.
+        let since = chrono::Utc::now() - chrono::Duration::days(1);
+        db.set_kv(REMEDY_FOLLOWUP_SINCE, &since.to_rfc3339())
+            .unwrap();
+
+        let reread = fixed_item("ghsa", "GHSA-aaaa", "CVE-2026-0001");
+        handle(&cfg, &mut db, "ghsa", fetched(vec![reread], "c2"), &mut s);
+        let other = fixed_item("kev", "GHSA-bbbb", "CVE-2026-0001");
+        handle(&cfg, &mut db, "kev", fetched(vec![other], "c3"), &mut s);
+        assert_eq!(db.queue_len(Queue::Outbox).unwrap(), 0);
+
+        // A CVE first sent after the upgrade still gets one.
+        let second = no_fix_item("kev", "CVE-2026-0002");
+        handle(&cfg, &mut db, "kev", fetched(vec![second], "c4"), &mut s);
+        flush_outbox(&cfg, &db, &notifier, &mut s, &mut None).unwrap();
+        let fixed = fixed_item("ghsa", "GHSA-cccc", "CVE-2026-0002");
+        handle(&cfg, &mut db, "ghsa", fetched(vec![fixed], "c5"), &mut s);
+        assert_eq!(keys(&db, Queue::Outbox), ["CVE-2026-0002#remedy"]);
+    }
+
+    #[test]
+    fn kev_item_with_fix_is_not_a_follow_up() {
+        let cfg = followup_cfg();
+        let http = Http::new(5).unwrap();
+        let notifier = recorder(&http, vec![]);
+        let mut db = Db::open_in_memory().unwrap();
+        let mut s = RunSummary::default();
+        let first = no_fix_item("ghsa", "CVE-2026-0001");
+        handle(&cfg, &mut db, "ghsa", fetched(vec![first], "c1"), &mut s);
+        flush_outbox(&cfg, &db, &notifier, &mut s, &mut None).unwrap();
+        let mut kev = kev_item("kev", "CVE-2026-0001");
+        kev.remedy = true;
+        handle(&cfg, &mut db, "kev", fetched(vec![kev], "c2"), &mut s);
+        assert_eq!(keys(&db, Queue::Outbox), ["CVE-2026-0001#kev"]);
     }
 
     #[test]

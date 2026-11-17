@@ -24,6 +24,9 @@ exclude_keywords = ["wordpress", "plugin for wordpress", "sourcecodester", "code
 # required action, advisory actions). Items without one are dropped until a source brings
 # the fix. Sources with mode = "urgent" are not affected.
 require_remedy = false
+# A CVE sent urgent without a fix gets one "fix available" follow-up when a source later
+# brings the fix (e.g. a GHSA with a patched version), within 30 days of the first message.
+remedy_followup = true
 # false = drop what would go to the digest (also disable vuln-watch-digest.timer).
 digest = true
 

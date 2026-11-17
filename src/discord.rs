@@ -336,17 +336,32 @@ fn cvss_label(item: &Item) -> String {
     }
 }
 
+/// Reason prefix of the one-off follow-up sent when a fix appears for a CVE already sent
+/// urgent without one (`rules.remedy_followup`).
+pub const REMEDY_FOLLOWUP: &str = "修正版が公開（既報）";
+
+/// Icon and label at the start of an urgent message.
+fn urgent_head(item: &Item, decision: &Decision) -> (&'static str, &'static str) {
+    if decision.reason.starts_with(REMEDY_FOLLOWUP) {
+        ("🩹", "【修正版が公開・既報】")
+    } else if item.kev {
+        ("🔥", "")
+    } else {
+        ("🚨", "")
+    }
+}
+
 /// Text from sources (CVE / GHSA / feeds) is escaped before it goes into Markdown-rendered
 /// parts of the message (content, embed description, field values), so it cannot form masked
 /// links. The embed title is not rendered as Markdown and stays as is.
 pub fn urgent_message(item: &Item, decision: &Decision) -> Message {
-    let icon = if item.kev { "🔥" } else { "🚨" };
+    let (icon, label) = urgent_head(item, decision);
     let product = product_hint(item)
         .map(|p| format!("[{}] ", escape_md(&p)))
         .unwrap_or_default();
     let content = truncate(
         &format!(
-            "{icon} {} — {product}{}",
+            "{icon} {label}{} — {product}{}",
             escape_md(item.display_id()),
             escape_md(&item.title)
         ),
@@ -402,17 +417,23 @@ pub fn urgent_message(item: &Item, decision: &Decision) -> Message {
 
 /// Plain-text variant of `urgent_message` for when Discord rejects the embed.
 pub fn urgent_fallback_message(item: &Item, decision: &Decision) -> Message {
-    let icon = if item.kev { "🔥" } else { "🚨" };
+    let (icon, label) = urgent_head(item, decision);
     let product = product_hint(item)
         .map(|p| format!("[{}] ", escape_md(&p)))
         .unwrap_or_default();
-    let text = format!(
-        "{icon} {} — {}{}\n{}",
+    let mut text = format!(
+        "{icon} {label}{} — {}{}\n{}",
         escape_md(&truncate(item.display_id(), 200)),
         product,
         escape_md(&truncate(&item.title, 300)),
         escape_md(&truncate(&decision.reason, 300)),
     );
+    // The fixed version is what a follow-up is for; the embed shows it as a field.
+    if decision.reason.starts_with(REMEDY_FOLLOWUP) {
+        if let Some((k, v)) = item.extra.iter().find(|(k, _)| k == "修正バージョン") {
+            text.push_str(&format!("\n{k}: {}", escape_md(&truncate(v, 500))));
+        }
+    }
     // A truncated URL would point somewhere else: the link is never cut. It is left out when
     // it is very long; otherwise the text before it is shortened to make room.
     match safe_url(&item.url).filter(|u| u.chars().count() <= 1000) {
@@ -537,7 +558,31 @@ fn digest_line(e: &DigestEntry, show_reason: bool) -> String {
             ));
         }
     }
+    // A "fix available" follow-up over the cap (or moved to the digest) is sent only as
+    // this line, so it must carry the fixed version itself.
+    if e.reason.starts_with(REMEDY_FOLLOWUP) {
+        let mut parts = Vec::new();
+        // Score-only lines hide the reason, which is what labels a follow-up.
+        if !show_reason {
+            parts.push(REMEDY_FOLLOWUP.to_string());
+        }
+        if let Some((k, v)) = item.extra.iter().find(|(k, _)| k == "修正バージョン") {
+            let v = v.replace('\n', " / ");
+            parts.push(format!("{k}: {}", escape_md(&truncate(&v, 150))));
+        }
+        if !parts.is_empty() {
+            line.push_str(&format!("\n　{}", parts.join(" · ")));
+        }
+    }
     line
+}
+
+/// The rules' reason without the follow-up prefix, for classifying an entry.
+fn base_reason(reason: &str) -> &str {
+    reason
+        .strip_prefix(REMEDY_FOLLOWUP)
+        .and_then(|r| r.strip_prefix(": "))
+        .unwrap_or(reason)
 }
 
 /// Longest embed description a digest or list message uses (Discord allows 4096).
@@ -600,7 +645,7 @@ pub fn digest_messages(entries: &[DigestEntry], resumed: bool) -> Vec<(Message, 
     // Items tied to you first, then the ones picked up only by their score.
     let (score_only, relevant): (Vec<&DigestEntry>, Vec<&DigestEntry>) = entries
         .iter()
-        .partition(|e| crate::rules::is_score_only(&e.reason));
+        .partition(|e| crate::rules::is_score_only(base_reason(&e.reason)));
     let mut sections: Vec<(&str, bool, Vec<&DigestEntry>)> = Vec::new();
     if !relevant.is_empty() {
         sections.push((RELEVANT, true, relevant));
@@ -700,6 +745,57 @@ mod tests {
         };
         let line = digest_line(&e, true);
         assert!(line.ends_with("\n　対策: ・Update Electron ・Update ca-certificates"));
+    }
+
+    #[test]
+    fn digest_line_shows_fixed_version_of_a_remedy_follow_up() {
+        let mut it = item(1);
+        it.extra = vec![(
+            "修正バージョン".into(),
+            "foo < 1.2.4 → 1.2.4\nbar < 2.0 → 2.0".into(),
+        )];
+        let mut e = DigestEntry {
+            key: "CVE-2026-00001#remedy".into(),
+            item: it,
+            reason: format!("{REMEDY_FOLLOWUP}: watch: foo（即時通知の上限超過）"),
+        };
+        let line = digest_line(&e, true);
+        assert!(
+            line.ends_with("\n　修正バージョン: foo < 1.2.4 → 1.2.4 / bar < 2.0 → 2.0"),
+            "{line}"
+        );
+        // Without the reason (score-only section) the line still says it is a follow-up.
+        let line = digest_line(&e, false);
+        assert!(
+            line.ends_with(&format!(
+                "\n　{REMEDY_FOLLOWUP} · 修正バージョン: foo < 1.2.4 → 1.2.4 / bar < 2.0 → 2.0"
+            )),
+            "{line}"
+        );
+        e.reason = "watch: foo".into();
+        assert!(!digest_line(&e, true).contains("修正バージョン"));
+    }
+
+    #[test]
+    fn score_only_follow_up_stays_in_the_score_only_section() {
+        let entries = vec![
+            DigestEntry {
+                key: "1".into(),
+                item: item(1),
+                reason: "watch: foo".into(),
+            },
+            DigestEntry {
+                key: "2#remedy".into(),
+                item: item(2),
+                reason: format!("{REMEDY_FOLLOWUP}: CVSS 9.8 ≥ 9.0（即時通知の上限超過）"),
+            },
+        ];
+        let msgs = digest_messages(&entries, false);
+        let d = msgs[0].0.embeds[0]["description"].as_str().unwrap();
+        let other = d.find("その他の高 CVSS").expect(d);
+        assert!(d.find("CVE-2026-00002").unwrap() > other, "{d}");
+        assert!(d.find("CVE-2026-00001").unwrap() < other, "{d}");
+        assert_eq!(base_reason("watch: foo"), "watch: foo");
     }
 
     #[test]
@@ -915,6 +1011,33 @@ mod tests {
             .unwrap()
             .to_string();
         assert!(d.starts_with("• "), "{d}");
+    }
+
+    #[test]
+    fn remedy_follow_up_is_labelled_and_shows_the_fix() {
+        let mut it = item(1);
+        it.remedy = true;
+        it.extra = vec![("修正バージョン".into(), "foo < 1.2.4 → 1.2.4".into())];
+        let d = Decision::new(Level::Urgent, format!("{REMEDY_FOLLOWUP}: watch: foo"));
+        let m = urgent_message(&it, &d);
+        assert!(
+            m.content
+                .starts_with("🩹 【修正版が公開・既報】CVE-2026-00001"),
+            "{}",
+            m.content
+        );
+        let text = urgent_fallback_message(&it, &d).content;
+        assert!(text.contains("【修正版が公開・既報】"), "{text}");
+        assert!(
+            text.contains("修正バージョン: foo < 1.2.4 → 1.2.4"),
+            "{text}"
+        );
+
+        // An ordinary urgent message is unchanged.
+        let m = urgent_message(&it, &Decision::new(Level::Urgent, "watch: foo"));
+        assert!(m.content.starts_with("🚨 CVE-2026-00001"), "{}", m.content);
+        let text = urgent_fallback_message(&it, &Decision::new(Level::Urgent, "x")).content;
+        assert!(!text.contains("修正バージョン"), "{text}");
     }
 
     #[test]

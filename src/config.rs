@@ -71,6 +71,10 @@ pub struct Rules {
     /// Sources with `mode = "urgent"` are not affected.
     #[serde(default)]
     pub require_remedy: bool,
+    /// true = when a CVE already sent urgent without a fix later arrives urgent with one
+    /// (e.g. a GHSA with a patched version), send one "fix available" follow-up.
+    #[serde(default = "default_true")]
+    pub remedy_followup: bool,
 }
 
 impl Default for Rules {
@@ -83,6 +87,7 @@ impl Default for Rules {
             exclude_keywords: Vec::new(),
             digest: true,
             require_remedy: false,
+            remedy_followup: true,
         }
     }
 }

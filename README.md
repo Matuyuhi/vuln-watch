@@ -71,6 +71,7 @@ oss-security often carries a disclosure before a CVE record exists.
 - Messages name the affected product when the title does not.
 - Each notification shows which field and term matched.
 - A CVE reported by several sources is notified once. If it later enters KEV, it is notified again.
+- If a CVE was sent urgent without a fix (e.g. from a CVE record or oss-security) and a source later brings the fix in an item that is also urgent (e.g. a GHSA with a patched version, or the same GHSA updated with one), one follow-up "🩹 【修正版が公開・既報】" is sent with the fixed version. It is sent once per CVE, only within 30 days of the first message (sent by this version or later), and not for KEV items (they are notified again anyway). `[rules] remedy_followup = false` turns it off. With `require_remedy = true` the first message already has the fix, so nothing changes.
 - Rejected CVEs and withdrawn GHSAs are skipped.
 - On the first run each source records existing items without notifying.
 - A source failing repeatedly triggers a warning; recovery is reported too.
