@@ -5,6 +5,12 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 
 ## [Unreleased]
 
+### Fixed
+
+- An advisory file that failed to parse (e.g. `actions = "..."` as a string, an unknown key after a format change) was skipped forever with only a log line: no message, and no source failure alert. It is now sent once as an urgent message "アドバイザリを読み込めませんでした: <file name>" with a link to the file and the error as plain text (digest for `mode = "digest"` sources). Watches, `require_watch` and `require_remedy` do not apply to it. A fixed file (new blob SHA) is read as usual; on the first run of the source it is only marked seen.
+
+## [1.2.1] - 2026-11-17
+
 ### Added
 
 - `require_watch = true` on a `kind = "advisory"` source notifies only Claude advisories that match a `[[watch]]` entry, or that list a `deb` package installed here and older than its fixed version. Others are ignored ("ウォッチ不一致"), also with `mode = "urgent"`. Default `false` (every advisory, as before). Other kinds reject the setting.
@@ -14,6 +20,11 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 ### Changed
 
 - Urgent items over `max_urgent_per_run` are no longer moved to the digest (which waits for the 08:00 timer, up to ~24 hours). They are sent in the same run as one compact list message, "⚠️ 即時通知の上限（N件/回）を超えた残りM件", with the digest line format (id and link, product, title, score, reason), split into several messages under Discord limits when needed. Listed items count as notified urgently. If a list message fails transiently, its items stay in the outbox for the next run; if Discord rejects it, its items go to the digest as before (with `digest = false`, they stay in the outbox and are sent one by one by later runs), with one notice. The old "残りN件はダイジェストに回しました" notice is gone. `max_urgent_per_run` still caps the individual urgent messages per run.
+
+### Fixed
+
+- A digest line with a very long feed GUID, title or reason (or many Markdown characters) was cut at 600 characters, which could drop its link, score and reason. Each field is now bounded on its own instead (id 80, title 90, severity 20, reason 120, actions 150 characters; a link longer than 300 characters is left out), and the line is no longer cut as a whole.
+- `vuln-watch doctor` read a quoted value in `/etc/vuln-watch/env` (`KEY="value"` or `KEY='value'`) with its quotes, unlike systemd, so it could misjudge the credentials. It now removes the quotes as systemd does; a quoted empty value counts as unset.
 
 ### Security
 
@@ -26,12 +37,6 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 - cvelist: a delta entry whose `cveId` is not `CVE-YYYY-NNNN…` (ASCII digits) is now skipped with a warning. Before, a non-ASCII id without `githubLink` (e.g. `CVE-2026-é12`) panicked while building the record URL, which stopped the whole run (no outbox flush, no later sources, no "source failing" DM) on every run while the entry stayed in `deltaLog.json` (up to ~30 days). The cursor still moves past such a delta and its valid CVEs are processed. Building the record URL no longer panics on any input, and a `githubLink` that is not `http(s)://` is ignored in favour of the standard record URL.
 - `DISCORD_WEBHOOK_URL` is now validated when the delivery target is built (`run`, `digest`, `test-notify`) and by `doctor`: it must be `https://` on a Discord host (`discord.com`, `discordapp.com`, `ptb.discord.com`, `canary.discord.com`), without port or user info, with a path under `/api/webhooks/` (or `/api/v<N>/webhooks/`). A query such as `?thread_id=` is still allowed. An `http://` URL used to send the webhook token in clear text on every message. The error shows only the scheme and host, never the token.
 - Requests to Discord no longer follow redirects, and a `3xx` response is an error that keeps the message in the outbox for the next run. Before, a redirect (e.g. Discord's `301` for `http://`) turned the POST into a GET without body; Discord answers that with `200` for a webhook URL, so every message counted as sent while none arrived. Source fetches still follow redirects.
-
-### Fixed
-
-- An advisory file that failed to parse (e.g. `actions = "..."` as a string, an unknown key after a format change) was skipped forever with only a log line: no message, and no source failure alert. It is now sent once as an urgent message "アドバイザリを読み込めませんでした: <file name>" with a link to the file and the error as plain text (digest for `mode = "digest"` sources). Watches, `require_watch` and `require_remedy` do not apply to it. A fixed file (new blob SHA) is read as usual; on the first run of the source it is only marked seen.
-- A digest line with a very long feed GUID, title or reason (or many Markdown characters) was cut at 600 characters, which could drop its link, score and reason. Each field is now bounded on its own instead (id 80, title 90, severity 20, reason 120, actions 150 characters; a link longer than 300 characters is left out), and the line is no longer cut as a whole.
-- `vuln-watch doctor` read a quoted value in `/etc/vuln-watch/env` (`KEY="value"` or `KEY='value'`) with its quotes, unlike systemd, so it could misjudge the credentials. It now removes the quotes as systemd does; a quoted empty value counts as unset.
 
 ## [1.2.0] - 2026-11-03
 
@@ -160,7 +165,8 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 - systemd units (`vuln-watch@.service`, run and digest timers) and `deploy/install.sh`.
 - Release archives for x86_64 and aarch64 Linux with SHA256 checksums and build provenance attestations.
 
-[Unreleased]: https://github.com/Matuyuhi/vuln-watch/compare/v1.2.0...HEAD
+[Unreleased]: https://github.com/Matuyuhi/vuln-watch/compare/v1.2.1...HEAD
+[1.2.1]: https://github.com/Matuyuhi/vuln-watch/compare/v1.2.0...v1.2.1
 [1.2.0]: https://github.com/Matuyuhi/vuln-watch/compare/v1.1.4...v1.2.0
 [1.1.4]: https://github.com/Matuyuhi/vuln-watch/compare/v1.1.3...v1.1.4
 [1.1.3]: https://github.com/Matuyuhi/vuln-watch/compare/v1.1.2...v1.1.3
