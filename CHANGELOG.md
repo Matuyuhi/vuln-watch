@@ -21,6 +21,11 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 
 - A digest line with a very long feed GUID, title or reason (or many Markdown characters) was cut at 600 characters, which could drop its link, score and reason. Each field is now bounded on its own instead (id 80, title 90, severity 20, reason 120, actions 150 characters; a link longer than 300 characters is left out), and the line is no longer cut as a whole.
 
+### Security
+
+- Urgent DMs now escape text that comes from sources (CVE / GHSA titles and descriptions, feed titles, product names, field values such as GHSA fixed versions) before it goes into the message content, the embed description and the embed fields, as the digest and the plain-text fallback already did. A crafted title, description or product name could otherwise show a masked link (`[text](https://…)`) whose visible text is not its target. The embed title is not rendered as Markdown and is unchanged. The `出典` links of Claude advisories still work: they are rebuilt from an escaped title and a validated URL.
+- Item URLs are validated before they are used as the embed link, in the plain-text fallback and in the digest: only `http`/`https` URLs without credentials are accepted, in normalized form (`<`, `>`, quotes and whitespace percent-encoded), so a feed `<link>` cannot close the digest link early and inject Markdown. Items without a valid URL are shown without a link.
+
 ## [1.2.0] - 2026-11-03
 
 ### Added
