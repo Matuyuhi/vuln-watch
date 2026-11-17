@@ -176,7 +176,9 @@ impl<'a> Notifier<'a> {
     /// POST JSON with Discord rate-limit handling. Returns the parsed response body.
     fn post(&self, url: &str, auth: Option<&str>, body: &Value) -> Result<Value> {
         for _ in 0..5 {
-            let mut req = self.http.client().post(url).json(body);
+            // Never follow redirects: reqwest would turn the POST into a GET without body,
+            // which Discord answers with 200 for a webhook URL. A 3xx is an error below.
+            let mut req = self.http.no_redirect_client().post(url).json(body);
             if let Some(a) = auth {
                 req = req.header("Authorization", a);
             }
@@ -197,6 +199,13 @@ impl<'a> Notifier<'a> {
                 sleep(Duration::from_secs_f64(wait));
                 continue;
             }
+            if (300..400).contains(&status) {
+                // The body and Location header of a redirect can repeat the webhook token.
+                bail!(DiscordError {
+                    status,
+                    body: "redirect not followed (check DISCORD_WEBHOOK_URL)".into(),
+                });
+            }
             if !(200..300).contains(&status) {
                 bail!(DiscordError {
                     status,
@@ -207,6 +216,58 @@ impl<'a> Notifier<'a> {
         }
         bail!("Discord rate limit retries exhausted")
     }
+}
+
+/// Hosts that serve Discord webhooks.
+const WEBHOOK_HOSTS: &[&str] = &[
+    "discord.com",
+    "discordapp.com",
+    "ptb.discord.com",
+    "canary.discord.com",
+];
+
+/// Checks that a webhook URL is `https://<discord host>/api[/v<N>]/webhooks/…` without port or
+/// user info. The URL embeds the webhook token, so errors show only its scheme and host.
+pub fn validate_webhook_url(raw: &str) -> Result<()> {
+    const EXPECTED: &str = "DISCORD_WEBHOOK_URL must be https://discord.com/api/webhooks/…";
+    let Ok(url) = reqwest::Url::parse(raw) else {
+        bail!("{EXPECTED} (got a value that is not a URL)");
+    };
+    let host = url.host_str().unwrap_or("");
+    let got = format!("{}://{host}", url.scheme());
+    if url.scheme() != "https" {
+        bail!("{EXPECTED} (got {got}; plain http sends the webhook token unencrypted)");
+    }
+    if !url.username().is_empty() || url.password().is_some() {
+        bail!("{EXPECTED} (got {got} with user info)");
+    }
+    if let Some(port) = url.port() {
+        bail!("{EXPECTED} (got {got}:{port})");
+    }
+    if !WEBHOOK_HOSTS.contains(&host.to_ascii_lowercase().as_str()) {
+        bail!("{EXPECTED} (got {got}, not a Discord host)");
+    }
+    if !is_webhook_path(url.path()) {
+        bail!("{EXPECTED} (got {got} with a path that is not /api/webhooks/…)");
+    }
+    Ok(())
+}
+
+/// `/api/webhooks/<rest>` or `/api/v<N>/webhooks/<rest>` with a non-empty rest.
+fn is_webhook_path(path: &str) -> bool {
+    let Some(rest) = path.strip_prefix("/api/") else {
+        return false;
+    };
+    let rest = match rest.split_once('/') {
+        Some((v, r))
+            if v.len() > 1 && v.starts_with('v') && v[1..].bytes().all(|b| b.is_ascii_digit()) =>
+        {
+            r
+        }
+        _ => rest,
+    };
+    rest.strip_prefix("webhooks/")
+        .is_some_and(|r| !r.trim_matches('/').is_empty())
 }
 
 #[derive(Debug)]
@@ -1026,6 +1087,79 @@ mod tests {
         let msgs = digest_messages(&[e], false);
         let d = msgs[0].0.embeds[0]["description"].as_str().unwrap();
         assert!(!d.contains("ftp:"), "{d}");
+    }
+
+    #[test]
+    fn webhook_url_validation() {
+        for ok in [
+            "https://discord.com/api/webhooks/1/abc",
+            "https://discordapp.com/api/webhooks/1/abc",
+            "https://ptb.discord.com/api/webhooks/1/abc",
+            "https://canary.discord.com/api/webhooks/1/abc",
+            "https://discord.com/api/v10/webhooks/1/abc",
+            "https://discord.com/api/webhooks/1/abc?thread_id=123",
+            "https://Discord.com:443/api/webhooks/1/abc",
+        ] {
+            assert!(validate_webhook_url(ok).is_ok(), "{ok}");
+        }
+        for bad in [
+            "http://discord.com/api/webhooks/1/abc",
+            "https://example.com/api/webhooks/1/abc",
+            "https://discord.com.example.com/api/webhooks/1/abc",
+            "https://discord.com:8443/api/webhooks/1/abc",
+            "https://user:abc@discord.com/api/webhooks/1/abc",
+            "https://abc@discord.com/api/webhooks/1/abc",
+            "https://discord.com/api/channels/1/abc",
+            "https://discord.com/webhooks/1/abc",
+            "https://discord.com/api/vx/webhooks/1/abc",
+            "https://discord.com/api/webhooks/",
+            "discord.com/api/webhooks/1/abc",
+            "abc",
+        ] {
+            let err = validate_webhook_url(bad).expect_err(bad).to_string();
+            assert!(
+                err.starts_with("DISCORD_WEBHOOK_URL must be https://discord.com/api/webhooks/"),
+                "{err}"
+            );
+            assert!(!err.contains("abc"), "token leaked for {bad}: {err}");
+        }
+        let err = validate_webhook_url("http://discord.com/api/webhooks/1/abc").unwrap_err();
+        assert!(
+            err.to_string().contains("(got http://discord.com;"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn redirect_on_post_is_an_error_and_not_followed() {
+        let srv = crate::http::test_server::start(|path| match path {
+            "/ok" => (200, vec![], "{}".into()),
+            _ => (
+                301,
+                vec![("Location", "/ok".into())],
+                "Moved to /api/webhooks/1/abc".into(),
+            ),
+        });
+        let http = Http::new(5).unwrap();
+        let db = Db::open_in_memory().unwrap();
+        let notifier = Notifier::new(
+            &http,
+            Target::Webhook {
+                url: format!("{}/api/webhooks/1/abc", srv.base),
+                username: None,
+            },
+        );
+        let err = notifier.send(&db, &Message::text("hi")).unwrap_err();
+        assert!(!is_rejected(&err), "{err:#}");
+        assert_eq!(
+            err.downcast_ref::<DiscordError>().map(|d| d.status),
+            Some(301)
+        );
+        assert!(!format!("{err:#}").contains("abc"), "{err:#}");
+        assert_eq!(
+            srv.requests(),
+            ["POST /api/webhooks/1/abc?wait=true".to_string()]
+        );
     }
 
     #[test]
