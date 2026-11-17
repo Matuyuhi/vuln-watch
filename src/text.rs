@@ -47,20 +47,49 @@ pub fn contains_word(haystack: &str, needle: &str) -> bool {
     if needle.is_empty() {
         return false;
     }
-    for (idx, _) in haystack.match_indices(needle) {
-        let before_ok = haystack[..idx]
-            .chars()
-            .next_back()
-            .is_none_or(|c| !c.is_alphanumeric());
-        let after_ok = haystack[idx + needle.len()..]
-            .chars()
-            .next()
-            .is_none_or(|c| !c.is_alphanumeric());
-        if before_ok && after_ok {
-            return true;
+    haystack
+        .match_indices(needle)
+        .any(|(idx, _)| is_word_at(haystack, idx, needle.len()))
+}
+
+/// Blank out every whole-word occurrence of each of `terms` in `haystack`, so that
+/// `contains_word` no longer finds words that are only part of them. Matched bytes
+/// become spaces, which are word boundaries. Both arguments are expected to be
+/// lowercase already; empty terms are skipped.
+/// Every term is matched against the original text, and overlapping occurrences
+/// are found too, so overlapping terms (`ingress`, `ingress-nginx`) give the same
+/// result in any order.
+pub fn mask_words(haystack: &str, terms: &[String]) -> String {
+    let mut ranges = Vec::new();
+    for term in terms.iter().filter(|t| !t.is_empty()) {
+        let mut from = 0;
+        while let Some(pos) = haystack[from..].find(term.as_str()) {
+            let idx = from + pos;
+            if is_word_at(haystack, idx, term.len()) {
+                ranges.push((idx, idx + term.len()));
+            }
+            // Next char boundary, so overlapping occurrences are not skipped.
+            from = idx + haystack[idx..].chars().next().map_or(1, char::len_utf8);
         }
     }
-    false
+    let mut out = haystack.to_string();
+    for (start, end) in ranges {
+        out.replace_range(start..end, &" ".repeat(end - start));
+    }
+    out
+}
+
+/// True when `haystack[idx..idx + len]` is not preceded or followed by an alphanumeric char.
+fn is_word_at(haystack: &str, idx: usize, len: usize) -> bool {
+    let before_ok = haystack[..idx]
+        .chars()
+        .next_back()
+        .is_none_or(|c| !c.is_alphanumeric());
+    let after_ok = haystack[idx + len..]
+        .chars()
+        .next()
+        .is_none_or(|c| !c.is_alphanumeric());
+    before_ok && after_ok
 }
 
 /// Escape characters that would be interpreted as Discord markdown.
@@ -100,6 +129,20 @@ pub fn code_block(s: &str, max: usize) -> String {
     format!("{OPEN}{}{CLOSE}", truncate(&inner, room))
 }
 
+/// Validate a source-provided URL for use in a Discord link: only `http`/`https`, no
+/// credentials. Returns the normalized form, in which `<`, `>`, quotes and whitespace are
+/// percent-encoded, so it cannot close a `[text](<url>)` link or an embed field early.
+pub fn safe_url(s: &str) -> Option<String> {
+    let u = reqwest::Url::parse(s.trim()).ok()?;
+    if !matches!(u.scheme(), "http" | "https") || u.host_str().is_none() {
+        return None;
+    }
+    if !u.username().is_empty() || u.password().is_some() {
+        return None;
+    }
+    Some(u.to_string())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -132,6 +175,34 @@ mod tests {
     }
 
     #[test]
+    fn masks_whole_words_only() {
+        let terms = vec!["ingress-nginx".to_string(), "nginx ui".to_string()];
+        let masked = mask_words("kubernetes ingress-nginx", &terms);
+        assert!(!contains_word(&masked, "nginx"), "{masked}");
+        assert!(contains_word(&masked, "kubernetes"));
+        // A real `nginx` next to an excluded term survives.
+        let masked = mask_words("nginx and ingress-nginx", &terms);
+        assert!(contains_word(&masked, "nginx"), "{masked}");
+        let masked = mask_words("nginx ui: xss in nginx uis", &terms);
+        assert!(contains_word(&masked, "nginx"), "{masked}");
+        assert!(!contains_word(&masked, "ui"), "{masked}");
+        // Not a whole word: left alone.
+        assert_eq!(mask_words("myingress-nginx", &terms), "myingress-nginx");
+        assert_eq!(mask_words("中文 nginx ui", &terms), "中文         ");
+        assert_eq!(mask_words("abc", &[String::new()]), "abc");
+        // Overlapping occurrences of the same term.
+        let terms = vec!["nginx-nginx".to_string()];
+        let masked = mask_words("nginx-nginx-nginx", &terms);
+        assert!(!contains_word(&masked, "nginx"), "{masked}");
+        // Overlapping terms: the result does not depend on their order.
+        for terms in [["ingress", "ingress-nginx"], ["ingress-nginx", "ingress"]] {
+            let terms: Vec<String> = terms.iter().map(|t| t.to_string()).collect();
+            let masked = mask_words("kubernetes ingress-nginx", &terms);
+            assert!(!contains_word(&masked, "nginx"), "{terms:?}: {masked}");
+        }
+    }
+
+    #[test]
     fn escapes_markdown() {
         assert_eq!(escape_md("a*b_[c]"), "a\\*b\\_(c)");
     }
@@ -151,5 +222,24 @@ mod tests {
         assert!(b.ends_with("…\n```"), "{b}");
         assert_eq!(b.matches("```").count(), 2);
         assert_eq!(code_block("abc", 100), "```\nabc\n```");
+    }
+
+    #[test]
+    fn safe_url_accepts_only_http() {
+        assert_eq!(
+            safe_url("https://www.cve.org/CVERecord?id=CVE-2026-1").as_deref(),
+            Some("https://www.cve.org/CVERecord?id=CVE-2026-1")
+        );
+        assert_eq!(
+            safe_url(" http://example.com/a b>c\"x ").as_deref(),
+            Some("http://example.com/a%20b%3Ec%22x")
+        );
+        let u = safe_url("https://example.com/x?q=>)#f>").unwrap();
+        assert!(!u.contains('>') && !u.contains(' '), "{u}");
+        assert_eq!(safe_url("javascript:alert(1)"), None);
+        assert_eq!(safe_url("ftp://example.com/x"), None);
+        assert_eq!(safe_url("not a url"), None);
+        assert_eq!(safe_url(""), None);
+        assert_eq!(safe_url("https://discord.com@evil.example/"), None);
     }
 }
