@@ -211,6 +211,7 @@ vuln-watch [--config PATH] [--state-dir DIR] <COMMAND>
   test-notify                              テスト通知を送信
   check-config                             設定と認証情報を検証
   doctor [--offline]                       インストール状態を診断（root で実行）
+  explain ID [--offline]                   CVE / GHSA の ID について状態とルールの判定を表示
   upgrade [--check] [--version V] [--pre]  最新リリースに更新（root で実行）
   watch list                               ウォッチリストを表示
   watch add NAME [-k WORD] [-p PKG]...     ウォッチを追加（root で実行）
@@ -242,6 +243,7 @@ dpkg のない環境では `installed.enabled = false` にしてください。
 ## 運用
 
 - **診断**: `sudo vuln-watch doctor` でインストール状態を項目ごとに ok / warn / FAIL で表示します。PATH 上で先に見つかる古い `vuln-watch`、新しいリリースの有無、パースできなくなった設定、`/etc/vuln-watch/env` の認証情報の不足や例のままの値、systemd が無視する行や使われない変数、パーミッション、`https://` でない heartbeat URL や誰でも読める `config.toml` に書かれた heartbeat URL、unit ファイルと `daemon-reload` の要否、タイマーが有効か、直近の実行が成功したか、連続して失敗しているソース、各ソースに最後に新しい項目が届いた時刻（`stale_after_hours` を超えていれば警告）、未送信の緊急通知、中断された upgrade の残骸を確認します。Discord には何も送りません。FAIL があれば終了コード 1 で終わり、`--offline` でリリース確認を省きます。インストール後や upgrade 後に実行してください。
+- **通知が来た・来なかった理由**: `sudo vuln-watch explain CVE-2026-12345`（または `GHSA-xxxx-xxxx-xxxx`。大文字小文字は問いません）で、次の 3 つを表示します。状態: どのソースがその ID を既に見たか（`require_remedy` で保留中の場合も含む）、`alerted` に記録されたレベルと時刻（`#kev` も。`Digest` はダイジェストの送信時ではなく、キューに入れた時に記録される）、outbox・ダイジェストのキュー・`pending`（cvelist のレコード取得待ち。失敗回数つき）に残っているか。現在のデータ: cvelistV5 の CVE レコードと、その CVE の GitHub advisory（有効な ghsa ソースが読む `type` ごと。GHSA の ID ならその advisory）、ルールが使う項目（タイトル、製品、パッケージ、CVSS、KEV、対処の有無）。今の設定での判定: その種類の有効なソースごとに、`[installed]` を反映したレベルと理由（DM やダイジェストに出る文言のまま）と、一致したウォッチ（なければ "no watch match"）。`ignore_title_prefixes` でソースが捨てる場合はその旨。GHSA の advisory は、`url` の一覧にその advisory が含まれうる ghsa ソースについてだけ判定します（`type` と `ecosystem` の絞り込みを確認し、それ以外の絞り込みは未確認と表示します）。状態は、現在のデータで見つかった関連 ID（CVE の GHSA ID、GHSA の CVE）についても調べます。読み取り専用で、`doctor` と同じく state.db を読み取り専用で開き、何も送信・保存しません。`sudo` なしでは状態を読めないため、残りの 2 つだけを表示します。`--offline` では状態だけを表示します。まだ存在しないレコードや advisory は "not found at the source" と表示します。`GITHUB_TOKEN` はシェルの環境変数にあるときだけ、`https://api.github.com` にだけ送ります。ない場合、GitHub API は 1 時間に 60 リクエストまでです。
 - **更新**: `sudo vuln-watch upgrade` で最新リリースを `install.sh` と同じ手順で入れ直します（`--check` は確認のみ、`--version 1.2.0` でバージョン指定、`--pre` でプレリリースも対象）。設定と状態はそのまま残ります。`config.example.toml` の変更は [CHANGELOG.md](CHANGELOG.md) で確認してください。ソースから入れた場合は `git pull && sudo ./deploy/install.sh`。
 - **サンドボックス**: ユニットは `DynamicUser`、`ProtectSystem=strict`、syscall フィルタを使います。プロセスができるのは外向き通信と状態ディレクトリへの書き込みだけです。
 - **アンインストール**:

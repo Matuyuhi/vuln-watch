@@ -48,6 +48,9 @@ struct Advisory {
     cvss_severities: Option<CvssSeverities>,
     #[serde(default)]
     epss: Option<Epss>,
+    /// "reviewed", "unreviewed" or "malware".
+    #[serde(default, rename = "type")]
+    kind: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -356,6 +359,100 @@ impl Walk<'_> {
     }
 }
 
+/// The global advisories endpoint, for single lookups (`vuln-watch explain`).
+pub const API_URL: &str = "https://api.github.com/advisories";
+
+/// One advisory found by a lookup.
+pub struct Lookup {
+    pub ghsa_id: String,
+    pub cve_id: Option<String>,
+    /// "reviewed", "unreviewed" or "malware".
+    pub kind: Option<String>,
+    /// Package ecosystems ("npm", "pip", ...).
+    pub ecosystems: Vec<String>,
+    /// None when the advisory is withdrawn.
+    pub item: Option<Item>,
+}
+
+/// Parse the body of `GET /advisories/{ghsa_id}` (one object) or of
+/// `GET /advisories?cve_id=...` (an array).
+pub fn parse_lookup(source: &str, body: &str) -> Result<Vec<Lookup>> {
+    let advisories: Vec<Advisory> = match body.trim_start().as_bytes().first() {
+        Some(b'[') => serde_json::from_str(body).context("parsing GitHub advisories")?,
+        _ => vec![serde_json::from_str(body).context("parsing GitHub advisory")?],
+    };
+    Ok(advisories
+        .into_iter()
+        .map(|a| Lookup {
+            ghsa_id: a.ghsa_id.clone(),
+            cve_id: a.cve_id.clone().filter(|c| !c.is_empty()),
+            kind: a.kind.clone(),
+            ecosystems: a
+                .vulnerabilities
+                .iter()
+                .flatten()
+                .filter_map(|v| v.package.as_ref())
+                .map(|p| p.ecosystem.clone())
+                .filter(|e| !e.is_empty())
+                .collect(),
+            item: a.withdrawn_at.is_none().then(|| to_item(source, a)),
+        })
+        .collect())
+}
+
+/// Whether the advisory list at `list_url` (a ghsa source's `url`) can contain an advisory.
+#[derive(Debug, PartialEq, Eq)]
+pub enum Eligibility {
+    Yes,
+    /// Excluded by the list's filter, e.g. "type=malware".
+    No(String),
+    /// Its `type` and `ecosystem` match, but these other filters were not checked.
+    Unchecked(Vec<String>),
+}
+
+/// The advisory type a list URL returns: its `type` filter, or "reviewed" (the API default).
+pub fn list_type(list_url: &str) -> String {
+    reqwest::Url::parse(list_url)
+        .ok()
+        .and_then(|u| {
+            u.query_pairs()
+                .find(|(k, _)| k == "type")
+                .map(|(_, v)| v.to_lowercase())
+        })
+        .unwrap_or_else(|| "reviewed".to_string())
+}
+
+/// Check the `type` (default "reviewed", as the API does) and `ecosystem` filters of a list
+/// URL against an advisory's type and package ecosystems.
+pub fn list_eligibility(list_url: &str, kind: Option<&str>, ecosystems: &[String]) -> Eligibility {
+    let Ok(url) = reqwest::Url::parse(list_url) else {
+        return Eligibility::Unchecked(vec!["url".into()]);
+    };
+    let kind = kind.unwrap_or("reviewed");
+    let mut want_type = "reviewed".to_string();
+    let mut unchecked = Vec::new();
+    for (k, v) in url.query_pairs() {
+        match k.as_ref() {
+            "type" => want_type = v.into_owned(),
+            "ecosystem" => {
+                if !ecosystems.iter().any(|e| e.eq_ignore_ascii_case(&v)) {
+                    return Eligibility::No(format!("ecosystem={v}"));
+                }
+            }
+            "sort" | "direction" | "per_page" | "page" | "after" | "before" => {}
+            other => unchecked.push(other.to_string()),
+        }
+    }
+    if !want_type.eq_ignore_ascii_case(kind) {
+        return Eligibility::No(format!("type={want_type}"));
+    }
+    if unchecked.is_empty() {
+        Eligibility::Yes
+    } else {
+        Eligibility::Unchecked(unchecked)
+    }
+}
+
 fn max_score(scores: impl IntoIterator<Item = Option<f32>>) -> Option<f32> {
     scores
         .into_iter()
@@ -449,6 +546,44 @@ fn to_item(source: &str, a: Advisory) -> Item {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn list_eligibility_checks_type_and_ecosystem() {
+        let npm = vec!["npm".to_string()];
+        assert_eq!(
+            list_eligibility(DEFAULT_URL, Some("reviewed"), &npm),
+            Eligibility::Yes
+        );
+        assert_eq!(list_eligibility(DEFAULT_URL, None, &npm), Eligibility::Yes);
+        assert_eq!(list_type(DEFAULT_URL), "reviewed");
+        assert_eq!(
+            list_type("https://api.github.com/advisories?type=Malware"),
+            "malware"
+        );
+        assert_eq!(list_type("https://api.github.com/advisories"), "reviewed");
+        assert_eq!(
+            list_eligibility(DEFAULT_URL, Some("malware"), &npm),
+            Eligibility::No("type=reviewed".into())
+        );
+        let malware = "https://api.github.com/advisories?type=malware&per_page=100";
+        assert_eq!(
+            list_eligibility(malware, Some("reviewed"), &npm),
+            Eligibility::No("type=malware".into())
+        );
+        assert_eq!(
+            list_eligibility(malware, Some("Malware"), &npm),
+            Eligibility::Yes
+        );
+        let pip = "https://api.github.com/advisories?ecosystem=pip&severity=high";
+        assert_eq!(
+            list_eligibility(pip, None, &npm),
+            Eligibility::No("ecosystem=pip".into())
+        );
+        assert_eq!(
+            list_eligibility(pip, None, &["pip".to_string()]),
+            Eligibility::Unchecked(vec!["severity".into()])
+        );
+    }
 
     const SAMPLE: &str = r#"[
       {

@@ -58,20 +58,24 @@ pub fn fetch(src: &SourceConfig, ctx: &Ctx) -> Result<Fetched> {
         }
     }?;
     if !src.ignore_title_prefixes.is_empty() {
-        let prefixes: Vec<String> = src
-            .ignore_title_prefixes
-            .iter()
-            .map(|p| p.to_lowercase())
-            .collect();
-        fetched.items.retain(|item| {
-            let title = item.title.trim_start().to_lowercase();
-            !prefixes.iter().any(|p| title.starts_with(p.as_str()))
-        });
+        fetched
+            .items
+            .retain(|item| ignored_title_prefix(src, &item.title).is_none());
     }
     if let Some(limit) = ctx.limit {
         fetched.items.truncate(limit);
     }
     Ok(fetched)
+}
+
+/// The entry of the source's `ignore_title_prefixes` that drops an item with `title`
+/// (case-insensitive, leading whitespace ignored).
+pub fn ignored_title_prefix<'a>(src: &'a SourceConfig, title: &str) -> Option<&'a str> {
+    let title = title.trim_start().to_lowercase();
+    src.ignore_title_prefixes
+        .iter()
+        .find(|p| title.starts_with(&p.to_lowercase()))
+        .map(String::as_str)
 }
 
 /// `Authorization` header for `url` when it is `https://api.github.com/...`; `None` for any

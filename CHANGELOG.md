@@ -5,6 +5,10 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 
 ## [Unreleased]
 
+### Added
+
+- `vuln-watch explain <CVE-ID|GHSA-ID>` shows why a vulnerability was or was not notified: which sources have seen it, the level recorded in `alerted` (also `#kev`; for `Digest`, when it was queued rather than delivered), whether it waits in the outbox, the digest queue or `pending`; the item as cvelistV5 and the GitHub Advisory Database serve it now; and the level and reason the current rules, watch list and `[installed]` give it per enabled source, with the best watch match (or that the source drops it by `ignore_title_prefixes`, or that a ghsa source's `type` / `ecosystem` filter excludes it). Read-only: state.db is opened read-only like `doctor`, nothing is sent or stored, and it is not re-run under systemd. `--offline` shows only the state.
+
 ### Fixed
 
 - An advisory file that failed to parse (e.g. `actions = "..."` as a string, an unknown key after a format change) was skipped forever with only a log line: no message, and no source failure alert. It is now sent once as an urgent message "アドバイザリを読み込めませんでした: <file name>" with a link to the file and the error as plain text (digest for `mode = "digest"` sources). Watches, `require_watch` and `require_remedy` do not apply to it. A fixed file (new blob SHA) is read as usual; on the first run of the source it is only marked seen.

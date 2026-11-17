@@ -83,6 +83,37 @@ pub struct PendingRow {
     pub queued_at: String,
 }
 
+/// A `seen` row (`vuln-watch explain`).
+pub struct SeenRow {
+    pub source: String,
+    pub id: String,
+    pub first_seen: String,
+}
+
+/// A row of `alerted`, `outbox` or `digest_queue` (`vuln-watch explain`).
+pub struct KeyRow {
+    pub key: String,
+    /// `alerted`: the level; queues: the reason.
+    pub detail: String,
+    pub at: String,
+}
+
+/// Whether a de-duplication key (`model::Item::dedupe_key` / `alert_key`, or a cvelist
+/// placeholder key `<source>:<cve>`) belongs to `id`: `<id>`, `<source>:<id>`, each with
+/// an optional `#kev` / `#awaiting-remedy` suffix. Case-insensitive.
+pub fn key_is_for(key: &str, id: &str) -> bool {
+    let key = key.to_ascii_lowercase();
+    let id = id.to_ascii_lowercase();
+    let base = key
+        .strip_suffix("#kev")
+        .or_else(|| key.strip_suffix("#awaiting-remedy"))
+        .unwrap_or(&key);
+    base == id
+        || base
+            .strip_suffix(id.as_str())
+            .is_some_and(|rest| rest.ends_with(':'))
+}
+
 fn now() -> String {
     chrono::Utc::now().to_rfc3339()
 }
@@ -368,6 +399,80 @@ impl Db {
         Ok(())
     }
 
+    /// `seen` rows of `id` (and its `#awaiting-remedy` marker) in any source.
+    pub fn seen_rows(&self, id: &str) -> Result<Vec<SeenRow>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT source, id, first_seen FROM seen
+             WHERE id = ?1 COLLATE NOCASE OR id = ?1 || '#awaiting-remedy' COLLATE NOCASE
+             ORDER BY source, id",
+        )?;
+        let rows = stmt.query_map(params![id], |r| {
+            Ok(SeenRow {
+                source: r.get(0)?,
+                id: r.get(1)?,
+                first_seen: r.get(2)?,
+            })
+        })?;
+        Ok(rows.collect::<rusqlite::Result<_>>()?)
+    }
+
+    /// `alerted` rows whose key belongs to `id` (see `key_is_for`).
+    pub fn alerted_rows(&self, id: &str) -> Result<Vec<KeyRow>> {
+        self.key_rows("SELECT key, level, at FROM alerted", id, |r| {
+            Ok(format!("{:?}", Level::from_i64(r.get(1)?)))
+        })
+    }
+
+    /// Rows of a queue whose key belongs to `id` (see `key_is_for`), with their reason.
+    pub fn queue_rows(&self, q: Queue, id: &str) -> Result<Vec<KeyRow>> {
+        let sql = format!("SELECT key, reason, queued_at FROM {}", q.table());
+        self.key_rows(&sql, id, |r| r.get(1))
+    }
+
+    fn key_rows(
+        &self,
+        select: &str,
+        id: &str,
+        detail: impl Fn(&rusqlite::Row) -> rusqlite::Result<String>,
+    ) -> Result<Vec<KeyRow>> {
+        // `instr` narrows the scan; `key_is_for` decides.
+        let mut stmt = self.conn.prepare(&format!(
+            "{select} WHERE instr(lower(key), lower(?1)) > 0 ORDER BY key"
+        ))?;
+        let rows = stmt.query_map(params![id], |r| {
+            Ok(KeyRow {
+                key: r.get(0)?,
+                detail: detail(r)?,
+                at: r.get(2)?,
+            })
+        })?;
+        let rows = rows.collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(rows
+            .into_iter()
+            .filter(|r| key_is_for(&r.key, id))
+            .collect())
+    }
+
+    /// `pending` rows of `id` in any source, as (source, row).
+    pub fn pending_rows(&self, id: &str) -> Result<Vec<(String, PendingRow)>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT source, id, data, attempts, queued_at FROM pending
+             WHERE id = ?1 COLLATE NOCASE ORDER BY source",
+        )?;
+        let rows = stmt.query_map(params![id], |r| {
+            Ok((
+                r.get(0)?,
+                PendingRow {
+                    id: r.get(1)?,
+                    data: r.get(2)?,
+                    attempts: r.get(3)?,
+                    queued_at: r.get(4)?,
+                },
+            ))
+        })?;
+        Ok(rows.collect::<rusqlite::Result<_>>()?)
+    }
+
     /// Drop pending rows that have already been handled (marked seen).
     pub fn prune_pending_seen(&self, source: &str) -> Result<usize> {
         Ok(self.conn.execute(
@@ -480,6 +585,32 @@ mod tests {
         db.dequeue(Queue::Digest, "k1").unwrap();
         assert!(db.queue_entries(Queue::Digest).unwrap().is_empty());
         assert_eq!(db.queue_entries(Queue::Outbox).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn keys_for_an_id() {
+        for key in [
+            "CVE-2026-1",
+            "CVE-2026-1#kev",
+            "cvelist:CVE-2026-1",
+            "ghsa:ghsa-aaaa-bbbb-cccc",
+            "ghsa:GHSA-aaaa-bbbb-cccc#kev",
+        ] {
+            let id = if key.to_lowercase().contains("ghsa-") {
+                "GHSA-aaaa-bbbb-cccc"
+            } else {
+                "cve-2026-1"
+            };
+            assert!(key_is_for(key, id), "{key}");
+        }
+        for key in [
+            "CVE-2026-12",
+            "CVE-2026-1x",
+            "xCVE-2026-1",
+            "CVE-2026-1#other",
+        ] {
+            assert!(!key_is_for(key, "CVE-2026-1"), "{key}");
+        }
     }
 
     #[test]

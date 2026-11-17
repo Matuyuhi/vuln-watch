@@ -335,6 +335,11 @@ fn give_up(name: &str, cve: &str, ctx: &Ctx) -> Result<()> {
     ctx.db.remove_pending(name, cve)
 }
 
+/// URL of one CVE record, under the configured `url` of a cvelist source or the default.
+pub fn lookup_url(base_override: Option<&str>, cve: &str) -> String {
+    record_url(base_override.unwrap_or(BASE).trim_end_matches('/'), cve)
+}
+
 /// Fallback URL: cves/<year>/<bucket>xxx/CVE-<year>-<num>.json
 /// Never panics: an id whose year or number is not all ASCII digits gives `{base}/{cve}.json`.
 fn record_url(base: &str, cve: &str) -> String {
