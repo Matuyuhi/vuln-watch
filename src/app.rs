@@ -555,10 +555,10 @@ fn source_failed(
 /// The "source failing" text. The error often holds a remote response body, so it goes
 /// through `code_block`: a body with ``` must not close the block and render as Markdown.
 fn source_failed_message(name: &str, count: u32, err: &anyhow::Error) -> String {
-    let head = truncate(
-        &format!("⚠️ ソース `{name}` の取得が{count}回連続で失敗しています。\n"),
-        300,
-    );
+    // Source names have no length limit in the config; bound only the name so the fixed
+    // text and Markdown delimiters always survive.
+    let name = truncate(name, 100);
+    let head = format!("⚠️ ソース `{name}` の取得が{count}回連続で失敗しています。\n");
     let room = 1900 - head.chars().count();
     format!("{head}{}", code_block(&format!("{err:#}"), room))
 }
@@ -1296,6 +1296,14 @@ kind = "ghsa"
         assert!(m.chars().count() <= 2000, "{}", m.chars().count());
         assert!(m.ends_with("\n```"));
         assert_eq!(m.matches("```").count(), 2);
+
+        let m = source_failed_message(&"n".repeat(1000), 7, &long);
+        assert!(m.chars().count() <= 2000, "{}", m.chars().count());
+        assert!(
+            m.contains("…` の取得が7回連続で失敗しています。\n```\n"),
+            "{m}"
+        );
+        assert!(m.ends_with("\n```"));
     }
 
     fn hours_before(now: chrono::DateTime<chrono::Utc>, h: i64) -> String {
