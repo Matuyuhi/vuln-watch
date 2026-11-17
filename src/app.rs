@@ -421,15 +421,23 @@ fn handle_fetched(
     for item in std::mem::take(&mut fetched.items) {
         // An item held back for lack of a fix is only decided again once it has one.
         let awaiting_key = format!("{}#awaiting-remedy", item.id);
-        if db.is_seen(&name, &item.id)? || (!item.remedy && db.is_seen(&name, &awaiting_key)?) {
+        let seen =
+            db.is_seen(&name, &item.id)? || (!item.remedy && db.is_seen(&name, &awaiting_key)?);
+        // An advisory seen without a fix and since updated with one (same id) is decided
+        // again only for the "fix available" follow-up; it is not counted as new.
+        let followup_only = seen && remedy_followup_due(cfg, db, &item, &item.alert_key())?;
+        if seen && !followup_only {
             continue;
         }
-        new += 1;
         let policy = rules::SourcePolicy {
             mode: src.mode,
             require_watch: src.require_watch,
         };
         let decision = rules::evaluate_with(&item, policy, &cfg.rules, &cfg.watches, installed);
+        if followup_only && decision.level != Level::Urgent {
+            continue;
+        }
+        new += 1;
         if opts.dry_run {
             println!(
                 "[{name}] {:<7} {} — {} ({})",
@@ -1060,6 +1068,43 @@ kind = "ghsa"
         assert_eq!(db.queue_len(Queue::Outbox).unwrap(), 0);
         flush_outbox(&cfg, &db, &notifier, &mut s, &mut None).unwrap();
         assert_eq!(notifier.sent().len(), 2);
+    }
+
+    #[test]
+    fn same_advisory_updated_with_a_fix_is_sent_as_follow_up() {
+        let cfg = followup_cfg();
+        let http = Http::new(5).unwrap();
+        let notifier = recorder(&http, vec![]);
+        let mut db = Db::open_in_memory().unwrap();
+        let mut s = RunSummary::default();
+        let mut first = no_fix_item("ghsa", "CVE-2026-0001");
+        first.id = "GHSA-aaaa".into();
+        handle(&cfg, &mut db, "ghsa", fetched(vec![first], "c1"), &mut s);
+        flush_outbox(&cfg, &db, &notifier, &mut s, &mut None).unwrap();
+        assert_eq!(notifier.sent().len(), 1);
+
+        // The same GHSA, still marked seen, now with a patched version.
+        let updated = fixed_item("ghsa", "GHSA-aaaa", "CVE-2026-0001");
+        handle(&cfg, &mut db, "ghsa", fetched(vec![updated], "c2"), &mut s);
+        assert_eq!(keys(&db, Queue::Outbox), ["CVE-2026-0001#remedy"]);
+        flush_outbox(&cfg, &db, &notifier, &mut s, &mut None).unwrap();
+        assert_eq!(notifier.sent().len(), 2);
+
+        let again = fixed_item("ghsa", "GHSA-aaaa", "CVE-2026-0001");
+        handle(&cfg, &mut db, "ghsa", fetched(vec![again], "c3"), &mut s);
+        assert_eq!(db.queue_len(Queue::Outbox).unwrap(), 0);
+
+        // Re-read but decided digest: not counted as new, nothing queued.
+        let mut other = no_fix_item("ghsa", "CVE-2026-0002");
+        other.id = "GHSA-bbbb".into();
+        handle(&cfg, &mut db, "ghsa", fetched(vec![other], "c4"), &mut s);
+        flush_outbox(&cfg, &db, &notifier, &mut s, &mut None).unwrap();
+        let mut low = fixed_item("ghsa", "GHSA-bbbb", "CVE-2026-0002");
+        low.cvss = Some(3.0);
+        db.set_kv("lastnew:ghsa", "x").unwrap();
+        handle(&cfg, &mut db, "ghsa", fetched(vec![low], "c5"), &mut s);
+        assert_eq!(db.queue_len(Queue::Outbox).unwrap(), 0);
+        assert_eq!(db.get_kv("lastnew:ghsa").unwrap().as_deref(), Some("x"));
     }
 
     #[test]

@@ -436,6 +436,14 @@ fn digest_line(e: &DigestEntry, show_reason: bool) -> String {
             ));
         }
     }
+    // A "fix available" follow-up over the cap (or moved to the digest) is sent only as
+    // this line, so it must carry the fixed version itself.
+    if e.reason.starts_with(REMEDY_FOLLOWUP) {
+        if let Some((k, v)) = item.extra.iter().find(|(k, _)| k == "修正バージョン") {
+            let v = v.replace('\n', " / ");
+            line.push_str(&format!("\n　{k}: {}", escape_md(&truncate(&v, 150))));
+        }
+    }
     line
 }
 
@@ -599,6 +607,29 @@ mod tests {
         };
         let line = digest_line(&e, true);
         assert!(line.ends_with("\n　対策: ・Update Electron ・Update ca-certificates"));
+    }
+
+    #[test]
+    fn digest_line_shows_fixed_version_of_a_remedy_follow_up() {
+        let mut it = item(1);
+        it.extra = vec![(
+            "修正バージョン".into(),
+            "foo < 1.2.4 → 1.2.4\nbar < 2.0 → 2.0".into(),
+        )];
+        let mut e = DigestEntry {
+            key: "CVE-2026-00001#remedy".into(),
+            item: it,
+            reason: format!("{REMEDY_FOLLOWUP}: watch: foo（即時通知の上限超過）"),
+        };
+        for show_reason in [true, false] {
+            let line = digest_line(&e, show_reason);
+            assert!(
+                line.ends_with("\n　修正バージョン: foo < 1.2.4 → 1.2.4 / bar < 2.0 → 2.0"),
+                "{line}"
+            );
+        }
+        e.reason = "watch: foo".into();
+        assert!(!digest_line(&e, true).contains("修正バージョン"));
     }
 
     #[test]
