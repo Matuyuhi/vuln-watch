@@ -111,6 +111,7 @@ pub fn run(http: &Http, opts: &Options) -> Result<()> {
     let cfg = check_config(&mut r, &opts.config);
     if let Some(cfg) = &cfg {
         check_credentials(&mut r, cfg, &secrets, file_env.is_some());
+        check_heartbeat(&mut r, cfg, &secrets, file_env.is_some());
         check_installed(&mut r, cfg);
     }
     check_systemd(&mut r);
@@ -261,10 +262,36 @@ fn parse_env_file(text: &str) -> HashMap<String, String> {
         .filter_map(|l| {
             let (k, v) = l.split_once('=')?;
             let k = k.trim();
-            let v = v.trim();
-            (!v.is_empty()).then(|| (k.to_string(), v.to_string()))
+            let v = unquote_env_value(v.trim());
+            // Like `Secrets::from_env`, a blank value (also `"  "`) is unset.
+            (!v.trim().is_empty()).then(|| (k.to_string(), v))
         })
         .collect()
+}
+
+/// systemd removes quotes around a whole EnvironmentFile value (`KEY="v"` / `KEY='v'`) and,
+/// inside double quotes, the backslash before `"` and `\`; do the same so doctor sees the value
+/// the service gets.
+fn unquote_env_value(v: &str) -> String {
+    let quoted = |q: char| v.len() >= 2 && v.starts_with(q) && v.ends_with(q);
+    if quoted('\'') {
+        v[1..v.len() - 1].to_string()
+    } else if quoted('"') {
+        let mut out = String::new();
+        let mut chars = v[1..v.len() - 1].chars();
+        while let Some(c) = chars.next() {
+            match (c, chars.clone().next()) {
+                ('\\', Some(n @ ('"' | '\\'))) => {
+                    out.push(n);
+                    chars.next();
+                }
+                _ => out.push(c),
+            }
+        }
+        out
+    } else {
+        v.to_string()
+    }
 }
 
 /// Variables vuln-watch (or its HTTP client) reads from the environment.
@@ -536,6 +563,60 @@ fn check_credentials(r: &mut Report, cfg: &Config, secrets: &Secrets, from_file:
             format!("GITHUB_TOKEN not set in {source}"),
             Some("recommended: raises the API limit and reads the CVE List via the API"),
         );
+    }
+}
+
+/// Heartbeat findings as (status, detail, hint). The URL embeds a token and is never printed.
+fn heartbeat_findings(
+    cfg: &Config,
+    secrets: &Secrets,
+    from_file: bool,
+) -> Vec<(Status, String, Option<String>)> {
+    let source = if from_file {
+        ENV_FILE
+    } else {
+        "the environment"
+    };
+    let mut out = Vec::new();
+    if cfg.runtime.heartbeat_url.is_some() {
+        out.push((
+            Status::Warn,
+            "runtime.heartbeat_url is set in config.toml, which every local user can read \
+             (anyone who knows it can keep the heartbeat green)"
+                .to_string(),
+            Some(format!(
+                "move it to HEARTBEAT_URL in {ENV_FILE} (mode 600) and remove it from config.toml"
+            )),
+        ));
+    }
+    match app::heartbeat(
+        secrets.heartbeat_url.as_deref(),
+        cfg.runtime.heartbeat_url.as_deref(),
+    ) {
+        app::Heartbeat::Env(_) => {
+            out.push((Status::Ok, format!("HEARTBEAT_URL set in {source}"), None))
+        }
+        app::Heartbeat::Insecure => out.push((
+            // Without the env file we only see the shell's environment, which systemd does not use.
+            if from_file {
+                Status::Fail
+            } else {
+                Status::Warn
+            },
+            format!(
+                "HEARTBEAT_URL in {source} does not start with https:// ({}); it is not pinged",
+                crate::config::url_scheme(secrets.heartbeat_url.as_deref().unwrap_or(""))
+            ),
+            Some("use the https:// check-in URL; over http the token is sent in clear text".into()),
+        )),
+        app::Heartbeat::Config(_) | app::Heartbeat::None => {}
+    }
+    out
+}
+
+fn check_heartbeat(r: &mut Report, cfg: &Config, secrets: &Secrets, from_file: bool) {
+    for (status, detail, hint) in heartbeat_findings(cfg, secrets, from_file) {
+        r.add(status, "heartbeat", detail, hint.as_deref());
     }
 }
 
@@ -851,6 +932,75 @@ mod tests {
     }
 
     #[test]
+    fn invalid_webhook_url_is_a_failure() {
+        let mut cfg = Config::parse("[discord]\nmode = \"webhook\"\n").unwrap();
+        cfg.installed.enabled = false;
+        let mut env = HashMap::new();
+        env.insert(
+            "DISCORD_WEBHOOK_URL".to_string(),
+            "http://discord.com/api/webhooks/1/abc".to_string(),
+        );
+        let secrets = secrets_from(&env);
+        let mut r = Report::default();
+        check_credentials(&mut r, &cfg, &secrets, true);
+        assert_eq!(r.fails, 1);
+        // The detail doctor prints is this error; it must not contain the token.
+        let err = format!(
+            "{:#}",
+            app::build_target(&cfg, &secrets, false).err().unwrap()
+        );
+        assert!(!err.contains("abc"), "{err}");
+
+        env.insert(
+            "DISCORD_WEBHOOK_URL".to_string(),
+            "https://discord.com/api/webhooks/1/abc".to_string(),
+        );
+        let mut r = Report::default();
+        check_credentials(&mut r, &cfg, &secrets_from(&env), true);
+        assert_eq!(r.fails, 0);
+    }
+
+    #[test]
+    fn heartbeat_warns_about_config_and_insecure_env() {
+        let secret = "secret-uuid";
+        let with = |env: Option<&str>, file: Option<&str>, from_file: bool| {
+            let mut cfg = Config::parse("").unwrap();
+            cfg.runtime.heartbeat_url = file.map(str::to_string);
+            let mut env_map = HashMap::new();
+            if let Some(v) = env {
+                env_map.insert("HEARTBEAT_URL".to_string(), v.to_string());
+            }
+            let found = heartbeat_findings(&cfg, &secrets_from(&env_map), from_file);
+            for (_, detail, hint) in &found {
+                assert!(!detail.contains(secret), "{detail}");
+                assert!(!hint.as_deref().unwrap_or("").contains(secret));
+            }
+            found.into_iter().map(|(s, _, _)| s).collect::<Vec<_>>()
+        };
+        let https = "https://hc-ping.com/secret-uuid";
+        let http = "http://hc-ping.com/secret-uuid";
+        assert!(with(None, None, true).is_empty());
+        assert_eq!(with(Some(https), None, true), [Status::Ok]);
+        assert_eq!(with(None, Some(https), true), [Status::Warn]);
+        assert_eq!(
+            with(Some(https), Some(https), true),
+            [Status::Warn, Status::Ok]
+        );
+        assert_eq!(with(Some(http), None, true), [Status::Fail]);
+        assert_eq!(
+            with(Some(http), Some(https), true),
+            [Status::Warn, Status::Fail]
+        );
+        assert_eq!(with(Some(http), None, false), [Status::Warn]);
+
+        let mut cfg = Config::parse("").unwrap();
+        cfg.runtime.heartbeat_url = Some(https.to_string());
+        let found = heartbeat_findings(&cfg, &secrets_from(&HashMap::new()), true);
+        assert!(found[0].1.contains("runtime.heartbeat_url"));
+        assert!(found[0].2.as_deref().unwrap().contains("HEARTBEAT_URL"));
+    }
+
+    #[test]
     fn parses_env_file() {
         let env = parse_env_file(
             "# comment\n\
@@ -869,6 +1019,42 @@ mod tests {
         assert!(!env.contains_key("DISCORD_USER_ID"));
         // systemd rejects `export`, so the variable is not set.
         assert!(!env.contains_key("HEARTBEAT_URL"));
+
+        // systemd removes surrounding quotes; a quoted empty value is unset.
+        let env = parse_env_file(
+            "HEARTBEAT_URL=\"https://hc-ping.com/x\"\n\
+             GITHUB_TOKEN='ghp_y'\n\
+             DISCORD_USER_ID=\"\"\n\
+             DISCORD_BOT_TOKEN=\"a\\\"b\\\\c\"\n\
+             DISCORD_WEBHOOK_URL=\"\n",
+        );
+        assert_eq!(
+            env.get("HEARTBEAT_URL").map(String::as_str),
+            Some("https://hc-ping.com/x")
+        );
+        assert_eq!(env.get("GITHUB_TOKEN").map(String::as_str), Some("ghp_y"));
+        assert!(!env.contains_key("DISCORD_USER_ID"));
+        assert_eq!(
+            env.get("DISCORD_BOT_TOKEN").map(String::as_str),
+            Some("a\"b\\c")
+        );
+        assert_eq!(
+            env.get("DISCORD_WEBHOOK_URL").map(String::as_str),
+            Some("\"")
+        );
+        let secrets = secrets_from(&env);
+        let cfg = Config::parse("").unwrap();
+        assert_eq!(
+            heartbeat_findings(&cfg, &secrets, true)
+                .into_iter()
+                .map(|(s, _, _)| s)
+                .collect::<Vec<_>>(),
+            [Status::Ok]
+        );
+        // A quoted blank value is unset too, so doctor does not report it as insecure.
+        let env = parse_env_file("HEARTBEAT_URL=\"   \"\n");
+        assert!(!env.contains_key("HEARTBEAT_URL"));
+        assert!(heartbeat_findings(&cfg, &secrets_from(&env), true).is_empty());
     }
 
     #[test]

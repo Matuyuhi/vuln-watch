@@ -8,7 +8,7 @@ use crate::installed::Installed;
 use crate::model::{Decision, Item, Level};
 use crate::rules::{self, InstalledMatch};
 use crate::sources::{self, Ctx, Fetched};
-use crate::text::truncate;
+use crate::text::{code_block, truncate};
 
 pub struct Secrets {
     pub bot_token: Option<String>,
@@ -31,6 +31,29 @@ impl Secrets {
     }
 }
 
+/// Which heartbeat URL a run pings. The URL embeds a token, so callers never log it.
+#[derive(Debug, PartialEq, Eq)]
+pub enum Heartbeat<'a> {
+    None,
+    /// HEARTBEAT_URL from the (private) env file.
+    Env(&'a str),
+    /// runtime.heartbeat_url from the world-readable config.toml.
+    Config(&'a str),
+    /// HEARTBEAT_URL is set but not https: the token would travel in clear text.
+    Insecure,
+}
+
+/// HEARTBEAT_URL overrides runtime.heartbeat_url; a non-https HEARTBEAT_URL is not pinged and
+/// does not fall back to the config value. (Config::validate already rejects non-https there.)
+pub fn heartbeat<'a>(env: Option<&'a str>, config: Option<&'a str>) -> Heartbeat<'a> {
+    match (env, config) {
+        (Some(url), _) if crate::config::is_https(url) => Heartbeat::Env(url),
+        (Some(_), _) => Heartbeat::Insecure,
+        (None, Some(url)) => Heartbeat::Config(url),
+        (None, None) => Heartbeat::None,
+    }
+}
+
 pub fn build_target(cfg: &Config, secrets: &Secrets, dry_run: bool) -> Result<Target> {
     if dry_run {
         return Ok(Target::Stdout);
@@ -47,12 +70,16 @@ pub fn build_target(cfg: &Config, secrets: &Secrets, dry_run: bool) -> Result<Ta
                 .or_else(|| cfg.discord.user_id.clone())
                 .context("Discord user id is not set (discord.user_id or DISCORD_USER_ID)")?,
         },
-        DeliveryMode::Webhook => Target::Webhook {
-            url: secrets.webhook_url.clone().context(
+        DeliveryMode::Webhook => {
+            let url = secrets.webhook_url.clone().context(
                 "DISCORD_WEBHOOK_URL is not set (required for discord.mode = \"webhook\")",
-            )?,
-            username: cfg.discord.username.clone(),
-        },
+            )?;
+            discord::validate_webhook_url(&url)?;
+            Target::Webhook {
+                url,
+                username: cfg.discord.username.clone(),
+            }
+        }
     })
 }
 
@@ -140,6 +167,10 @@ fn locked_run(
 ) -> Result<RunSummary> {
     let mut summary = RunSummary::default();
 
+    if !opts.dry_run && db.get_kv(REMEDY_FOLLOWUP_SINCE)?.is_none() {
+        db.set_kv(REMEDY_FOLLOWUP_SINCE, &chrono::Utc::now().to_rfc3339())?;
+    }
+
     // Read on every run so upgrades done by apt / unattended-upgrades are reflected.
     let installed = if cfg.installed.enabled {
         Some(Installed::load(&cfg.installed)?)
@@ -184,12 +215,29 @@ fn locked_run(
     }
 
     if !opts.dry_run {
-        let hb = secrets
-            .heartbeat_url
-            .clone()
-            .or_else(|| cfg.runtime.heartbeat_url.clone());
-        if let Some(url) = hb {
-            if let Err(e) = http.ping(&url) {
+        let url = match heartbeat(
+            secrets.heartbeat_url.as_deref(),
+            cfg.runtime.heartbeat_url.as_deref(),
+        ) {
+            Heartbeat::None => None,
+            Heartbeat::Env(url) => Some(url),
+            Heartbeat::Config(url) => {
+                tracing::warn!(
+                    "runtime.heartbeat_url is set in config.toml, which every local user can read; \
+                     move it to HEARTBEAT_URL in /etc/vuln-watch/env"
+                );
+                Some(url)
+            }
+            Heartbeat::Insecure => {
+                tracing::warn!(
+                    "HEARTBEAT_URL does not start with https:// ({}); not pinging it",
+                    crate::config::url_scheme(secrets.heartbeat_url.as_deref().unwrap_or(""))
+                );
+                None
+            }
+        };
+        if let Some(url) = url {
+            if let Err(e) = http.ping(url) {
                 tracing::warn!("heartbeat ping failed: {e:#}");
             }
         }
@@ -326,10 +374,48 @@ fn flush_outbox(
 /// Record an outbox entry as sent at the urgent level and take it out of the queues.
 fn mark_sent_urgent(db: &Db, e: &DigestEntry) -> Result<()> {
     db.set_alerted(&e.key, Level::Urgent)?;
+    // The message already showed a fix: no "fix available" follow-up later.
+    if e.item.remedy {
+        db.set_alerted(&remedy_key(&e.item), Level::Urgent)?;
+    }
     // It may have been queued for the digest earlier at a lower level.
     db.dequeue(Queue::Digest, &e.key)?;
     db.dequeue(Queue::Digest, &e.item.dedupe_key())?;
     db.dequeue(Queue::Outbox, &e.key)
+}
+
+/// Follow-ups are sent only for CVEs first sent urgent within this many days, so the
+/// fixes for old CVEs don't arrive as a burst.
+const REMEDY_FOLLOWUP_DAYS: i64 = 30;
+
+/// kv: when this version first ran. Urgent messages sent before it have no `#remedy`
+/// record even if they showed a fix, so they never get a follow-up.
+const REMEDY_FOLLOWUP_SINCE: &str = "remedy-followup:since";
+
+/// `alerted` key recording that a fix for this item's CVE was already sent.
+fn remedy_key(item: &Item) -> String {
+    format!("{}#remedy", item.dedupe_key())
+}
+
+/// Whether an urgent `item` with a fix should be sent again as a "fix available"
+/// follow-up: its key was sent urgent recently, without a fix, and no follow-up was sent.
+fn remedy_followup_due(cfg: &Config, db: &Db, item: &Item, key: &str) -> Result<bool> {
+    if !cfg.rules.remedy_followup || !item.remedy || item.kev {
+        return Ok(false);
+    }
+    if db.alerted_level(key)? != Some(Level::Urgent)
+        || db.alerted_level(&remedy_key(item))?.is_some()
+    {
+        return Ok(false);
+    }
+    let mut cutoff = chrono::Utc::now() - chrono::Duration::days(REMEDY_FOLLOWUP_DAYS);
+    let since = db
+        .get_kv(REMEDY_FOLLOWUP_SINCE)?
+        .and_then(|s| chrono::DateTime::parse_from_rfc3339(&s).ok());
+    if let Some(since) = since {
+        cutoff = cutoff.max(since.with_timezone(&chrono::Utc));
+    }
+    Ok(db.alerted_at(key)?.is_some_and(|at| at >= cutoff))
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -393,15 +479,25 @@ fn handle_fetched(
     for item in std::mem::take(&mut fetched.items) {
         // An item held back for lack of a fix is only decided again once it has one.
         let awaiting_key = format!("{}#awaiting-remedy", item.id);
-        if db.is_seen(&name, &item.id)? || (!item.remedy && db.is_seen(&name, &awaiting_key)?) {
+        let seen =
+            db.is_seen(&name, &item.id)? || (!item.remedy && db.is_seen(&name, &awaiting_key)?);
+        // An advisory seen without a fix and since updated with one (same id) is decided
+        // again only for the "fix available" follow-up; it is not counted as new.
+        let followup_only = seen && remedy_followup_due(cfg, db, &item, &item.alert_key())?;
+        if seen && !followup_only {
             continue;
         }
-        new += 1;
         let policy = rules::SourcePolicy {
             mode: src.mode,
             require_watch: src.require_watch,
         };
         let decision = rules::evaluate_with(&item, policy, &cfg.rules, &cfg.watches, installed);
+        if followup_only && decision.level != Level::Urgent {
+            continue;
+        }
+        if !followup_only {
+            new += 1;
+        }
         if opts.dry_run {
             println!(
                 "[{name}] {:<7} {} — {} ({})",
@@ -420,6 +516,12 @@ fn handle_fetched(
             }
             Level::Ignore => {
                 summary.ignored += 1;
+                db.mark_seen(&name, &item.id)?;
+            }
+            Level::Urgent if remedy_followup_due(cfg, db, &item, &key)? => {
+                // Sent by flush_outbox; recording the `#remedy` key there makes it one-off.
+                let reason = format!("{}: {}", discord::REMEDY_FOLLOWUP, decision.reason);
+                db.enqueue(Queue::Outbox, &remedy_key(&item), &item, &reason)?;
                 db.mark_seen(&name, &item.id)?;
             }
             level if already.is_some_and(|a| a >= level) => {
@@ -546,18 +648,21 @@ fn source_failed(
         + 1;
     db.set_kv(&fail_key, &count.to_string())?;
     if !dry_run && count >= cfg.runtime.alert_after_failures && db.get_kv(&alert_key)?.is_none() {
-        notifier.send(
-            db,
-            &Message::text(truncate(
-                &format!(
-                    "⚠️ ソース `{name}` の取得が{count}回連続で失敗しています。\n```\n{err:#}\n```"
-                ),
-                1900,
-            )),
-        )?;
+        notifier.send(db, &Message::text(source_failed_message(name, count, err)))?;
         db.set_kv(&alert_key, "1")?;
     }
     Ok(())
+}
+
+/// The "source failing" text. The error often holds a remote response body, so it goes
+/// through `code_block`: a body with ``` must not close the block and render as Markdown.
+fn source_failed_message(name: &str, count: u32, err: &anyhow::Error) -> String {
+    // Source names have no length limit in the config; bound only the name so the fixed
+    // text and Markdown delimiters always survive.
+    let name = truncate(name, 100);
+    let head = format!("⚠️ ソース `{name}` の取得が{count}回連続で失敗しています。\n");
+    let room = 1900 - head.chars().count();
+    format!("{head}{}", code_block(&format!("{err:#}"), room))
 }
 
 /// Set when a digest fails to send (value: time of the failed attempt); `run` then retries it.
@@ -959,6 +1064,246 @@ kind = "ghsa"
         assert_eq!(keys(&db, Queue::Outbox), ["CVE-2026-0001"]);
     }
 
+    /// Urgent when `urgent_cvss = 9.0` (see `followup_cfg`): CVSS 9.5, no fix (cvelist-style).
+    fn no_fix_item(source: &str, cve: &str) -> Item {
+        digest_item(source, cve)
+    }
+
+    /// GHSA-style item for the same CVE with a patched version.
+    fn fixed_item(source: &str, id: &str, cve: &str) -> Item {
+        let mut item = digest_item(source, cve);
+        item.id = id.into();
+        item.remedy = true;
+        item.extra = vec![("修正バージョン".into(), "foo < 1.2.4 → 1.2.4".into())];
+        item
+    }
+
+    fn followup_cfg() -> Config {
+        let mut cfg = cfg();
+        cfg.rules.urgent_cvss = Some(9.0);
+        cfg
+    }
+
+    #[test]
+    fn fix_after_urgent_without_fix_is_sent_once_as_follow_up() {
+        let cfg = followup_cfg();
+        let http = Http::new(5).unwrap();
+        let notifier = recorder(&http, vec![]);
+        let mut db = Db::open_in_memory().unwrap();
+        let mut s = RunSummary::default();
+        let first = no_fix_item("kev", "CVE-2026-0001");
+        handle(&cfg, &mut db, "kev", fetched(vec![first], "c1"), &mut s);
+        flush_outbox(&cfg, &db, &notifier, &mut s, &mut None).unwrap();
+        assert_eq!(notifier.sent().len(), 1);
+
+        let fixed = fixed_item("ghsa", "GHSA-aaaa", "CVE-2026-0001");
+        handle(&cfg, &mut db, "ghsa", fetched(vec![fixed], "c2"), &mut s);
+        assert_eq!(keys(&db, Queue::Outbox), ["CVE-2026-0001#remedy"]);
+        flush_outbox(&cfg, &db, &notifier, &mut s, &mut None).unwrap();
+        let sent = notifier.sent();
+        assert_eq!(sent.len(), 2);
+        assert!(
+            sent[1].content.contains("修正版が公開"),
+            "{}",
+            sent[1].content
+        );
+        let fields = sent[1].embeds[0]["fields"].as_array().unwrap();
+        assert!(fields
+            .iter()
+            .any(|f| f["name"] == "修正バージョン" && f["value"] == "foo < 1.2.4 → 1.2.4"));
+        assert!(fields.iter().any(|f| f["name"] == "理由"
+            && f["value"]
+                .as_str()
+                .unwrap()
+                .starts_with(discord::REMEDY_FOLLOWUP)));
+        assert_eq!(
+            db.alerted_level("CVE-2026-0001#remedy").unwrap(),
+            Some(Level::Urgent)
+        );
+
+        // A third item with a fix (another source, or the same advisory re-read).
+        let again = fixed_item("kev", "GHSA-bbbb", "CVE-2026-0001");
+        handle(&cfg, &mut db, "kev", fetched(vec![again], "c3"), &mut s);
+        db.execute_batch("DELETE FROM seen WHERE id = 'GHSA-aaaa'")
+            .unwrap();
+        let reread = fixed_item("ghsa", "GHSA-aaaa", "CVE-2026-0001");
+        handle(&cfg, &mut db, "ghsa", fetched(vec![reread], "c4"), &mut s);
+        assert_eq!(db.queue_len(Queue::Outbox).unwrap(), 0);
+        flush_outbox(&cfg, &db, &notifier, &mut s, &mut None).unwrap();
+        assert_eq!(notifier.sent().len(), 2);
+    }
+
+    #[test]
+    fn same_advisory_updated_with_a_fix_is_sent_as_follow_up() {
+        let cfg = followup_cfg();
+        let http = Http::new(5).unwrap();
+        let notifier = recorder(&http, vec![]);
+        let mut db = Db::open_in_memory().unwrap();
+        let mut s = RunSummary::default();
+        let mut first = no_fix_item("ghsa", "CVE-2026-0001");
+        first.id = "GHSA-aaaa".into();
+        handle(&cfg, &mut db, "ghsa", fetched(vec![first], "c1"), &mut s);
+        flush_outbox(&cfg, &db, &notifier, &mut s, &mut None).unwrap();
+        assert_eq!(notifier.sent().len(), 1);
+
+        // The same GHSA, still marked seen, now with a patched version.
+        let updated = fixed_item("ghsa", "GHSA-aaaa", "CVE-2026-0001");
+        db.set_kv("lastnew:ghsa", "x").unwrap();
+        handle(&cfg, &mut db, "ghsa", fetched(vec![updated], "c2"), &mut s);
+        assert_eq!(keys(&db, Queue::Outbox), ["CVE-2026-0001#remedy"]);
+        // Not a new item: the stale-source check is not reset by it.
+        assert_eq!(db.get_kv("lastnew:ghsa").unwrap().as_deref(), Some("x"));
+        flush_outbox(&cfg, &db, &notifier, &mut s, &mut None).unwrap();
+        assert_eq!(notifier.sent().len(), 2);
+
+        let again = fixed_item("ghsa", "GHSA-aaaa", "CVE-2026-0001");
+        handle(&cfg, &mut db, "ghsa", fetched(vec![again], "c3"), &mut s);
+        assert_eq!(db.queue_len(Queue::Outbox).unwrap(), 0);
+
+        // Re-read but decided digest: not counted as new, nothing queued.
+        let mut other = no_fix_item("ghsa", "CVE-2026-0002");
+        other.id = "GHSA-bbbb".into();
+        handle(&cfg, &mut db, "ghsa", fetched(vec![other], "c4"), &mut s);
+        flush_outbox(&cfg, &db, &notifier, &mut s, &mut None).unwrap();
+        let mut low = fixed_item("ghsa", "GHSA-bbbb", "CVE-2026-0002");
+        low.cvss = Some(3.0);
+        db.set_kv("lastnew:ghsa", "x").unwrap();
+        handle(&cfg, &mut db, "ghsa", fetched(vec![low], "c5"), &mut s);
+        assert_eq!(db.queue_len(Queue::Outbox).unwrap(), 0);
+        assert_eq!(db.get_kv("lastnew:ghsa").unwrap().as_deref(), Some("x"));
+    }
+
+    #[test]
+    fn no_follow_up_when_the_first_urgent_message_had_a_fix() {
+        let cfg = followup_cfg();
+        let http = Http::new(5).unwrap();
+        let notifier = recorder(&http, vec![]);
+        let mut db = Db::open_in_memory().unwrap();
+        let mut s = RunSummary::default();
+        let first = fixed_item("kev", "GHSA-aaaa", "CVE-2026-0001");
+        handle(&cfg, &mut db, "kev", fetched(vec![first], "c1"), &mut s);
+        flush_outbox(&cfg, &db, &notifier, &mut s, &mut None).unwrap();
+        let later = fixed_item("ghsa", "GHSA-bbbb", "CVE-2026-0001");
+        handle(&cfg, &mut db, "ghsa", fetched(vec![later], "c2"), &mut s);
+        assert_eq!(db.queue_len(Queue::Outbox).unwrap(), 0);
+        assert_eq!(notifier.sent().len(), 1);
+    }
+
+    #[test]
+    fn no_follow_up_for_a_fix_decided_digest_or_ignore() {
+        let cfg = followup_cfg();
+        let http = Http::new(5).unwrap();
+        let notifier = recorder(&http, vec![]);
+        let mut db = Db::open_in_memory().unwrap();
+        let mut s = RunSummary::default();
+        let first = no_fix_item("kev", "CVE-2026-0001");
+        handle(&cfg, &mut db, "kev", fetched(vec![first], "c1"), &mut s);
+        flush_outbox(&cfg, &db, &notifier, &mut s, &mut None).unwrap();
+
+        // Digest: CVSS 9.2 is under urgent_cvss but over digest_cvss.
+        let mut digest = fixed_item("ghsa", "GHSA-aaaa", "CVE-2026-0001");
+        digest.cvss = Some(9.2);
+        let mut lowered = cfg.clone();
+        lowered.rules.urgent_cvss = Some(9.3);
+        handle(
+            &lowered,
+            &mut db,
+            "ghsa",
+            fetched(vec![digest], "c2"),
+            &mut s,
+        );
+        // Ignore: CVSS too low for anything.
+        let mut ignore = fixed_item("ghsa", "GHSA-bbbb", "CVE-2026-0001");
+        ignore.cvss = Some(3.0);
+        handle(&cfg, &mut db, "ghsa", fetched(vec![ignore], "c3"), &mut s);
+
+        assert_eq!(db.queue_len(Queue::Outbox).unwrap(), 0);
+        assert!(keys(&db, Queue::Digest).is_empty());
+        assert_eq!(db.alerted_level("CVE-2026-0001#remedy").unwrap(), None);
+    }
+
+    #[test]
+    fn no_follow_up_after_30_days_or_when_switched_off() {
+        let cfg = followup_cfg();
+        let http = Http::new(5).unwrap();
+        let notifier = recorder(&http, vec![]);
+        let mut db = Db::open_in_memory().unwrap();
+        let mut s = RunSummary::default();
+        let first = no_fix_item("kev", "CVE-2026-0001");
+        handle(&cfg, &mut db, "kev", fetched(vec![first], "c1"), &mut s);
+        flush_outbox(&cfg, &db, &notifier, &mut s, &mut None).unwrap();
+
+        let mut off = cfg.clone();
+        off.rules.remedy_followup = false;
+        let fixed = fixed_item("ghsa", "GHSA-aaaa", "CVE-2026-0001");
+        handle(&off, &mut db, "ghsa", fetched(vec![fixed], "c2"), &mut s);
+        assert_eq!(db.queue_len(Queue::Outbox).unwrap(), 0);
+
+        let old = chrono::Utc::now() - chrono::Duration::days(REMEDY_FOLLOWUP_DAYS + 1);
+        db.execute_batch(&format!(
+            "UPDATE alerted SET at = '{}' WHERE key = 'CVE-2026-0001'",
+            old.to_rfc3339()
+        ))
+        .unwrap();
+        let fixed = fixed_item("ghsa", "GHSA-bbbb", "CVE-2026-0001");
+        handle(&cfg, &mut db, "ghsa", fetched(vec![fixed], "c3"), &mut s);
+        assert_eq!(db.queue_len(Queue::Outbox).unwrap(), 0);
+    }
+
+    #[test]
+    fn no_follow_up_for_a_message_sent_before_the_upgrade() {
+        let cfg = followup_cfg();
+        let http = Http::new(5).unwrap();
+        let notifier = recorder(&http, vec![]);
+        let mut db = Db::open_in_memory().unwrap();
+        let mut s = RunSummary::default();
+        // Sent by an older version: it may have shown a fix, but no `#remedy` was recorded.
+        let mut first = fixed_item("ghsa", "GHSA-aaaa", "CVE-2026-0001");
+        first.remedy = false;
+        handle(&cfg, &mut db, "ghsa", fetched(vec![first], "c1"), &mut s);
+        flush_outbox(&cfg, &db, &notifier, &mut s, &mut None).unwrap();
+        let old = chrono::Utc::now() - chrono::Duration::days(2);
+        db.execute_batch(&format!(
+            "UPDATE alerted SET at = '{}' WHERE key = 'CVE-2026-0001'",
+            old.to_rfc3339()
+        ))
+        .unwrap();
+        // The upgraded version runs for the first time.
+        let since = chrono::Utc::now() - chrono::Duration::days(1);
+        db.set_kv(REMEDY_FOLLOWUP_SINCE, &since.to_rfc3339())
+            .unwrap();
+
+        let reread = fixed_item("ghsa", "GHSA-aaaa", "CVE-2026-0001");
+        handle(&cfg, &mut db, "ghsa", fetched(vec![reread], "c2"), &mut s);
+        let other = fixed_item("kev", "GHSA-bbbb", "CVE-2026-0001");
+        handle(&cfg, &mut db, "kev", fetched(vec![other], "c3"), &mut s);
+        assert_eq!(db.queue_len(Queue::Outbox).unwrap(), 0);
+
+        // A CVE first sent after the upgrade still gets one.
+        let second = no_fix_item("kev", "CVE-2026-0002");
+        handle(&cfg, &mut db, "kev", fetched(vec![second], "c4"), &mut s);
+        flush_outbox(&cfg, &db, &notifier, &mut s, &mut None).unwrap();
+        let fixed = fixed_item("ghsa", "GHSA-cccc", "CVE-2026-0002");
+        handle(&cfg, &mut db, "ghsa", fetched(vec![fixed], "c5"), &mut s);
+        assert_eq!(keys(&db, Queue::Outbox), ["CVE-2026-0002#remedy"]);
+    }
+
+    #[test]
+    fn kev_item_with_fix_is_not_a_follow_up() {
+        let cfg = followup_cfg();
+        let http = Http::new(5).unwrap();
+        let notifier = recorder(&http, vec![]);
+        let mut db = Db::open_in_memory().unwrap();
+        let mut s = RunSummary::default();
+        let first = no_fix_item("ghsa", "CVE-2026-0001");
+        handle(&cfg, &mut db, "ghsa", fetched(vec![first], "c1"), &mut s);
+        flush_outbox(&cfg, &db, &notifier, &mut s, &mut None).unwrap();
+        let mut kev = kev_item("kev", "CVE-2026-0001");
+        kev.remedy = true;
+        handle(&cfg, &mut db, "kev", fetched(vec![kev], "c2"), &mut s);
+        assert_eq!(keys(&db, Queue::Outbox), ["CVE-2026-0001#kev"]);
+    }
+
     #[test]
     fn disabled_digest_is_not_sent_or_retried() {
         let mut cfg = cfg();
@@ -1061,6 +1406,51 @@ kind = "ghsa"
         );
         assert_eq!(db.queue_len(Queue::Digest).unwrap(), 0);
         assert_eq!(db.alerted_level("CVE-2026-0003#kev").unwrap(), None);
+    }
+
+    #[test]
+    fn build_target_validates_webhook_url() {
+        let mut cfg = config();
+        cfg.discord.mode = DeliveryMode::Webhook;
+        let mut sec = secrets();
+        sec.webhook_url = Some("http://discord.com/api/webhooks/1/abc".into());
+        let err = format!("{:#}", build_target(&cfg, &sec, false).err().unwrap());
+        assert!(err.contains("got http://discord.com"), "{err}");
+        assert!(!err.contains("abc"), "{err}");
+        // --dry-run never sends, so it does not need a valid URL.
+        assert!(build_target(&cfg, &sec, true).is_ok());
+        sec.webhook_url = Some("https://discord.com/api/webhooks/1/abc?thread_id=123".into());
+        match build_target(&cfg, &sec, false).unwrap() {
+            Target::Webhook { url, .. } => {
+                assert_eq!(url, "https://discord.com/api/webhooks/1/abc?thread_id=123")
+            }
+            _ => panic!("not a webhook target"),
+        }
+    }
+
+    #[test]
+    fn redirected_webhook_post_keeps_item_in_outbox() {
+        let srv = crate::http::test_server::start(|path| match path {
+            "/ok" => (200, vec![], "{}".into()),
+            _ => (301, vec![("Location", "/ok".into())], String::new()),
+        });
+        let cfg = cfg();
+        let http = Http::new(5).unwrap();
+        let notifier = Notifier::new(
+            &http,
+            Target::Webhook {
+                url: format!("{}/api/webhooks/1/abc", srv.base),
+                username: None,
+            },
+        );
+        let mut db = Db::open_in_memory().unwrap();
+        let mut s = RunSummary::default();
+        outbox_with(&mut db, 1);
+        assert!(flush_outbox(&cfg, &db, &notifier, &mut s, &mut None).is_err());
+        assert_eq!(s.urgent, 0);
+        assert_eq!(keys(&db, Queue::Outbox), ["CVE-2026-0001#kev"]);
+        assert_eq!(db.alerted_level("CVE-2026-0001#kev").unwrap(), None);
+        assert_eq!(srv.requests().len(), 1, "{:?}", srv.requests());
     }
 
     #[test]
@@ -1270,6 +1660,39 @@ kind = "ghsa"
         assert_eq!(db.get_kv("failalert:kev").unwrap(), None);
     }
 
+    #[test]
+    fn source_failed_message_keeps_error_body_inside_code_block() {
+        let err = anyhow::Error::new(crate::http::StatusError {
+            url: "http://feed.example/rss".into(),
+            status: 500,
+            body: "oops ```\n[x](https://evil.example) ```".into(),
+        });
+        let m = source_failed_message("feed", 5, &err);
+        assert_eq!(m.matches("```").count(), 2, "{m}");
+        let (_, after_open) = m.split_once("```").unwrap();
+        let (inside, after_close) = after_open.split_once("```").unwrap();
+        assert!(!m.split("```").next().unwrap().contains("]("), "{m}");
+        assert_eq!(after_close, "", "{m}");
+        assert!(inside.contains("http://feed.example/rss"), "{m}");
+        assert!(inside.contains("HTTP 500"), "{m}");
+        assert!(inside.contains("oops"), "{m}");
+        assert!(inside.contains("[x](https://evil.example)"), "{m}");
+
+        let long = anyhow::anyhow!("{}", "`".repeat(5000));
+        let m = source_failed_message("feed", 5, &long);
+        assert!(m.chars().count() <= 2000, "{}", m.chars().count());
+        assert!(m.ends_with("\n```"));
+        assert_eq!(m.matches("```").count(), 2);
+
+        let m = source_failed_message(&"n".repeat(1000), 7, &long);
+        assert!(m.chars().count() <= 2000, "{}", m.chars().count());
+        assert!(
+            m.contains("…` の取得が7回連続で失敗しています。\n```\n"),
+            "{m}"
+        );
+        assert!(m.ends_with("\n```"));
+    }
+
     fn hours_before(now: chrono::DateTime<chrono::Utc>, h: i64) -> String {
         (now - chrono::Duration::hours(h)).to_rfc3339()
     }
@@ -1469,6 +1892,23 @@ stale_after_hours = 0
         cfg.sources.clear();
         cfg.installed.enabled = false;
         cfg
+    }
+
+    #[test]
+    fn heartbeat_prefers_env_and_skips_insecure_env() {
+        let env = "https://hc-ping.com/env";
+        let file = "https://hc-ping.com/file";
+        assert_eq!(heartbeat(None, None), Heartbeat::None);
+        assert_eq!(heartbeat(Some(env), Some(file)), Heartbeat::Env(env));
+        assert_eq!(heartbeat(None, Some(file)), Heartbeat::Config(file));
+        assert_eq!(
+            heartbeat(Some("http://hc-ping.com/env"), Some(file)),
+            Heartbeat::Insecure
+        );
+        assert_eq!(
+            heartbeat(Some("hc-ping.com/env"), None),
+            Heartbeat::Insecure
+        );
     }
 
     fn secrets() -> Secrets {
