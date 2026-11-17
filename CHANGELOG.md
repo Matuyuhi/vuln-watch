@@ -7,7 +7,7 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 
 ### Added
 
-- `vuln-watch explain <CVE-ID|GHSA-ID>` shows why a vulnerability was or was not notified: which sources have seen it, the level it was notified at (also `#kev`), whether it waits in the outbox, the digest queue or `pending`; the item as cvelistV5 and the GitHub Advisory Database serve it now; and the level and reason the current rules, watch list and `[installed]` give it per enabled source, with the best watch match. Read-only: state.db is opened read-only like `doctor`, nothing is sent or stored, and it is not re-run under systemd. `--offline` shows only the state.
+- `vuln-watch explain <CVE-ID|GHSA-ID>` shows why a vulnerability was or was not notified: which sources have seen it, the level it was notified at (also `#kev`), whether it waits in the outbox, the digest queue or `pending`; the item as cvelistV5 and the GitHub Advisory Database serve it now; and the level and reason the current rules, watch list and `[installed]` give it per enabled source, with the best watch match (or that the source drops it by `ignore_title_prefixes`). Read-only: state.db is opened read-only like `doctor`, nothing is sent or stored, and it is not re-run under systemd. `--offline` shows only the state.
 - `require_watch = true` on a `kind = "advisory"` source notifies only Claude advisories that match a `[[watch]]` entry, or that list a `deb` package installed here and older than its fixed version. Others are ignored ("ウォッチ不一致"), also with `mode = "urgent"`. Default `false` (every advisory, as before). Other kinds reject the setting.
 
 ### Changed

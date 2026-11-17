@@ -365,6 +365,7 @@ pub const API_URL: &str = "https://api.github.com/advisories";
 /// One advisory found by a lookup.
 pub struct Lookup {
     pub ghsa_id: String,
+    pub cve_id: Option<String>,
     /// "reviewed", "unreviewed" or "malware".
     pub kind: Option<String>,
     /// None when the advisory is withdrawn.
@@ -382,6 +383,7 @@ pub fn parse_lookup(source: &str, body: &str) -> Result<Vec<Lookup>> {
         .into_iter()
         .map(|a| Lookup {
             ghsa_id: a.ghsa_id.clone(),
+            cve_id: a.cve_id.clone().filter(|c| !c.is_empty()),
             kind: a.kind.clone(),
             item: a.withdrawn_at.is_none().then(|| to_item(source, a)),
         })

@@ -11,13 +11,13 @@ use anyhow::{bail, Result};
 use serde_json::Value;
 
 use crate::app::Secrets;
-use crate::config::{Config, SourceKind};
+use crate::config::{Config, SourceConfig, SourceKind};
 use crate::db::{Db, KeyRow, PendingRow, Queue, SeenRow};
 use crate::http::{Http, StatusError};
 use crate::installed::Installed;
 use crate::model::Item;
 use crate::rules::{self, InstalledMatch, SourcePolicy};
-use crate::sources::{cvelist, ghsa, GithubAuth};
+use crate::sources::{cvelist, ghsa, ignored_title_prefix, GithubAuth};
 use crate::text::truncate;
 
 pub struct Options {
@@ -107,10 +107,17 @@ pub fn state_summary(db: &Db, ids: &[String]) -> Result<StateSummary> {
 pub fn state_lines(s: &StateSummary, sources: &[String]) -> Vec<String> {
     let mut out = Vec::new();
     for row in &s.seen {
-        let note = if row.id.ends_with("#awaiting-remedy") {
-            " (held back: no fix published yet)"
-        } else {
-            ""
+        // The marker stays in `seen` after the item is decided with a fix.
+        let note = match row.id.strip_suffix("#awaiting-remedy") {
+            Some(base)
+                if s.seen
+                    .iter()
+                    .any(|r| r.source == row.source && r.id.eq_ignore_ascii_case(base)) =>
+            {
+                " (was held back for lack of a fix; decided since)"
+            }
+            Some(_) => " (held back: no fix published yet)",
+            None => "",
         };
         out.push(format!(
             "seen       {}: {} at {}{note}",
@@ -207,31 +214,38 @@ pub fn decision_lines(
         installed: i,
         already_fixed: cfg.installed.already_fixed,
     });
-    let sources: Vec<(String, SourcePolicy)> = cfg
+    let sources: Vec<&SourceConfig> = cfg
         .sources
         .iter()
         .filter(|s| s.enabled && s.kind == kind)
-        .map(|s| {
-            (
-                s.name(),
-                SourcePolicy {
-                    mode: s.mode,
-                    require_watch: s.require_watch,
-                },
-            )
-        })
         .collect();
     let mut out = Vec::new();
-    let sources = if sources.is_empty() {
+    let sources: Vec<(String, SourcePolicy, Option<&str>)> = if sources.is_empty() {
         out.push(format!(
             "(no enabled `{}` source: decided with the default mode \"filter\")",
             kind.as_str()
         ));
-        vec![(kind.as_str().to_string(), SourcePolicy::default())]
+        vec![(kind.as_str().to_string(), SourcePolicy::default(), None)]
     } else {
         sources
+            .into_iter()
+            .map(|s| {
+                let policy = SourcePolicy {
+                    mode: s.mode,
+                    require_watch: s.require_watch,
+                };
+                (s.name(), policy, ignored_title_prefix(s, &item.title))
+            })
+            .collect()
     };
-    for (name, policy) in sources {
+    for (name, policy, ignored_prefix) in sources {
+        // Dropped by the source before the rules see it.
+        if let Some(p) = ignored_prefix {
+            out.push(format!(
+                "[{name}] dropped by ignore_title_prefixes ({p:?}): never reaches the rules"
+            ));
+            continue;
+        }
         // Watch entries can be limited to source names.
         let mut item = item.clone();
         item.source = name.clone();
@@ -272,6 +286,8 @@ pub fn decision_lines(
 /// Items fetched live, with the kind of source that serves them.
 struct Found {
     label: String,
+    /// Ids of the record (GHSA id, CVE), also when it yields no item (withdrawn).
+    ids: Vec<String>,
     kind: SourceKind,
     note: Option<String>,
     item: Option<Item>,
@@ -331,6 +347,10 @@ fn fetch_live(
                     };
                     found.push(Found {
                         label: format!("GitHub advisory {}", l.ghsa_id),
+                        ids: [Some(l.ghsa_id.clone()), l.cve_id.clone()]
+                            .into_iter()
+                            .flatten()
+                            .collect(),
                         kind: SourceKind::Ghsa,
                         note,
                         item: l.item,
@@ -357,6 +377,7 @@ fn fetch_live(
                     let item = cvelist::parse_record("cvelist", &v);
                     found.push(Found {
                         label,
+                        ids: vec![cve.clone()],
                         kind: SourceKind::Cvelist,
                         note: item
                             .is_none()
@@ -403,13 +424,9 @@ pub fn run(cfg: &Config, http: &Http, secrets: &Secrets, opts: &Options) -> Resu
 
     // Related ids: the GHSA ids of a CVE, the CVE of a GHSA id.
     let mut ids = vec![id.as_str().to_string()];
-    for f in &found {
-        if let Some(item) = &f.item {
-            for related in [Some(&item.id), item.cve.as_ref()].into_iter().flatten() {
-                if !ids.iter().any(|i| i.eq_ignore_ascii_case(related)) {
-                    ids.push(related.clone());
-                }
-            }
+    for related in found.iter().flat_map(|f| &f.ids) {
+        if !ids.iter().any(|i| i.eq_ignore_ascii_case(related)) {
+            ids.push(related.clone());
         }
     }
 
@@ -593,6 +610,22 @@ mod tests {
     }
 
     #[test]
+    fn awaiting_remedy_marker_of_a_decided_item_is_past() {
+        let db = Db::open_in_memory().unwrap();
+        let g = "GHSA-aaaa-bbbb-cccc";
+        db.mark_seen("ghsa", &format!("{g}#awaiting-remedy"))
+            .unwrap();
+        let s = state_summary(&db, &[g.to_string()]).unwrap();
+        let text = state_lines(&s, &[]).join("\n");
+        assert!(text.contains("held back: no fix published yet"), "{text}");
+        db.mark_seen("ghsa", g).unwrap();
+        let s = state_summary(&db, &[g.to_string()]).unwrap();
+        let text = state_lines(&s, &[]).join("\n");
+        assert!(!text.contains("no fix published yet"), "{text}");
+        assert!(text.contains("decided since"), "{text}");
+    }
+
+    #[test]
     fn empty_state_says_so() {
         let db = Db::open_in_memory().unwrap();
         let s = state_summary(&db, &["CVE-2026-1".to_string()]).unwrap();
@@ -688,6 +721,8 @@ mod tests {
         assert_eq!(found[1].item.as_ref().unwrap().id, "GHSA-aaaa-bbbb-cccc");
         assert!(found[2].item.is_none());
         assert!(found[2].note.as_deref().unwrap().contains("withdrawn"));
+        // A withdrawn advisory still names its ids for the state lookup.
+        assert_eq!(found[2].ids, vec!["GHSA-dddd-eeee-ffff", "CVE-2026-7777"]);
     }
 
     /// The cvelist source reads `base` (plain http is only allowed in tests).
@@ -774,6 +809,28 @@ mod tests {
         let lines = decision_lines(&item("nginx: overflow", None), SourceKind::Usn, &cfg, None);
         assert!(lines[0].contains("no enabled `usn` source"), "{lines:?}");
         assert!(lines[1].starts_with("[usn] Urgent"), "{lines:?}");
+    }
+
+    #[test]
+    fn decision_reports_ignored_title_prefix() {
+        let mut cfg = config("");
+        let src = cfg
+            .sources
+            .iter_mut()
+            .find(|s| s.kind == SourceKind::Cvelist)
+            .unwrap();
+        src.ignore_title_prefixes = vec!["NGINX:".into()];
+        let lines = decision_lines(
+            &item("  nginx: overflow", Some(9.8)),
+            SourceKind::Cvelist,
+            &cfg,
+            None,
+        );
+        assert_eq!(lines.len(), 1, "{lines:?}");
+        assert!(
+            lines[0].contains("dropped by ignore_title_prefixes"),
+            "{lines:?}"
+        );
     }
 
     #[test]
