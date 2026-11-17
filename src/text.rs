@@ -56,17 +56,22 @@ pub fn contains_word(haystack: &str, needle: &str) -> bool {
 /// `contains_word` no longer finds words that are only part of them. Matched bytes
 /// become spaces, which are word boundaries. Both arguments are expected to be
 /// lowercase already; empty terms are skipped.
+/// Every term is matched against the original text, so overlapping terms
+/// (`ingress`, `ingress-nginx`) give the same result in any order.
 pub fn mask_words(haystack: &str, terms: &[String]) -> String {
+    let ranges: Vec<(usize, usize)> = terms
+        .iter()
+        .filter(|t| !t.is_empty())
+        .flat_map(|term| {
+            haystack
+                .match_indices(term.as_str())
+                .filter(|(idx, m)| is_word_at(haystack, *idx, m.len()))
+                .map(|(idx, m)| (idx, idx + m.len()))
+        })
+        .collect();
     let mut out = haystack.to_string();
-    for term in terms.iter().filter(|t| !t.is_empty()) {
-        let ranges: Vec<(usize, usize)> = out
-            .match_indices(term.as_str())
-            .filter(|(idx, _)| is_word_at(&out, *idx, term.len()))
-            .map(|(idx, m)| (idx, idx + m.len()))
-            .collect();
-        for (start, end) in ranges {
-            out.replace_range(start..end, &" ".repeat(end - start));
-        }
+    for (start, end) in ranges {
+        out.replace_range(start..end, &" ".repeat(end - start));
     }
     out
 }
@@ -149,6 +154,12 @@ mod tests {
         assert_eq!(mask_words("myingress-nginx", &terms), "myingress-nginx");
         assert_eq!(mask_words("中文 nginx ui", &terms), "中文         ");
         assert_eq!(mask_words("abc", &[String::new()]), "abc");
+        // Overlapping terms: the result does not depend on their order.
+        for terms in [["ingress", "ingress-nginx"], ["ingress-nginx", "ingress"]] {
+            let terms: Vec<String> = terms.iter().map(|t| t.to_string()).collect();
+            let masked = mask_words("kubernetes ingress-nginx", &terms);
+            assert!(!contains_word(&masked, "nginx"), "{terms:?}: {masked}");
+        }
     }
 
     #[test]

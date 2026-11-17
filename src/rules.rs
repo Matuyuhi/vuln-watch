@@ -798,6 +798,17 @@ mod tests {
     }
 
     #[test]
+    fn watch_exclude_overlapping_terms_in_any_order() {
+        let mut i = item("ingress-nginx: configuration injection", Some(9.8));
+        i.products = vec!["Kubernetes ingress-nginx".into()];
+        for exclude in [["ingress", "ingress-nginx"], ["ingress-nginx", "ingress"]] {
+            let mut w = nginx_with_exclude();
+            w[0].exclude = exclude.iter().map(|e| e.to_string()).collect();
+            assert!(match_watch(&i, &w).is_none(), "{exclude:?}");
+        }
+    }
+
+    #[test]
     fn watch_exclude_keeps_exact_package_match() {
         let mut w = nginx_with_exclude();
         w[0].keywords = vec!["nginx".into()];
