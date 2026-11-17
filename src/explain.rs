@@ -140,7 +140,12 @@ pub fn state_lines(s: &StateSummary, sources: &[String]) -> Vec<String> {
             out.push(format!("{label:<10} {} {} at {}", r.key, r.detail, r.at));
         }
     };
-    keyed("alerted", &s.alerted, "never notified", &mut out);
+    keyed(
+        "alerted",
+        &s.alerted,
+        "none (never sent or queued)",
+        &mut out,
+    );
     keyed("outbox", &s.outbox, "not waiting", &mut out);
     keyed("digest", &s.digest, "not queued", &mut out);
     if s.pending.is_empty() {
@@ -202,11 +207,12 @@ pub fn item_lines(item: &Item) -> Vec<String> {
 }
 
 /// What the current rules decide for `item` as served by a source of `kind`: one line per
-/// enabled source of that kind (none enabled: the default policy, said so), with the level,
+/// enabled source of that kind (`only`: of these names; none: the default policy, said so), with the level,
 /// the reason as a message would show it, and the best watch match.
 pub fn decision_lines(
     item: &Item,
     kind: SourceKind,
+    only: Option<&[String]>,
     cfg: &Config,
     installed: Option<&Installed>,
 ) -> Vec<String> {
@@ -218,6 +224,7 @@ pub fn decision_lines(
         .sources
         .iter()
         .filter(|s| s.enabled && s.kind == kind)
+        .filter(|s| only.is_none_or(|names| names.contains(&s.name())))
         .collect();
     let mut out = Vec::new();
     let sources: Vec<(String, SourcePolicy, Option<&str>)> = if sources.is_empty() {
@@ -289,6 +296,8 @@ struct Found {
     /// Ids of the record (GHSA id, CVE), also when it yields no item (withdrawn).
     ids: Vec<String>,
     kind: SourceKind,
+    /// The sources that read this record; None: every enabled source of `kind`.
+    sources: Option<Vec<String>>,
     note: Option<String>,
     item: Option<Item>,
 }
@@ -352,6 +361,7 @@ fn fetch_live(
                             .flatten()
                             .collect(),
                         kind: SourceKind::Ghsa,
+                        sources: None,
                         note,
                         item: l.item,
                     });
@@ -362,31 +372,50 @@ fn fetch_live(
         };
     match id {
         Id::Cve(cve) => {
-            let base = cfg
+            // One fetch per record URL: sources with different `url`s may serve different
+            // versions, and each is decided with the record it reads.
+            let mut by_url: Vec<(String, Option<Vec<String>>)> = Vec::new();
+            for src in cfg
                 .sources
                 .iter()
                 .filter(|s| s.enabled && s.kind == SourceKind::Cvelist)
-                .find_map(|s| s.url.as_deref());
-            let url = cvelist::lookup_url(base, cve);
-            let label = format!("CVE record {url}");
-            let record = http
-                .get(&url, &[], None)
-                .and_then(|r| Ok(serde_json::from_str::<Value>(&r.body)?));
-            match record {
-                Ok(v) => {
-                    let item = cvelist::parse_record("cvelist", &v);
-                    found.push(Found {
-                        label,
-                        ids: vec![cve.clone()],
-                        kind: SourceKind::Cvelist,
-                        note: item
-                            .is_none()
-                            .then(|| "rejected (or no cveId): no source reports it".to_string()),
-                        item,
-                    });
+            {
+                let url = cvelist::lookup_url(src.url.as_deref(), cve);
+                match by_url.iter_mut().find(|(u, _)| *u == url) {
+                    Some((_, Some(names))) => names.push(src.name()),
+                    _ => by_url.push((url, Some(vec![src.name()]))),
                 }
-                Err(e) if is_not_found(&e) => out.push(format!("{label}: not found at the source")),
-                Err(e) => out.push(format!("{label}: fetch failed: {e:#}")),
+            }
+            if by_url.is_empty() {
+                by_url.push((cvelist::lookup_url(None, cve), None));
+            }
+            for (url, sources) in by_url {
+                let label = match &sources {
+                    Some(names) => format!("CVE record {url} ({})", names.join(", ")),
+                    None => format!("CVE record {url}"),
+                };
+                let record = http
+                    .get(&url, &[], None)
+                    .and_then(|r| Ok(serde_json::from_str::<Value>(&r.body)?));
+                match record {
+                    Ok(v) => {
+                        let item = cvelist::parse_record("cvelist", &v);
+                        found.push(Found {
+                            label,
+                            ids: vec![cve.clone()],
+                            kind: SourceKind::Cvelist,
+                            sources,
+                            note: item.is_none().then(|| {
+                                "rejected (or no cveId): no source reports it".to_string()
+                            }),
+                            item,
+                        });
+                    }
+                    Err(e) if is_not_found(&e) => {
+                        out.push(format!("{label}: not found at the source"))
+                    }
+                    Err(e) => out.push(format!("{label}: fetch failed: {e:#}")),
+                }
             }
             let url = format!("{ghsa_api}?cve_id={cve}");
             ghsa_from(
@@ -476,7 +505,7 @@ pub fn run(cfg: &Config, http: &Http, secrets: &Secrets, opts: &Options) -> Resu
         let Some(item) = &f.item else { continue };
         any = true;
         println!("-- {}", f.label);
-        for line in decision_lines(item, f.kind, cfg, installed.as_ref()) {
+        for line in decision_lines(item, f.kind, f.sources.as_deref(), cfg, installed.as_ref()) {
             println!("{line}");
         }
     }
@@ -631,7 +660,7 @@ mod tests {
         let s = state_summary(&db, &["CVE-2026-1".to_string()]).unwrap();
         let text = state_lines(&s, &["cvelist".into()]).join("\n");
         assert!(text.contains("not seen   cvelist"));
-        assert!(text.contains("never notified"));
+        assert!(text.contains("never sent or queued"));
         assert!(text.contains("pending    not waiting"), "{text}");
     }
 
@@ -692,6 +721,49 @@ mod tests {
         assert_eq!(
             out,
             vec!["GitHub advisory GHSA-aaaa-bbbb-cccc: not found at the source"]
+        );
+    }
+
+    #[test]
+    fn each_cvelist_url_is_fetched_for_its_own_sources() {
+        let record = r#"{"cveMetadata": {"cveId": "CVE-2026-8888", "state": "PUBLISHED"},
+            "containers": {"cna": {"title": "nginx: overflow", "descriptions": []}}}"#;
+        let good = serve(vec![("/CVE-2026-8888.json", 200, record)]);
+        let empty = serve(vec![]);
+        let mut cfg = mirror_config(&empty);
+        let mut other = cfg
+            .sources
+            .iter()
+            .find(|s| s.kind == SourceKind::Cvelist)
+            .unwrap()
+            .clone();
+        other.name = Some("good".into());
+        other.url = Some(format!("{good}/cves"));
+        cfg.sources.push(other);
+        let http = Http::new(5).unwrap();
+        let mut out = Vec::new();
+        let id = Id::parse("CVE-2026-8888").unwrap();
+        let api = format!("{empty}/advisories");
+        let found = fetch_live(&id, &cfg, &http, None, &api, &mut out);
+        assert_eq!(found.len(), 1, "{out:?}");
+        assert_eq!(found[0].sources.as_deref(), Some(&["good".to_string()][..]));
+        assert!(
+            out.iter()
+                .any(|l| l.contains("(cvelist)") && l.ends_with("not found at the source")),
+            "{out:?}"
+        );
+        let item = found[0].item.as_ref().unwrap();
+        let lines = decision_lines(
+            item,
+            SourceKind::Cvelist,
+            found[0].sources.as_deref(),
+            &cfg,
+            None,
+        );
+        assert!(lines[0].starts_with("[good] "), "{lines:?}");
+        assert!(
+            !lines.iter().any(|l| l.starts_with("[cvelist]")),
+            "{lines:?}"
         );
     }
 
@@ -761,6 +833,7 @@ mod tests {
         let lines = decision_lines(
             &item("nginx: overflow in resolver", Some(8.0)),
             SourceKind::Cvelist,
+            None,
             &cfg,
             None,
         );
@@ -781,6 +854,7 @@ mod tests {
         let lines = decision_lines(
             &item("Overflow in FooServer", Some(3.0)),
             SourceKind::Cvelist,
+            None,
             &cfg,
             None,
         );
@@ -795,6 +869,7 @@ mod tests {
         let lines = decision_lines(
             &item("nginx: overflow", Some(9.0)),
             SourceKind::Cvelist,
+            None,
             &cfg,
             None,
         );
@@ -806,7 +881,13 @@ mod tests {
     #[test]
     fn decision_without_enabled_source_uses_default_policy() {
         let cfg = config("");
-        let lines = decision_lines(&item("nginx: overflow", None), SourceKind::Usn, &cfg, None);
+        let lines = decision_lines(
+            &item("nginx: overflow", None),
+            SourceKind::Usn,
+            None,
+            &cfg,
+            None,
+        );
         assert!(lines[0].contains("no enabled `usn` source"), "{lines:?}");
         assert!(lines[1].starts_with("[usn] Urgent"), "{lines:?}");
     }
@@ -823,6 +904,7 @@ mod tests {
         let lines = decision_lines(
             &item("  nginx: overflow", Some(9.8)),
             SourceKind::Cvelist,
+            None,
             &cfg,
             None,
         );
@@ -846,6 +928,7 @@ mod tests {
         let lines = decision_lines(
             &item("nginx: overflow", Some(3.0)),
             SourceKind::Cvelist,
+            None,
             &cfg,
             None,
         );
