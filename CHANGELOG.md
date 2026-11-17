@@ -17,6 +17,10 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 
 - A digest line with a very long feed GUID, title or reason (or many Markdown characters) was cut at 600 characters, which could drop its link, score and reason. Each field is now bounded on its own instead (id 80, title 90, severity 20, reason 120, actions 150 characters; a link longer than 300 characters is left out), and the line is no longer cut as a whole.
 
+### Security
+
+- The "source failing" DM put the error text (for an HTTP error, the first 300 characters of the remote response body) in a ``` code block as is. A body containing ``` closed the block early, and the rest rendered as Discord Markdown, so a feed host or anyone on the path of an `http://` feed could show a masked link in a DM from the bot. Backticks in the error are now broken up with a zero-width space so the block can't be closed from inside, and when the text is cut the closing fence is still added. The URL, the HTTP status and the body text are still shown.
+
 ## [1.2.0] - 2026-11-03
 
 ### Added
