@@ -13,6 +13,10 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 
 - Urgent items over `max_urgent_per_run` are no longer moved to the digest (which waits for the 08:00 timer, up to ~24 hours). They are sent in the same run as one compact list message, "⚠️ 即時通知の上限（N件/回）を超えた残りM件", with the digest line format (id and link, product, title, score, reason), split into several messages under Discord limits when needed. Listed items count as notified urgently. If a list message fails transiently, its items stay in the outbox for the next run; if Discord rejects it, its items go to the digest as before (with `digest = false`, they stay in the outbox and are sent one by one by later runs), with one notice. The old "残りN件はダイジェストに回しました" notice is gone. `max_urgent_per_run` still caps the individual urgent messages per run.
 
+### Security
+
+- cvelist: a delta entry whose `cveId` is not `CVE-YYYY-NNNN…` (ASCII digits) is now skipped with a warning. Before, a non-ASCII id without `githubLink` (e.g. `CVE-2026-é12`) panicked while building the record URL, which stopped the whole run (no outbox flush, no later sources, no "source failing" DM) on every run while the entry stayed in `deltaLog.json` (up to ~30 days). The cursor still moves past such a delta and its valid CVEs are processed. Building the record URL no longer panics on any input, and a `githubLink` that is not `http(s)://` is ignored in favour of the standard record URL.
+
 ### Fixed
 
 - A digest line with a very long feed GUID, title or reason (or many Markdown characters) was cut at 600 characters, which could drop its link, score and reason. Each field is now bounded on its own instead (id 80, title 90, severity 20, reason 120, actions 150 characters; a link longer than 300 characters is left out), and the line is no longer cut as a whole.
