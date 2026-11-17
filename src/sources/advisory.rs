@@ -209,7 +209,7 @@ pub fn fetch(name: &str, url: Option<&str>, branch: Option<&str>, ctx: &Ctx) -> 
             .http
             .get(&blob_url, &auth.headers(&blob_url, &raw_base), None)?;
         let html_url = format!("{web}/blob/{branch}/{}", e.path);
-        // A broken file is skipped, not retried: fixing it changes its SHA.
+        // A broken file is reported once, not retried: fixing it changes its SHA.
         match parse(
             name,
             &e.path,
@@ -220,7 +220,10 @@ pub fn fetch(name: &str, url: Option<&str>, branch: Option<&str>, ctx: &Ctx) -> 
         ) {
             Ok(Some(item)) => items.push(item),
             Ok(None) => {}
-            Err(err) => tracing::warn!("{name}: skipping {}: {err:#}", e.path),
+            Err(err) => {
+                tracing::warn!("{name}: cannot read {}: {err:#}", e.path);
+                items.push(load_error_item(name, &e.path, &e.sha, &html_url, &err));
+            }
         }
         commit.push((sha_key(name, &e.path), e.sha));
     }
@@ -229,6 +232,31 @@ pub fn fetch(name: &str, url: Option<&str>, branch: Option<&str>, ctx: &Ctx) -> 
         commit,
         ..Fetched::default()
     })
+}
+
+/// Item reporting an advisory file that `parse` rejected. Its id includes the blob SHA, so
+/// one broken version of a file is reported once and a fixed (or newly broken) version is
+/// a new item.
+fn load_error_item(
+    source: &str,
+    path: &str,
+    sha: &str,
+    html_url: &str,
+    err: &anyhow::Error,
+) -> Item {
+    let file = path.rsplit('/').next().unwrap_or(path);
+    let mut item = Item::new(source, format!("{path}@{sha}"));
+    item.title = format!("アドバイザリを読み込めませんでした: {file}");
+    // Plain text, not a code block: the error quotes the file, which can contain ```.
+    item.summary = truncate(&format!("{err:#}"), 1000);
+    item.url = html_url.to_string();
+    item.load_error = true;
+    item.extra.push(("ファイル".into(), path.to_string()));
+    item.extra.push((
+        "対処".into(),
+        "ファイルを修正してください。修正後のファイルは通常どおり読み込まれます。".into(),
+    ));
+    item
 }
 
 fn to_date(d: &toml::value::Datetime) -> Result<NaiveDate> {
@@ -566,5 +594,58 @@ kind = "secondary"
                 .count();
             assert_eq!(read, expected, "bootstrap = {bootstrap}");
         }
+    }
+
+    #[test]
+    fn broken_file_is_reported_once() {
+        let broken = ADVISORY.replace(
+            r#"actions = ["Update Electron apps", "Update ca-certificates"]"#,
+            r#"actions = "Update Electron apps""#,
+        );
+        assert!(parse("adv", PATH, &broken, URL, None, day("2026-10-25")).is_err());
+        let tree = format!(r#"{{"tree": [{{"path": "{PATH}", "type": "blob", "sha": "bad1"}}]}}"#);
+        let base = serve(vec![
+            ("/git/trees/advisories".into(), tree),
+            ("/git/blobs/bad1".into(), broken),
+        ]);
+        let db = crate::db::Db::open_in_memory().unwrap();
+        let cfg = crate::config::Config::parse("").unwrap();
+        let http = crate::http::Http::new(5).unwrap();
+        let ctx = Ctx {
+            http: &http,
+            db: &db,
+            cfg: &cfg,
+            github_token: None,
+            bootstrap: false,
+            limit: None,
+            release: None,
+        };
+        let fetched = fetch("adv", Some(&base), None, &ctx).unwrap();
+        assert_eq!(fetched.items.len(), 1);
+        let item = &fetched.items[0];
+        assert!(item.load_error);
+        assert_eq!(item.id, format!("{PATH}@bad1"));
+        assert_eq!(
+            item.title,
+            "アドバイザリを読み込めませんでした: VWA-2026-1025-emudhra.toml"
+        );
+        assert_eq!(item.url, format!("{base}/blob/advisories/{PATH}"));
+        assert!(
+            item.summary.contains("invalid type: string"),
+            "{}",
+            item.summary
+        );
+        assert!(!item.summary.contains("```"));
+        assert_eq!(item.confidence, None);
+        assert!(fetched
+            .commit
+            .contains(&(sha_key("adv", PATH), "bad1".to_string())));
+
+        // The SHA is committed: the same blob is not read (or reported) again.
+        for (k, v) in &fetched.commit {
+            db.set_kv(k, v).unwrap();
+        }
+        let again = fetch("adv", Some(&base), None, &ctx).unwrap();
+        assert!(again.items.is_empty());
     }
 }

@@ -65,11 +65,13 @@ oss-security には、CVE レコードより先に報告が出ることがよく
 | それ以外 | 無視 |
 
 - `urgent = false` のウォッチ対象は、一致してもダイジェストにだけ入ります。
+- キーワードは単語単位で照合し、`-`・`/`・`.`・`_` も単語の区切りとして扱います。そのため `nginx` は `ingress-nginx` や `nginx-ui` にも一致します。ウォッチ対象に `exclude = ["ingress-nginx", "nginx-ui"]` を付けると、そのエントリのキーワードを照合する前に、製品・パッケージ・タイトル・説明文からこれらの語（単語単位、大文字小文字を区別しない）を取り除きます。`Kubernetes ingress-nginx` は `nginx` に一致しなくなりますが、`nginx and ingress-nginx` は引き続き一致します。`packages` の完全一致には影響しません。勧告にも適用されます。`[rules] exclude_keywords` はウォッチに一致しなかった項目にしか効かないので、この用途には使えません。
 - 複数のウォッチ対象が一致したときは、設定の順番に関係なく、`urgent = true` の強い一致 → `urgent = false` の強い一致 → 本文のみの一致の順で優先されます。下の勧告でも同じです。
 - ダイジェストは、ウォッチ対象やインストール済みパッケージに一致したものを先に並べ、CVSS だけで入ったものは別の見出しの下にまとめます。
 - タイトルに製品名がない場合は、通知に対象の製品名を添えます。
 - 通知には、どのフィールドのどの語で一致したかを表示します。
 - 複数の情報源から届いた同じ CVE は 1 回だけ通知します。後から KEV に載った場合は改めて通知します。
+- 修正版の情報なしで即時通知した CVE（CVE レコードや oss-security から届いたもの）について、後で別の情報源が修正版付きで届き、それも即時通知と判定された場合（修正バージョンのある GHSA や、同じ GHSA が修正版付きで更新された場合など）は、「🩹 【修正版が公開・既報】」の追報を修正バージョン付きで 1 回だけ送ります。最初の通知から 30 日以内（このバージョン以降で送った通知）に限ります。KEV の項目は対象外です（KEV に載った時点で改めて通知するため）。`[rules] remedy_followup = false` で無効にできます。`require_remedy = true` の場合は最初の通知に修正版が含まれるので、動作は変わりません。
 - REJECTED の CVE と withdrawn の GHSA は除外します。
 - 初回実行では、各情報源の既存分を記録するだけで通知しません。
 - 情報源の取得失敗が続くと警告を送り、復旧も通知します。
@@ -105,12 +107,14 @@ CVE が付かないまま多くの製品に「今すぐ更新」が必要にな�
 - ソースに `require_watch = true` を付けると、ウォッチに一致した勧告と、インストール済みで修正版より古い `deb` パッケージを含む勧告だけを通知します。それ以外は「ウォッチ不一致」として無視します（`mode = "urgent"` でも同じ）。一致した勧告の扱いは上の表のとおりです。既定は `false` で、ウォッチ一致の有無を問わず通知します。
 - `confidence = "unverified"` の勧告と、`primary` の出典がない勧告は即時通知しません。
 - `expires` を過ぎた勧告、`status` が `resolved` / `withdrawn` の勧告は読み飛ばします。
+- 読み込めない勧告ファイル（TOML の誤り、`actions = "..."` のようにリストの位置に文字列がある、未知のキーがあるなど）は「アドバイザリを読み込めませんでした: <ファイル名>」として、ファイルへのリンクとエラー内容付きで即時通知します（ソースが `mode = "digest"` ならダイジェスト）。ウォッチ・`require_watch`・`require_remedy` は適用しません。同じ内容のファイルは 1 回だけ通知し、修正されたファイルは通常どおり読み込みます。
 - `revision` が上がると再通知します。それ以外の修正では通知しません。
 - 通知には「Claude 調査」と確度を必ず載せます。即時通知には対策と出典を、ダイジェストには対策と勧告ファイルへのリンク（出典はファイル内）を載せます。対応の前に出典を確認してください。
 
 ## 取りこぼし対策
 
 - 即時通知は、カーソルや ETag を確定する前に outbox に保存します。Discord に送れなかった分は次の実行で再送します。Discord が内容を不正として拒否した通知はテキストのみで送り直すため、後続の通知を止めません。
+- 情報源から来るタイトル・説明・製品名などはプレーンテキストとして表示します。Markdown はエスケープするため、細工された CVE や勧告が、表示テキストとリンク先が異なる偽装リンク（`[text](https://…)`）を出すことはありません。リンクにするのは認証情報を含まない `http`/`https` の URL だけです。有効な URL がない項目はリンクなしで表示し、メッセージに収まらない長いリンクは途中で切らずに省きます。
 - ダイジェストはメッセージを 1 通送るごとにその分をキューから消すため、途中で失敗しても送信済みの分を重複して送りません。失敗した場合は、次の `run`（5 分以上経過後）が残りを「（再送）」の見出しで送り直します。再送の失敗はログに残すだけで、即時通知を止めません。
 - `run` は同時に 1 つしか動きません。タイマーの `run` の実行中に手動で `sudo vuln-watch run` を実行した場合は何もせず終了し（終了コード 0、stderr に 1 行表示）、同じ即時通知が二重に送られることはありません。タイムアウトで強制終了された `run` が後続の実行を止めるのは最大 6 分です。
 - GitHub Advisory は `updated` 順に取得し、前回の位置までページを遡ります。公開から時間が経って reviewed になったものも拾えます。遡りは 20 ページ（2,000 件）で打ち切ります（長い停止や GitHub による一括更新の後など）。届かなかった範囲は後続の実行で古い順に 1 回最大 5 ページずつ読みます。API のレート制限の残りが 30 回以下のときは読まず、`GITHUB_TOKEN` なしでも通常の巡回の分を残します。読んだものは通常どおりルールと重複排除を通します。未読の範囲が残っている間は `vuln-watch doctor` が警告します。
@@ -178,9 +182,9 @@ sudo ./deploy/install.sh
 |---|---|
 | `DISCORD_BOT_TOKEN` | DM 送信に必須 |
 | `DISCORD_USER_ID` | 送信先。`discord.user_id` より優先 |
-| `DISCORD_WEBHOOK_URL` | Webhook 送信に必須 |
+| `DISCORD_WEBHOOK_URL` | Webhook 送信に必須。`https://discord.com/api/webhooks/…` の形式であること（`discordapp.com`、`ptb.` / `canary.discord.com`、`/api/v<N>/webhooks/…`、`?thread_id=` クエリも可）。それ以外（`http://` など）は起動時と `doctor` でエラーになる |
 | `GITHUB_TOKEN` | 推奨。権限なしの fine-grained token で十分です。API 制限が 60 → 5,000 回/時になり、CVE List を CDN ではなく API から読むため最大 5 分速くなります。`https://api.github.com` にだけ送ります。`ghsa` / `advisory` の `url`（や次ページのリンク）が別のホストのときはトークンなしで読み、実行ごとに 1 回警告します。 |
-| `HEARTBEAT_URL` | 任意。実行成功ごとに ping します（healthchecks.io など） |
+| `HEARTBEAT_URL` | 任意。実行成功ごとに ping します（healthchecks.io など）。`https://` で始める必要があります（そうでないときは ping せず、警告をログに出します）。`config.toml` の `runtime.heartbeat_url` ではなく、ここに設定してください。`config.toml` はサーバー上のどのユーザーからも読めるため、URL を知った人が ping を送り続けると、vuln-watch が止まっても気づけなくなります。`runtime.heartbeat_url` も引き続き使えます（こちらも `https://` 必須）が、`run` が警告をログに出し、`doctor` も警告します。 |
 
 `/etc/vuln-watch/config.toml` でウォッチリストと情報源を調整します。ウォッチリストは `vuln-watch watch` でも編集できます（[使い方](#使い方)を参照）。情報源の `url` は `https://` で始める必要があります（`http://` を使えるのは `kind = "feed"` だけです）。
 
@@ -219,11 +223,12 @@ vuln-watch [--config PATH] [--state-dir DIR] <COMMAND>
 
 インストール済みのホストでは、シェルから実行した `run`・`digest`・`test-notify`・`check-config` は systemd のサービスとして動きます。`sudo` を付けると、vuln-watch が `vuln-watch@.service` と同じ設定で `systemd-run` 経由で自分自身を実行し直します。そのため `/etc/vuln-watch/env` の認証情報を使い、タイマーと同じ state を共有しつつ、出力と終了コードはそのまま端末に返ります（`sudo vuln-watch digest`、`sudo vuln-watch run --strict` など）。`sudo` なしでは案内を出して止まります。ただし認証情報も state も使わない `run --dry-run` はそのまま動きます。別の state ディレクトリでローカルに実行したい場合は `--state-dir` を指定してください。
 
-`vuln-watch watch` は config.toml の `[[watch]]` をその場で書き換えます。コメントや書式は残ります。書き込む前にサービスと同じ検証を通し、存在しない情報源・空の値・同名のエントリはエラーにします（重複したキーワードや極端に短いキーワードは警告のみ）。`add` / `edit` には `-k/--keyword`・`-p/--package`・`-s/--source`（複数指定可）と `--urgent` / `--no-urgent` を、`edit` にはさらに `--rm-keyword`・`--rm-package`・`--rm-source` を指定できます。名前は大文字小文字を区別しません。`--dry-run` を付けると書き込まずに結果だけ表示し、書き込んだ場合は直前の内容を `config.toml.bak` に残します。変更は次回のタイマー実行から反映され、再起動は不要です。`watch list` と `--dry-run` は `sudo` なしで動きます。
+`vuln-watch watch` は config.toml の `[[watch]]` をその場で書き換えます。コメントや書式は残ります。書き込む前にサービスと同じ検証を通し、存在しない情報源・空の値・同名のエントリはエラーにします（重複したキーワードや極端に短いキーワードは警告のみ）。`add` / `edit` には `-k/--keyword`・`-p/--package`・`-s/--source`・`--exclude`（複数指定可）と `--urgent` / `--no-urgent` を、`edit` にはさらに `--rm-keyword`・`--rm-package`・`--rm-source`・`--rm-exclude` を指定できます。名前は大文字小文字を区別しません。`--dry-run` を付けると書き込まずに結果だけ表示し、書き込んだ場合は直前の内容を `config.toml.bak` に残します。変更は次回のタイマー実行から反映され、再起動は不要です。`watch list` と `--dry-run` は `sudo` なしで動きます。
 
 ```bash
 sudo vuln-watch watch add PHP -k php -p php/php-src
 sudo vuln-watch watch edit php -k laravel --no-urgent
+sudo vuln-watch watch edit nginx --exclude ingress-nginx --exclude nginx-ui
 sudo vuln-watch watch remove PHP
 ```
 
@@ -237,7 +242,7 @@ dpkg のない環境では `installed.enabled = false` にしてください。
 
 ## 運用
 
-- **診断**: `sudo vuln-watch doctor` でインストール状態を項目ごとに ok / warn / FAIL で表示します。PATH 上で先に見つかる古い `vuln-watch`、新しいリリースの有無、パースできなくなった設定、`/etc/vuln-watch/env` の認証情報の不足や例のままの値、systemd が無視する行や使われない変数、パーミッション、unit ファイルと `daemon-reload` の要否、タイマーが有効か、直近の実行が成功したか、連続して失敗しているソース、各ソースに最後に新しい項目が届いた時刻（`stale_after_hours` を超えていれば警告）、未送信の緊急通知、中断された upgrade の残骸を確認します。Discord には何も送りません。FAIL があれば終了コード 1 で終わり、`--offline` でリリース確認を省きます。インストール後や upgrade 後に実行してください。
+- **診断**: `sudo vuln-watch doctor` でインストール状態を項目ごとに ok / warn / FAIL で表示します。PATH 上で先に見つかる古い `vuln-watch`、新しいリリースの有無、パースできなくなった設定、`/etc/vuln-watch/env` の認証情報の不足や例のままの値、systemd が無視する行や使われない変数、パーミッション、`https://` でない heartbeat URL や誰でも読める `config.toml` に書かれた heartbeat URL、unit ファイルと `daemon-reload` の要否、タイマーが有効か、直近の実行が成功したか、連続して失敗しているソース、各ソースに最後に新しい項目が届いた時刻（`stale_after_hours` を超えていれば警告）、未送信の緊急通知、中断された upgrade の残骸を確認します。Discord には何も送りません。FAIL があれば終了コード 1 で終わり、`--offline` でリリース確認を省きます。インストール後や upgrade 後に実行してください。
 - **通知が来た・来なかった理由**: `sudo vuln-watch explain CVE-2026-12345`（または `GHSA-xxxx-xxxx-xxxx`。大文字小文字は問いません）で、次の 3 つを表示します。状態: どのソースがその ID を既に見たか（`require_remedy` で保留中の場合も含む）、`alerted` に記録されたレベルと時刻（`#kev` も。`Digest` はダイジェストの送信時ではなく、キューに入れた時に記録される）、outbox・ダイジェストのキュー・`pending`（cvelist のレコード取得待ち。失敗回数つき）に残っているか。現在のデータ: cvelistV5 の CVE レコードと、その CVE の GitHub advisory（有効な ghsa ソースが読む `type` ごと。GHSA の ID ならその advisory）、ルールが使う項目（タイトル、製品、パッケージ、CVSS、KEV、対処の有無）。今の設定での判定: その種類の有効なソースごとに、`[installed]` を反映したレベルと理由（DM やダイジェストに出る文言のまま）と、一致したウォッチ（なければ "no watch match"）。`ignore_title_prefixes` でソースが捨てる場合はその旨。GHSA の advisory は、`url` の一覧にその advisory が含まれうる ghsa ソースについてだけ判定します（`type` と `ecosystem` の絞り込みを確認し、それ以外の絞り込みは未確認と表示します）。状態は、現在のデータで見つかった関連 ID（CVE の GHSA ID、GHSA の CVE）についても調べます。読み取り専用で、`doctor` と同じく state.db を読み取り専用で開き、何も送信・保存しません。`sudo` なしでは状態を読めないため、残りの 2 つだけを表示します。`--offline` では状態だけを表示します。まだ存在しないレコードや advisory は "not found at the source" と表示します。`GITHUB_TOKEN` はシェルの環境変数にあるときだけ、`https://api.github.com` にだけ送ります。ない場合、GitHub API は 1 時間に 60 リクエストまでです。
 - **更新**: `sudo vuln-watch upgrade` で最新リリースを `install.sh` と同じ手順で入れ直します（`--check` は確認のみ、`--version 1.2.0` でバージョン指定、`--pre` でプレリリースも対象）。設定と状態はそのまま残ります。`config.example.toml` の変更は [CHANGELOG.md](CHANGELOG.md) で確認してください。ソースから入れた場合は `git pull && sudo ./deploy/install.sh`。
 - **サンドボックス**: ユニットは `DynamicUser`、`ProtectSystem=strict`、syscall フィルタを使います。プロセスができるのは外向き通信と状態ディレクトリへの書き込みだけです。

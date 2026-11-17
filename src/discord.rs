@@ -8,7 +8,7 @@ use serde_json::{json, Value};
 use crate::db::{Db, DigestEntry};
 use crate::http::Http;
 use crate::model::{Decision, Item};
-use crate::text::{escape_md, truncate};
+use crate::text::{collapse_ws, escape_md, safe_url, truncate};
 
 const API: &str = "https://discord.com/api/v10";
 
@@ -176,7 +176,9 @@ impl<'a> Notifier<'a> {
     /// POST JSON with Discord rate-limit handling. Returns the parsed response body.
     fn post(&self, url: &str, auth: Option<&str>, body: &Value) -> Result<Value> {
         for _ in 0..5 {
-            let mut req = self.http.client().post(url).json(body);
+            // Never follow redirects: reqwest would turn the POST into a GET without body,
+            // which Discord answers with 200 for a webhook URL. A 3xx is an error below.
+            let mut req = self.http.no_redirect_client().post(url).json(body);
             if let Some(a) = auth {
                 req = req.header("Authorization", a);
             }
@@ -197,6 +199,13 @@ impl<'a> Notifier<'a> {
                 sleep(Duration::from_secs_f64(wait));
                 continue;
             }
+            if (300..400).contains(&status) {
+                // The body and Location header of a redirect can repeat the webhook token.
+                bail!(DiscordError {
+                    status,
+                    body: "redirect not followed (check DISCORD_WEBHOOK_URL)".into(),
+                });
+            }
             if !(200..300).contains(&status) {
                 bail!(DiscordError {
                     status,
@@ -207,6 +216,58 @@ impl<'a> Notifier<'a> {
         }
         bail!("Discord rate limit retries exhausted")
     }
+}
+
+/// Hosts that serve Discord webhooks.
+const WEBHOOK_HOSTS: &[&str] = &[
+    "discord.com",
+    "discordapp.com",
+    "ptb.discord.com",
+    "canary.discord.com",
+];
+
+/// Checks that a webhook URL is `https://<discord host>/api[/v<N>]/webhooks/…` without port or
+/// user info. The URL embeds the webhook token, so errors show only its scheme and host.
+pub fn validate_webhook_url(raw: &str) -> Result<()> {
+    const EXPECTED: &str = "DISCORD_WEBHOOK_URL must be https://discord.com/api/webhooks/…";
+    let Ok(url) = reqwest::Url::parse(raw) else {
+        bail!("{EXPECTED} (got a value that is not a URL)");
+    };
+    let host = url.host_str().unwrap_or("");
+    let got = format!("{}://{host}", url.scheme());
+    if url.scheme() != "https" {
+        bail!("{EXPECTED} (got {got}; plain http sends the webhook token unencrypted)");
+    }
+    if !url.username().is_empty() || url.password().is_some() {
+        bail!("{EXPECTED} (got {got} with user info)");
+    }
+    if let Some(port) = url.port() {
+        bail!("{EXPECTED} (got {got}:{port})");
+    }
+    if !WEBHOOK_HOSTS.contains(&host.to_ascii_lowercase().as_str()) {
+        bail!("{EXPECTED} (got {got}, not a Discord host)");
+    }
+    if !is_webhook_path(url.path()) {
+        bail!("{EXPECTED} (got {got} with a path that is not /api/webhooks/…)");
+    }
+    Ok(())
+}
+
+/// `/api/webhooks/<rest>` or `/api/v<N>/webhooks/<rest>` with a non-empty rest.
+fn is_webhook_path(path: &str) -> bool {
+    let Some(rest) = path.strip_prefix("/api/") else {
+        return false;
+    };
+    let rest = match rest.split_once('/') {
+        Some((v, r))
+            if v.len() > 1 && v.starts_with('v') && v[1..].bytes().all(|b| b.is_ascii_digit()) =>
+        {
+            r
+        }
+        _ => rest,
+    };
+    rest.strip_prefix("webhooks/")
+        .is_some_and(|r| !r.trim_matches('/').is_empty())
 }
 
 #[derive(Debug)]
@@ -275,48 +336,78 @@ fn cvss_label(item: &Item) -> String {
     }
 }
 
+/// Reason prefix of the one-off follow-up sent when a fix appears for a CVE already sent
+/// urgent without one (`rules.remedy_followup`).
+pub const REMEDY_FOLLOWUP: &str = "修正版が公開（既報）";
+
+/// Icon and label at the start of an urgent message.
+fn urgent_head(item: &Item, decision: &Decision) -> (&'static str, &'static str) {
+    if decision.reason.starts_with(REMEDY_FOLLOWUP) {
+        ("🩹", "【修正版が公開・既報】")
+    } else if item.kev {
+        ("🔥", "")
+    } else {
+        ("🚨", "")
+    }
+}
+
+/// Text from sources (CVE / GHSA / feeds) is escaped before it goes into Markdown-rendered
+/// parts of the message (content, embed description, field values), so it cannot form masked
+/// links. The embed title is not rendered as Markdown and stays as is.
 pub fn urgent_message(item: &Item, decision: &Decision) -> Message {
-    let icon = if item.kev { "🔥" } else { "🚨" };
+    let (icon, label) = urgent_head(item, decision);
     let product = product_hint(item)
-        .map(|p| format!("[{p}] "))
+        .map(|p| format!("[{}] ", escape_md(&p)))
         .unwrap_or_default();
     let content = truncate(
-        &format!("{icon} {} — {product}{}", item.display_id(), item.title),
+        &format!(
+            "{icon} {label}{} — {product}{}",
+            escape_md(item.display_id()),
+            escape_md(&item.title)
+        ),
         200,
     );
 
     let mut fields = vec![
         json!({"name": "CVSS", "value": cvss_label(item), "inline": true}),
-        json!({"name": "理由", "value": truncate(&decision.reason, 1024), "inline": true}),
+        json!({"name": "理由", "value": truncate(&escape_md(&decision.reason), 1024), "inline": true}),
         json!({"name": "ソース", "value": truncate(&item.source, 1024), "inline": true}),
     ];
     if !item.products.is_empty() {
         fields.push(json!({
             "name": "対象",
-            "value": truncate(&item.products.join(", "), 1024),
+            "value": truncate(&escape_md(&item.products.join(", ")), 1024),
             "inline": false,
         }));
     }
     for (k, v) in item.extra.iter().take(15) {
-        if v.trim().is_empty() {
+        // Claude advisories list their sources as links on purpose; rebuild those from
+        // validated parts. Everything else is escaped.
+        let value = if item.confidence.is_some() && k == "出典" {
+            reference_links(v, 1024)
+        } else {
+            escape_md(v)
+        };
+        // Discord rejects empty field values.
+        if value.trim().is_empty() {
             continue;
         }
         fields.push(json!({
             "name": truncate(k, 256),
-            "value": truncate(v, 1024),
+            "value": truncate(&value, 1024),
             "inline": false,
         }));
     }
 
     let mut embed = json!({
         "title": truncate(&format!("{}: {}", item.display_id(), item.title), 256),
-        "description": truncate(&item.summary, 2000),
+        "description": truncate(&escape_md(&item.summary), 2000),
         "color": color(item),
         "fields": fields,
         "timestamp": chrono::Utc::now().to_rfc3339(),
     });
-    if item.url.starts_with("http") {
-        embed["url"] = json!(item.url);
+    if let Some(url) = safe_url(&item.url) {
+        embed["url"] = json!(url);
     }
     Message {
         content,
@@ -326,21 +417,80 @@ pub fn urgent_message(item: &Item, decision: &Decision) -> Message {
 
 /// Plain-text variant of `urgent_message` for when Discord rejects the embed.
 pub fn urgent_fallback_message(item: &Item, decision: &Decision) -> Message {
-    let icon = if item.kev { "🔥" } else { "🚨" };
+    let (icon, label) = urgent_head(item, decision);
     let product = product_hint(item)
         .map(|p| format!("[{}] ", escape_md(&p)))
         .unwrap_or_default();
     let mut text = format!(
-        "{icon} {} — {}{}\n{}",
+        "{icon} {label}{} — {}{}\n{}",
         escape_md(&truncate(item.display_id(), 200)),
         product,
         escape_md(&truncate(&item.title, 300)),
         escape_md(&truncate(&decision.reason, 300)),
     );
-    if item.url.starts_with("http") {
-        text.push_str(&format!("\n<{}>", truncate(&item.url, 1000)));
+    // A file that could not be read: the error is the point of the message.
+    if item.load_error {
+        text.push_str(&format!("\n{}", escape_md(&truncate(&item.summary, 600))));
     }
-    Message::text(truncate(&text, 2000))
+    // The fixed version is what a follow-up is for; the embed shows it as a field.
+    if decision.reason.starts_with(REMEDY_FOLLOWUP) {
+        if let Some((k, v)) = item.extra.iter().find(|(k, _)| k == "修正バージョン") {
+            text.push_str(&format!("\n{k}: {}", escape_md(&truncate(v, 500))));
+        }
+    }
+    // A truncated URL would point somewhere else: the link is never cut. It is left out when
+    // it is very long; otherwise the text before it is shortened to make room.
+    match safe_url(&item.url).filter(|u| u.chars().count() <= 1000) {
+        Some(url) => {
+            let link = format!("\n<{url}>");
+            let mut text = truncate(&text, 2000 - link.chars().count());
+            text.push_str(&link);
+            Message::text(text)
+        }
+        None => Message::text(truncate(&text, 2000)),
+    }
+}
+
+/// Re-render the `出典` lines of a Claude advisory (`[title](<url>)` or a bare URL, see
+/// `sources::advisory`): the title is escaped and the URL validated, so only well-formed
+/// links survive. Other lines are escaped as plain text. The result stays within `max`
+/// characters without cutting a URL: a link that does not fit is shown as its title only.
+fn reference_links(v: &str, max: usize) -> String {
+    let mut out = String::new();
+    let mut len = 0;
+    for line in v.lines().map(str::trim).filter(|l| !l.is_empty()) {
+        let (label, url) = match line
+            .strip_prefix('[')
+            .and_then(|l| l.strip_suffix(">)"))
+            .and_then(|l| l.split_once("](<"))
+        {
+            Some((title, url)) => (escape_md(title), safe_url(url)),
+            None => match safe_url(line) {
+                Some(url) => (String::new(), Some(url)),
+                None => (escape_md(line), None),
+            },
+        };
+        let link = url.map(|u| {
+            if label.trim().is_empty() {
+                u
+            } else {
+                format!("[{label}](<{u}>)")
+            }
+        });
+        let sep = usize::from(!out.is_empty());
+        let room = max.saturating_sub(len + sep);
+        let rendered = match link {
+            Some(l) if l.chars().count() <= room => l,
+            _ if label.trim().is_empty() || room == 0 => continue,
+            _ => truncate(&label, room),
+        };
+        if sep == 1 {
+            out.push('\n');
+        }
+        len += sep + rendered.chars().count();
+        out.push_str(&rendered);
+    }
+    out
 }
 
 /// Short "what is affected" label, or None when the title already names it.
@@ -385,10 +535,11 @@ fn digest_line(e: &DigestEntry, show_reason: bool) -> String {
     // own), so a whole line stays far under MAX_LIST_DESC even after Markdown escaping
     // doubles it, and nothing at its end (score, reason, actions) is ever cut off.
     let id = escape_md(&truncate(item.display_id(), 80));
-    let head = if item.url.starts_with("http") && item.url.chars().count() <= 300 {
-        format!("[{id}](<{}>)", item.url)
-    } else {
-        id
+    // The URL is validated and normalized (`safe_url`); a link longer than 300 characters
+    // (after percent-encoding) is left out rather than cut, and the id shown alone.
+    let head = match safe_url(&item.url).filter(|u| u.chars().count() <= 300) {
+        Some(url) => format!("[{id}](<{url}>)"),
+        None => id,
     };
     let product = product_hint(item)
         .map(|p| format!("`{}` ", p.replace('`', "'")))
@@ -401,6 +552,14 @@ fn digest_line(e: &DigestEntry, show_reason: bool) -> String {
     if show_reason {
         line.push_str(&format!(" · {}", escape_md(&truncate(&e.reason, 120))));
     }
+    // A file that could not be read: the error on a second line (the summary is not shown
+    // in list messages otherwise).
+    if item.load_error {
+        line.push_str(&format!(
+            "\n　エラー: {}",
+            escape_md(&truncate(&collapse_ws(&item.summary), 300))
+        ));
+    }
     // Claude advisories: the actions on a second line; the linked file lists the sources.
     if item.confidence.is_some() {
         if let Some((_, actions)) = item.extra.iter().find(|(k, _)| k == "対策") {
@@ -411,7 +570,31 @@ fn digest_line(e: &DigestEntry, show_reason: bool) -> String {
             ));
         }
     }
+    // A "fix available" follow-up over the cap (or moved to the digest) is sent only as
+    // this line, so it must carry the fixed version itself.
+    if e.reason.starts_with(REMEDY_FOLLOWUP) {
+        let mut parts = Vec::new();
+        // Score-only lines hide the reason, which is what labels a follow-up.
+        if !show_reason {
+            parts.push(REMEDY_FOLLOWUP.to_string());
+        }
+        if let Some((k, v)) = item.extra.iter().find(|(k, _)| k == "修正バージョン") {
+            let v = v.replace('\n', " / ");
+            parts.push(format!("{k}: {}", escape_md(&truncate(&v, 150))));
+        }
+        if !parts.is_empty() {
+            line.push_str(&format!("\n　{}", parts.join(" · ")));
+        }
+    }
     line
+}
+
+/// The rules' reason without the follow-up prefix, for classifying an entry.
+fn base_reason(reason: &str) -> &str {
+    reason
+        .strip_prefix(REMEDY_FOLLOWUP)
+        .and_then(|r| r.strip_prefix(": "))
+        .unwrap_or(reason)
 }
 
 /// Longest embed description a digest or list message uses (Discord allows 4096).
@@ -474,7 +657,7 @@ pub fn digest_messages(entries: &[DigestEntry], resumed: bool) -> Vec<(Message, 
     // Items tied to you first, then the ones picked up only by their score.
     let (score_only, relevant): (Vec<&DigestEntry>, Vec<&DigestEntry>) = entries
         .iter()
-        .partition(|e| crate::rules::is_score_only(&e.reason));
+        .partition(|e| crate::rules::is_score_only(base_reason(&e.reason)));
     let mut sections: Vec<(&str, bool, Vec<&DigestEntry>)> = Vec::new();
     if !relevant.is_empty() {
         sections.push((RELEVANT, true, relevant));
@@ -574,6 +757,92 @@ mod tests {
         };
         let line = digest_line(&e, true);
         assert!(line.ends_with("\n　対策: ・Update Electron ・Update ca-certificates"));
+    }
+
+    #[test]
+    fn load_error_shows_the_error_escaped() {
+        let mut it = Item::new("adv", "advisories/x.toml@abc");
+        it.title = "アドバイザリを読み込めませんでした: x.toml".into();
+        it.url = "https://github.com/o/r/blob/advisories/advisories/x.toml".into();
+        it.summary = "invalid advisory: TOML parse error\n1 | title = \"[x](https://evil.example)\"\n  | ^^^".into();
+        it.load_error = true;
+        let e = DigestEntry {
+            key: "k".into(),
+            item: it.clone(),
+            reason: "ソースのファイルを読み込めませんでした".into(),
+        };
+        let line = digest_line(&e, true);
+        let err = line.split_once("\n　エラー: ").expect(&line).1;
+        assert!(err.contains("TOML parse error"), "{line}");
+        assert!(!err.contains("[x]("), "{line}");
+        assert!(!err.contains('\n'), "{line}");
+
+        let m = urgent_message(&it, &Decision::new(Level::Urgent, "r"));
+        let d = m.embeds[0]["description"].as_str().unwrap();
+        assert!(d.contains("TOML parse error"), "{d}");
+        assert!(!d.contains("[x]("), "{d}");
+        assert!(d.contains("\\|"), "{d}");
+
+        let m = urgent_fallback_message(&it, &Decision::new(Level::Urgent, "r"));
+        assert!(m.content.contains("TOML parse error"), "{}", m.content);
+        assert!(!m.content.contains("[x]("), "{}", m.content);
+        assert!(
+            m.content
+                .ends_with("<https://github.com/o/r/blob/advisories/advisories/x.toml>"),
+            "{}",
+            m.content
+        );
+    }
+
+    #[test]
+    fn digest_line_shows_fixed_version_of_a_remedy_follow_up() {
+        let mut it = item(1);
+        it.extra = vec![(
+            "修正バージョン".into(),
+            "foo < 1.2.4 → 1.2.4\nbar < 2.0 → 2.0".into(),
+        )];
+        let mut e = DigestEntry {
+            key: "CVE-2026-00001#remedy".into(),
+            item: it,
+            reason: format!("{REMEDY_FOLLOWUP}: watch: foo（即時通知の上限超過）"),
+        };
+        let line = digest_line(&e, true);
+        assert!(
+            line.ends_with("\n　修正バージョン: foo < 1.2.4 → 1.2.4 / bar < 2.0 → 2.0"),
+            "{line}"
+        );
+        // Without the reason (score-only section) the line still says it is a follow-up.
+        let line = digest_line(&e, false);
+        assert!(
+            line.ends_with(&format!(
+                "\n　{REMEDY_FOLLOWUP} · 修正バージョン: foo < 1.2.4 → 1.2.4 / bar < 2.0 → 2.0"
+            )),
+            "{line}"
+        );
+        e.reason = "watch: foo".into();
+        assert!(!digest_line(&e, true).contains("修正バージョン"));
+    }
+
+    #[test]
+    fn score_only_follow_up_stays_in_the_score_only_section() {
+        let entries = vec![
+            DigestEntry {
+                key: "1".into(),
+                item: item(1),
+                reason: "watch: foo".into(),
+            },
+            DigestEntry {
+                key: "2#remedy".into(),
+                item: item(2),
+                reason: format!("{REMEDY_FOLLOWUP}: CVSS 9.8 ≥ 9.0（即時通知の上限超過）"),
+            },
+        ];
+        let msgs = digest_messages(&entries, false);
+        let d = msgs[0].0.embeds[0]["description"].as_str().unwrap();
+        let other = d.find("その他の高 CVSS").expect(d);
+        assert!(d.find("CVE-2026-00002").unwrap() > other, "{d}");
+        assert!(d.find("CVE-2026-00001").unwrap() < other, "{d}");
+        assert_eq!(base_reason("watch: foo"), "watch: foo");
     }
 
     #[test]
@@ -792,6 +1061,33 @@ mod tests {
     }
 
     #[test]
+    fn remedy_follow_up_is_labelled_and_shows_the_fix() {
+        let mut it = item(1);
+        it.remedy = true;
+        it.extra = vec![("修正バージョン".into(), "foo < 1.2.4 → 1.2.4".into())];
+        let d = Decision::new(Level::Urgent, format!("{REMEDY_FOLLOWUP}: watch: foo"));
+        let m = urgent_message(&it, &d);
+        assert!(
+            m.content
+                .starts_with("🩹 【修正版が公開・既報】CVE-2026-00001"),
+            "{}",
+            m.content
+        );
+        let text = urgent_fallback_message(&it, &d).content;
+        assert!(text.contains("【修正版が公開・既報】"), "{text}");
+        assert!(
+            text.contains("修正バージョン: foo < 1.2.4 → 1.2.4"),
+            "{text}"
+        );
+
+        // An ordinary urgent message is unchanged.
+        let m = urgent_message(&it, &Decision::new(Level::Urgent, "watch: foo"));
+        assert!(m.content.starts_with("🚨 CVE-2026-00001"), "{}", m.content);
+        let text = urgent_fallback_message(&it, &Decision::new(Level::Urgent, "x")).content;
+        assert!(!text.contains("修正バージョン"), "{text}");
+    }
+
+    #[test]
     fn urgent_message_shape() {
         let mut it = item(1);
         it.kev = true;
@@ -803,6 +1099,237 @@ mod tests {
         assert_eq!(e["color"], 0x8B0000);
         assert_eq!(e["url"], "https://example.com/1");
         assert_eq!(e["fields"].as_array().unwrap().len(), 5);
+    }
+
+    /// Every `](` in Markdown-rendered text, i.e. a masked link.
+    fn masked_links(s: &str) -> usize {
+        s.matches("](").count()
+    }
+
+    fn rendered(m: &Message) -> Vec<String> {
+        let e = &m.embeds[0];
+        let mut out = vec![
+            m.content.clone(),
+            e["description"].as_str().unwrap_or("").to_string(),
+        ];
+        for f in e["fields"].as_array().unwrap() {
+            out.push(f["value"].as_str().unwrap().to_string());
+        }
+        out
+    }
+
+    #[test]
+    fn urgent_message_escapes_source_text() {
+        let urgent = Decision::new(Level::Urgent, "CVSS 9.8 ≥ 9.0");
+
+        let mut it = item(1);
+        it.title = "Patch [here](https://evil.example)".into();
+        it.summary = "Please [download the fixed build](https://evil.example/x) now".into();
+        it.extra = vec![(
+            "修正バージョン".into(),
+            "[pkg](https://evil.example): >= 1.2.3".into(),
+        )];
+        it.products = vec!["[Acme](https://evil.example) Server".into()];
+        let m = urgent_message(&it, &urgent);
+        for text in rendered(&m) {
+            assert_eq!(masked_links(&text), 0, "{text}");
+        }
+        assert!(m.content.contains("Patch (here)(https://evil.example)"));
+        // The embed title is not Markdown: kept verbatim.
+        assert_eq!(
+            m.embeds[0]["title"],
+            "CVE-2026-00001: Patch [here](https://evil.example)"
+        );
+
+        // A product name that would close the `[product] ` hint and open a link.
+        let mut it = item(2);
+        it.title = "Remote code execution".into();
+        it.products = vec!["Fix](https://evil.example/x)".into()];
+        let m = urgent_message(&it, &urgent);
+        assert_eq!(masked_links(&m.content), 0, "{}", m.content);
+        assert!(m
+            .content
+            .starts_with("🚨 CVE-2026-00002 — [Fix)(https://evil.example/x)] "));
+    }
+
+    #[test]
+    fn urgent_message_keeps_advisory_reference_links() {
+        let mut it = Item::new("advisory", "2026-11-electron");
+        it.title = "Electron の脆弱性".into();
+        it.url = "https://github.com/o/r/blob/main/a.toml".into();
+        it.confidence = Some(crate::model::Confidence::Confirmed);
+        it.extra = vec![(
+            "出典".into(),
+            "[Vendor *notice*](<https://example.com/vendor>)\n\
+             https://example.com/news\n\
+             [Bad](<javascript:alert(1)>)"
+                .into(),
+        )];
+        let m = urgent_message(&it, &Decision::new(Level::Urgent, "Claude 調査"));
+        let refs = m.embeds[0]["fields"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|f| f["name"] == "出典")
+            .unwrap()["value"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        assert_eq!(
+            refs,
+            "[Vendor \\*notice\\*](<https://example.com/vendor>)\nhttps://example.com/news\nBad"
+        );
+
+        // A reference left empty after sanitizing does not produce an empty field.
+        it.extra = vec![("出典".into(), "[](<ftp://example.com/x>)".into())];
+        let m = urgent_message(&it, &Decision::new(Level::Urgent, "Claude 調査"));
+        let fields = m.embeds[0]["fields"].as_array().unwrap();
+        assert!(fields.iter().all(|f| f["name"] != "出典"), "{fields:?}");
+
+        // Links never get cut: one that does not fit is shown as its title.
+        let long = format!("https://example.com/{}", "あ".repeat(100));
+        let refs = (0..5)
+            .map(|i| format!("[Ref {i}](<{long}>)"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let out = reference_links(&refs, 1024);
+        assert!(out.chars().count() <= 1024, "{out}");
+        assert_eq!(
+            out.matches("](<").count(),
+            out.matches(">)").count(),
+            "{out}"
+        );
+        assert!(out
+            .lines()
+            .all(|l| l.starts_with("[Ref ") || l.starts_with("Ref ")));
+        assert_eq!(out.lines().count(), 5, "{out}");
+
+        // Not an advisory: the same text is escaped.
+        it.extra = vec![(
+            "出典".into(),
+            "[Vendor](<https://example.com/vendor>)".into(),
+        )];
+        it.confidence = None;
+        let m = urgent_message(&it, &Decision::new(Level::Urgent, "x"));
+        for text in rendered(&m) {
+            assert_eq!(masked_links(&text), 0, "{text}");
+        }
+    }
+
+    #[test]
+    fn digest_line_validates_url() {
+        let line = |url: &str| {
+            let mut e = entry("CVE-1", "Bug", &[], "");
+            e.item.url = url.into();
+            digest_line(&e, false)
+        };
+        assert!(line("https://www.cve.org/CVERecord?id=CVE-1")
+            .starts_with("• **[CVE-1](<https://www.cve.org/CVERecord?id=CVE-1>)** "));
+        let l = line("https://example.com/a> [x](https://evil.example) )");
+        // The link destination ends at the first `>`, which the URL can no longer contain.
+        let (url, rest) = l
+            .strip_prefix("• **[CVE-1](<")
+            .and_then(|r| r.split_once(">)**"))
+            .unwrap_or_else(|| panic!("{l}"));
+        assert!(!url.contains(['<', '>', ' ']), "{l}");
+        assert_eq!(rest, " Bug — 9.6");
+        for bad in ["javascript:alert(1)", "httpx", "not a url", ""] {
+            assert!(line(bad).starts_with("• **CVE-1** Bug"), "{bad}");
+        }
+        // A URL that grows past the budget when percent-encoded is left out, not cut.
+        let l = line(&format!("https://example.com/{}", "あ".repeat(70)));
+        assert!(l.starts_with("• **CVE-1** Bug — 9.6"), "{l}");
+
+        // A long feed GUID is bounded on its own; a URL up to 300 characters keeps its link
+        // and nothing after it is cut.
+        let mut e = entry("CVE-1", "Bug", &[], "");
+        e.item.cve = None;
+        e.item.id = "g".repeat(380);
+        e.item.url = format!("https://example.com/{}", "a".repeat(280));
+        let l = digest_line(&e, false);
+        assert!(l.contains(">)** Bug — 9.6"), "{l}");
+        e.item.url.push('a');
+        let l = digest_line(&e, false);
+        assert!(!l.contains("](<") && l.ends_with(" Bug — 9.6"), "{l}");
+
+        let mut e = entry("CVE-1", "Bug", &[], "");
+        e.item.url = "ftp://example.com/x".into();
+        let msgs = digest_messages(&[e], false);
+        let d = msgs[0].0.embeds[0]["description"].as_str().unwrap();
+        assert!(!d.contains("ftp:"), "{d}");
+    }
+
+    #[test]
+    fn webhook_url_validation() {
+        for ok in [
+            "https://discord.com/api/webhooks/1/abc",
+            "https://discordapp.com/api/webhooks/1/abc",
+            "https://ptb.discord.com/api/webhooks/1/abc",
+            "https://canary.discord.com/api/webhooks/1/abc",
+            "https://discord.com/api/v10/webhooks/1/abc",
+            "https://discord.com/api/webhooks/1/abc?thread_id=123",
+            "https://Discord.com:443/api/webhooks/1/abc",
+        ] {
+            assert!(validate_webhook_url(ok).is_ok(), "{ok}");
+        }
+        for bad in [
+            "http://discord.com/api/webhooks/1/abc",
+            "https://example.com/api/webhooks/1/abc",
+            "https://discord.com.example.com/api/webhooks/1/abc",
+            "https://discord.com:8443/api/webhooks/1/abc",
+            "https://user:abc@discord.com/api/webhooks/1/abc",
+            "https://abc@discord.com/api/webhooks/1/abc",
+            "https://discord.com/api/channels/1/abc",
+            "https://discord.com/webhooks/1/abc",
+            "https://discord.com/api/vx/webhooks/1/abc",
+            "https://discord.com/api/webhooks/",
+            "discord.com/api/webhooks/1/abc",
+            "abc",
+        ] {
+            let err = validate_webhook_url(bad).expect_err(bad).to_string();
+            assert!(
+                err.starts_with("DISCORD_WEBHOOK_URL must be https://discord.com/api/webhooks/"),
+                "{err}"
+            );
+            assert!(!err.contains("abc"), "token leaked for {bad}: {err}");
+        }
+        let err = validate_webhook_url("http://discord.com/api/webhooks/1/abc").unwrap_err();
+        assert!(
+            err.to_string().contains("(got http://discord.com;"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn redirect_on_post_is_an_error_and_not_followed() {
+        let srv = crate::http::test_server::start(|path| match path {
+            "/ok" => (200, vec![], "{}".into()),
+            _ => (
+                301,
+                vec![("Location", "/ok".into())],
+                "Moved to /api/webhooks/1/abc".into(),
+            ),
+        });
+        let http = Http::new(5).unwrap();
+        let db = Db::open_in_memory().unwrap();
+        let notifier = Notifier::new(
+            &http,
+            Target::Webhook {
+                url: format!("{}/api/webhooks/1/abc", srv.base),
+                username: None,
+            },
+        );
+        let err = notifier.send(&db, &Message::text("hi")).unwrap_err();
+        assert!(!is_rejected(&err), "{err:#}");
+        assert_eq!(
+            err.downcast_ref::<DiscordError>().map(|d| d.status),
+            Some(301)
+        );
+        assert!(!format!("{err:#}").contains("abc"), "{err:#}");
+        assert_eq!(
+            srv.requests(),
+            ["POST /api/webhooks/1/abc?wait=true".to_string()]
+        );
     }
 
     #[test]
@@ -838,5 +1365,27 @@ mod tests {
         let m = urgent_fallback_message(&it, &Decision::new(Level::Urgent, "watch: nginx"));
         assert!(m.content.contains("watch: nginx"));
         assert!(m.content.ends_with("<https://example.com/x>"));
+
+        it.url = "https://example.com/a b>".into();
+        let m = urgent_fallback_message(&it, &Decision::new(Level::Urgent, "watch: nginx"));
+        assert!(
+            m.content.ends_with("<https://example.com/a%20b%3E>"),
+            "{}",
+            m.content
+        );
+        it.url = format!("https://example.com/{}", "あ".repeat(200));
+        let m = urgent_fallback_message(&it, &Decision::new(Level::Urgent, "watch: nginx"));
+        assert!(m.content.ends_with("watch: nginx"), "{}", m.content);
+        // Markdown-heavy id and title: escaping doubles them, the link still stays whole.
+        let mut it = Item::new("rel", "*".repeat(200));
+        it.title = "*".repeat(300);
+        let url = format!("https://example.com/{}", "a".repeat(972));
+        it.url = url.clone();
+        let m = urgent_fallback_message(&it, &Decision::new(Level::Urgent, "watch: nginx"));
+        assert!(m.content.chars().count() <= 2000);
+        assert!(m.content.ends_with(&format!("\n<{url}>")), "{}", m.content);
+        it.url = "javascript:alert(1)".into();
+        let m = urgent_fallback_message(&it, &Decision::new(Level::Urgent, "watch: nginx"));
+        assert!(!m.content.contains("javascript"));
     }
 }

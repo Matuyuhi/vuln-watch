@@ -1039,6 +1039,7 @@ mod tests {
             packages: vec![],
             sources: vec!["ghsa".into()],
             urgent: true,
+            exclude: vec![],
         }];
         let lines = decision_lines(
             &item("nginx: overflow", Some(3.0)),

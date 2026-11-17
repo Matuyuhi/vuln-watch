@@ -109,8 +109,9 @@ enum Command {
     },
     /// List or edit the watch list in config.toml (editing needs write access, i.e. sudo)
     Watch {
+        // Boxed: the edit flags make it much larger than the other variants.
         #[command(subcommand)]
-        command: watch::WatchCommand,
+        command: Box<watch::WatchCommand>,
     },
 }
 
@@ -212,7 +213,7 @@ fn real_main() -> Result<ExitCode> {
 
     // Edits config.toml only: no credentials or state, so it runs here (as root to write).
     if let Command::Watch { command } = cli.command {
-        watch::run(&cli.config, command)?;
+        watch::run(&cli.config, *command)?;
         return Ok(ExitCode::SUCCESS);
     }
 

@@ -37,6 +37,10 @@ pub struct Item {
     /// action or the advisory's actions. Used by `rules.require_remedy`.
     #[serde(default)]
     pub remedy: bool,
+    /// A file of the source could not be read (e.g. a malformed advisory TOML). The item
+    /// reports that instead of a vulnerability and always reaches the owner.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub load_error: bool,
 }
 
 /// How well an advisory is backed by primary sources.
