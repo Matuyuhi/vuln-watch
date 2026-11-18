@@ -1,0 +1,49 @@
+id = "VWA-2026-1118-ms-agent-framework-pypi"
+revision = 1
+status = "active"
+published = 2026-11-18
+expires = 2026-12-18
+severity = "high"
+confidence = "confirmed"
+title = "Microsoft Agent Framework の PyPI パッケージ agent-framework 1.26.1 / 1.26.2 が改ざんされ、Azure・CI の認証情報を盗むマルウェアを配布（2026-11-17）"
+summary = """
+2026-11-17、Microsoft Agent Framework の Python パッケージ agent-framework に、認証情報を盗むコードを加えた 1.26.1（20:35 UTC）と 1.26.2（21:08 UTC）が PyPI で公開された。PyPI は 2 つの版を隔離（quarantine）済みで、最後の正常版は 1.26.0。
+仕込まれた .pth ファイルは Python の起動時に毎回実行されるため、agent_framework を import しなくても、インストールした環境で Python を起動しただけで動く。
+環境変数の秘密情報、~/.azure・.npmrc・.netrc・.git-credentials・.docker/config.json などの認証情報ファイル、Azure のマネージド ID トークン、Azure DevOps の OIDC トークン、1.26.2 では GitHub Actions の OIDC トークンまで集めて外部の webhook に送る。
+agent-framework>=1.26 のような緩い指定で該当時間帯にインストールした開発環境・CI ランナー・コンテナイメージも対象で、侵害されたものとして扱い、到達できた認証情報をローテーションする必要がある。公開経路（アップロード用の認証情報の漏えいかどうか）は調査中と報じられている。"""
+cves = []
+actions = [
+  "ロックファイル・CI のログ・venv・コンテナイメージで agent-framework 1.26.1 / 1.26.2 が入っていないか確認し、agent-framework==1.26.0 に固定する",
+  "1.26.1 / 1.26.2 をインストールした環境は侵害されたものとして扱い、そこから到達できた認証情報（CI・GitHub Actions のシークレットを含む）をローテーションする",
+  "site-packages に agent_framework_meta.pth / agent_framework_meta/_telemetry.py（1.26.1）や af_runtime_diag.pth / af_runtime_diag.py（1.26.2）が残っていないか確認する",
+  "（独自提案）パッケージプロキシやキャッシュに残った 1.26.1 / 1.26.2 の wheel を削除・遮断し、webhook.site への通信がなかったかネットワークログを確認する",
+]
+
+[[affects]]
+name = "Microsoft Agent Framework (Python)"
+keywords = ["agent-framework"]
+packages = ["pypi:agent-framework"]
+
+[[references]]
+url = "https://api.osv.dev/v1/vulns/MAL-2026-20101"
+kind = "primary"
+title = "MAL-2026-20101: Malicious code in agent-framework (PyPI)（OSV / OpenSSF Malicious Packages, 2026-11-17）"
+quote = "Versions 1.26.1 and 1.26.2 add a credential stealer that is not present in the last clean release, 1.26.0."
+
+[[references]]
+url = "https://pypi.org/project/agent-framework/"
+kind = "primary"
+title = "agent-framework · PyPI（1.26.1 / 1.26.2 は Release quarantined、2026-11-17）"
+quote = "Release quarantined 1.26.2"
+
+[[references]]
+url = "https://www.wiz.io/blog/malicious-version-of-microsofts-agent-framework-published-to-pypi"
+kind = "secondary"
+title = "Microsoft agent-framework Compromised: Credential Stealer Targets Azure and CI Pipelines（Wiz）"
+quote = "The most recent safe version is 1.26.0."
+
+[[references]]
+url = "https://www.securityweek.com/microsoft-agent-framework-releases-poisoned-with-credential-stealer/"
+kind = "secondary"
+title = "Microsoft Agent Framework Releases Poisoned With Credential Stealer（SecurityWeek, 2026-11-18、Microsoft のメンテナーが削除と調査中を GitHub で表明と報道）"
+quote = "Microsoft has acknowledged the incident, with an Agent Framework maintainer confirming in a GitHub discussion that the compromised releases were removed from PyPI and that an investigation was underway."
