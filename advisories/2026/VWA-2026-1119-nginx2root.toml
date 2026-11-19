@@ -1,0 +1,88 @@
+id = "VWA-2026-1119-nginx2root"
+revision = 1
+status = "active"
+published = 2026-11-19
+expires = 2026-12-19
+severity = "critical"
+confidence = "confirmed"
+title = "nginx に認証不要の RCE 5 件（通称 nginx2root、CVE-2026-123007 ほか）、HTTP/2 を有効にした 1.9.5 以降のほぼすべての nginx に影響、1.30.7 / 1.31.9 と各ディストリの修正版へ更新が必要"
+summary = """
+nginx は 2026-11-18 に 10 件の脆弱性を修正した 1.30.7（stable）/ 1.31.9（mainline）を公開した。このうち 5 件（CVE-2026-123007 / 123633 / 121810 / 123634 / 113425）は、CERT-EU によれば認証なしのリモート攻撃者が nginx の worker プロセスの権限でコードを実行できるもので、CERT-EU は「Critical vulnerabilities in NGINX」として速やかな更新を呼びかけている。
+最も影響が大きい CVE-2026-123007 は HTTP/2 のフロー制御の整数オーバーフローによるヒープ外書き込みで、HTTP/2 を有効にしているだけで攻撃でき、HTTP/2 が導入された 1.9.5 から 1.31.8 までの全リリースが対象。ほかの 4 件は HTTP/2 + upstream 転送、HTTP/3 + upstream 転送、resolver と mirror の組み合わせ、mail proxy の auth_http といった特定の構成で成立する。
+発見した Xint は、未公開の Linux カーネル SCTP の脆弱性と連鎖させて root 権限を取得し、Docker コンテナからホストへ抜けられたと報告している（カーネル側は修正前で詳細非公開）。2026-11-18 時点で実際の悪用は報告されていない。
+nginx は Web サーバー・リバースプロキシとして多数のサーバー、コンテナイメージ、アプライアンスに組み込まれており、NGINX Plus も影響を受ける。Ubuntu は 11-19 に USN-9159-1 で 14.04〜26.10 の nginx を修正した。ディストリビューションの nginx はバージョン番号を変えずにバックポートするため、nginx -v ではなくパッケージ版で確認する必要がある。"""
+cves = ["CVE-2026-123007", "CVE-2026-123633", "CVE-2026-121810", "CVE-2026-123634", "CVE-2026-113425"]
+actions = [
+  "nginx を 1.30.7（stable）/ 1.31.9（mainline）以降に更新し、ディストリビューションの nginx は配布元の修正版（Ubuntu は USN-9159-1）に更新する",
+  "インターネットに公開した nginx を優先して更新する（CERT-EU）",
+  "更新後は nginx を再起動するか、サポートされた方法でバイナリをライブ更新する。設定の reload だけでは実行中のバイナリは置き換わらない（Xint）",
+  "直ちに更新できない場合は、公開しているリスナーで HTTP/2 を無効にする（listen から http2 を外すか http2 off; を設定）。これで防げるのは CVE-2026-123007 / 123633 の 2 件だけなので、ほかの 3 件は構成に応じて HTTP/3、mirror、mail proxy の auth_http の使用を確認する（CERT-EU、Xint）",
+  "error log の「worker process … exited on signal」（worker のクラッシュ）を監視し、プロセス生成ログで worker からのコマンド実行がないか確認する（CERT-EU）",
+  "SCTP を使わないホストでは、カーネルの修正が出るまで /etc/modprobe.d/ の .conf に install sctp /bin/false を書いて SCTP モジュールの読み込みを止める（Xint）",
+  "（独自提案）nginx を同梱するコンテナイメージ・Ingress コントローラ・アプライアンスも、各ベンダーの修正版を確認して更新する",
+]
+
+[[affects]]
+name = "nginx"
+keywords = ["nginx"]
+fixed_versions = ["1.30.7", "1.31.9"]
+
+[[affects]]
+name = "nginx (Ubuntu)"
+keywords = ["nginx"]
+deb = [
+  { package = "nginx", fixed_version = "1.30.4-7ubuntu1.2", release = "stonking" },
+  { package = "nginx-core", fixed_version = "1.30.4-7ubuntu1.2", release = "stonking" },
+  { package = "nginx-full", fixed_version = "1.30.4-7ubuntu1.2", release = "stonking" },
+  { package = "nginx-light", fixed_version = "1.30.4-7ubuntu1.2", release = "stonking" },
+  { package = "nginx-extras", fixed_version = "1.30.4-7ubuntu1.2", release = "stonking" },
+  { package = "nginx", fixed_version = "1.28.3-2ubuntu1.13", release = "resolute" },
+  { package = "nginx-core", fixed_version = "1.28.3-2ubuntu1.13", release = "resolute" },
+  { package = "nginx-full", fixed_version = "1.28.3-2ubuntu1.13", release = "resolute" },
+  { package = "nginx-light", fixed_version = "1.28.3-2ubuntu1.13", release = "resolute" },
+  { package = "nginx-extras", fixed_version = "1.28.3-2ubuntu1.13", release = "resolute" },
+  { package = "nginx", fixed_version = "1.24.0-2ubuntu7.20", release = "noble" },
+  { package = "nginx-core", fixed_version = "1.24.0-2ubuntu7.20", release = "noble" },
+  { package = "nginx-full", fixed_version = "1.24.0-2ubuntu7.20", release = "noble" },
+  { package = "nginx-light", fixed_version = "1.24.0-2ubuntu7.20", release = "noble" },
+  { package = "nginx-extras", fixed_version = "1.24.0-2ubuntu7.20", release = "noble" },
+  { package = "nginx", fixed_version = "1.18.0-6ubuntu14.23", release = "jammy" },
+  { package = "nginx-core", fixed_version = "1.18.0-6ubuntu14.23", release = "jammy" },
+  { package = "nginx-full", fixed_version = "1.18.0-6ubuntu14.23", release = "jammy" },
+  { package = "nginx-light", fixed_version = "1.18.0-6ubuntu14.23", release = "jammy" },
+  { package = "nginx-extras", fixed_version = "1.18.0-6ubuntu14.23", release = "jammy" },
+]
+
+[[affects]]
+name = "NGINX Plus"
+keywords = ["nginx plus"]
+
+[[references]]
+url = "https://nginx.org/en/security_advisories.html"
+kind = "primary"
+title = "nginx security advisories（2026-11-18 の 10 件、Not vulnerable: 1.31.9+, 1.30.7+）"
+quote = "Memory corruption in HTTP/2 flow control"
+
+[[references]]
+url = "https://nginx.org/en/CHANGES"
+kind = "primary"
+title = "Changes with nginx 1.31.9（18 Nov 2026）"
+quote = "a flow control window overflow in HTTP/2 might allow an attacker to cause a segmentation fault in a worker process, or might have potential other impact (CVE-2026-123007)."
+
+[[references]]
+url = "https://cert.europa.eu/publications/security-advisories/2026-022/"
+kind = "primary"
+title = "Security Advisory 2026-022: Critical vulnerabilities in NGINX（CERT-EU, 2026-11-18）"
+quote = "All five vulnerabilities can lead to unauthenticated code execution with the privileges of the NGINX worker process"
+
+[[references]]
+url = "https://ubuntu.com/security/notices/USN-9159-1"
+kind = "primary"
+title = "USN-9159-1: nginx vulnerabilities（2026-11-19）"
+quote = "It was discovered that nginx did not correctly handle resolving certain names or addresses."
+
+[[references]]
+url = "https://xint.io/blog/nginx2root-remote-code-execution"
+kind = "secondary"
+title = "NGINX2Root: New Remote Code Execution Vulnerabilities in nginx Require Urgent Patching（Xint, 2026-11-18、発見者による解説）"
+quote = "A configuration reload alone does not replace the running executable."
