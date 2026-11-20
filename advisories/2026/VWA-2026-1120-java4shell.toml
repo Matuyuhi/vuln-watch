@@ -1,0 +1,141 @@
+id = "VWA-2026-1120-java4shell"
+revision = 1
+status = "active"
+published = 2026-11-20
+expires = 2026-12-20
+severity = "critical"
+confidence = "confirmed"
+title = "Java（OpenJDK 17.0.6 以降・21・25・27）の Base64 デコーダにヒープ破壊（通称 Java4Shell、CVE-2026-114938）、AVX-512 VBMI 対応の x86-64 で認証不要の RCE のおそれ、Java を使う・同梱するソフトすべてに更新が必要"
+summary = """
+2026-11-17、Oracle と OpenJDK は Java 標準ライブラリの Base64 デコーダのメモリ破壊（CVE-2026-114938、発見者の Calif が Java4Shell と命名）を修正しました。
+AVX-512 VBMI に対応した x86-64 CPU（Intel Ice Lake / AMD Zen 4 以降）で動く OpenJDK 17.0.6 以降・21・25・27 が対象で、細工した Base64 データを送るだけで、ログイン前でも任意コード実行またはプロセスの停止につながるおそれがあります（ARM64 と OpenJDK 8 / 11 は対象外）。
+HTTP Basic 認証・SAML・CSRF トークンなど認証前に Base64 を復号する処理はごく一般的なため、Java で動くサーバーソフト全般（Keycloak、Jira、Confluence、Jenkins など）と、独自に JRE を同梱する製品・コンテナイメージが更新対象になります。
+Red Hat と カナダ Cyber Centre は Critical と評価していますが、11-17 時点で実際の悪用は確認されていません。Ubuntu は 11-18 に OpenJDK 17 / 21 / 25 / 27 の修正版（USN-9155-1〜9158-1）を公開しています。"""
+cves = ["CVE-2026-114938"]
+actions = [
+  "Java の実行環境を修正版（Oracle Java SE / OpenJDK 17.0.21.1・21.0.13.1・25.0.5.1・27.0.1.1、Ubuntu は USN-9155-1〜9158-1 の版）に更新し、Java のサービスを再起動する",
+  "JRE を同梱する製品・アプライアンス・コンテナイメージは、ベンダーの修正版に更新するかベースイメージ更新後に再ビルドする",
+  "すぐに更新できない場合は JVM を -XX:-UseBASE64Intrinsics（AVX-512 の Base64 処理だけを無効化、推奨）または -XX:UseAVX=2（x86-64 のみ。ARM64 では起動しなくなる）で起動する（暫定策。更新後は外す）",
+  "インターネットに公開している Java アプリと認証サービス（Keycloak など）を優先し、CPU が AVX-512 VBMI に対応しているか（lscpu | grep avx512）を確認する",
+]
+
+[[affects]]
+name = "OpenJDK / Oracle Java SE"
+keywords = ["openjdk", "java", "jdk", "jre"]
+fixed_versions = ["17.0.21.1", "21.0.13.1", "25.0.5.1", "27.0.1.1"]
+
+[[affects]]
+name = "Oracle GraalVM"
+keywords = ["graalvm"]
+fixed_versions = ["17.0.21.1", "21.0.13.1", "21.3.20.1"]
+
+[[affects]]
+name = "OpenJDK (Ubuntu)"
+keywords = ["openjdk"]
+deb = [
+  { package = "openjdk-17-jdk", fixed_version = "17.0.21.1+2-1~22.04.1", release = "jammy" },
+  { package = "openjdk-17-jdk-headless", fixed_version = "17.0.21.1+2-1~22.04.1", release = "jammy" },
+  { package = "openjdk-17-jre", fixed_version = "17.0.21.1+2-1~22.04.1", release = "jammy" },
+  { package = "openjdk-17-jre-headless", fixed_version = "17.0.21.1+2-1~22.04.1", release = "jammy" },
+  { package = "openjdk-17-jdk", fixed_version = "17.0.21.1+2-1~24.04.1", release = "noble" },
+  { package = "openjdk-17-jdk-headless", fixed_version = "17.0.21.1+2-1~24.04.1", release = "noble" },
+  { package = "openjdk-17-jre", fixed_version = "17.0.21.1+2-1~24.04.1", release = "noble" },
+  { package = "openjdk-17-jre-headless", fixed_version = "17.0.21.1+2-1~24.04.1", release = "noble" },
+  { package = "openjdk-17-jdk", fixed_version = "17.0.21.1+2-1~26.04.1", release = "resolute" },
+  { package = "openjdk-17-jdk-headless", fixed_version = "17.0.21.1+2-1~26.04.1", release = "resolute" },
+  { package = "openjdk-17-jre", fixed_version = "17.0.21.1+2-1~26.04.1", release = "resolute" },
+  { package = "openjdk-17-jre-headless", fixed_version = "17.0.21.1+2-1~26.04.1", release = "resolute" },
+  { package = "openjdk-17-jdk", fixed_version = "17.0.21.1+2-1~26.10.1", release = "stonking" },
+  { package = "openjdk-17-jdk-headless", fixed_version = "17.0.21.1+2-1~26.10.1", release = "stonking" },
+  { package = "openjdk-17-jre", fixed_version = "17.0.21.1+2-1~26.10.1", release = "stonking" },
+  { package = "openjdk-17-jre-headless", fixed_version = "17.0.21.1+2-1~26.10.1", release = "stonking" },
+  { package = "openjdk-21-jdk", fixed_version = "21.0.13.1+2-1~22.04.1", release = "jammy" },
+  { package = "openjdk-21-jdk-headless", fixed_version = "21.0.13.1+2-1~22.04.1", release = "jammy" },
+  { package = "openjdk-21-jre", fixed_version = "21.0.13.1+2-1~22.04.1", release = "jammy" },
+  { package = "openjdk-21-jre-headless", fixed_version = "21.0.13.1+2-1~22.04.1", release = "jammy" },
+  { package = "openjdk-21-jdk", fixed_version = "21.0.13.1+2-1~24.04.1", release = "noble" },
+  { package = "openjdk-21-jdk-headless", fixed_version = "21.0.13.1+2-1~24.04.1", release = "noble" },
+  { package = "openjdk-21-jre", fixed_version = "21.0.13.1+2-1~24.04.1", release = "noble" },
+  { package = "openjdk-21-jre-headless", fixed_version = "21.0.13.1+2-1~24.04.1", release = "noble" },
+  { package = "openjdk-21-jdk", fixed_version = "21.0.13.1+2-1~26.04.1", release = "resolute" },
+  { package = "openjdk-21-jdk-headless", fixed_version = "21.0.13.1+2-1~26.04.1", release = "resolute" },
+  { package = "openjdk-21-jre", fixed_version = "21.0.13.1+2-1~26.04.1", release = "resolute" },
+  { package = "openjdk-21-jre-headless", fixed_version = "21.0.13.1+2-1~26.04.1", release = "resolute" },
+  { package = "openjdk-21-jdk", fixed_version = "21.0.13.1+2-1~26.10.1", release = "stonking" },
+  { package = "openjdk-21-jdk-headless", fixed_version = "21.0.13.1+2-1~26.10.1", release = "stonking" },
+  { package = "openjdk-21-jre", fixed_version = "21.0.13.1+2-1~26.10.1", release = "stonking" },
+  { package = "openjdk-21-jre-headless", fixed_version = "21.0.13.1+2-1~26.10.1", release = "stonking" },
+  { package = "openjdk-25-jdk", fixed_version = "25.0.5.1+2-1~22.04.1", release = "jammy" },
+  { package = "openjdk-25-jdk-headless", fixed_version = "25.0.5.1+2-1~22.04.1", release = "jammy" },
+  { package = "openjdk-25-jre", fixed_version = "25.0.5.1+2-1~22.04.1", release = "jammy" },
+  { package = "openjdk-25-jre-headless", fixed_version = "25.0.5.1+2-1~22.04.1", release = "jammy" },
+  { package = "openjdk-25-jdk", fixed_version = "25.0.5.1+2-1~24.04.1", release = "noble" },
+  { package = "openjdk-25-jdk-headless", fixed_version = "25.0.5.1+2-1~24.04.1", release = "noble" },
+  { package = "openjdk-25-jre", fixed_version = "25.0.5.1+2-1~24.04.1", release = "noble" },
+  { package = "openjdk-25-jre-headless", fixed_version = "25.0.5.1+2-1~24.04.1", release = "noble" },
+  { package = "openjdk-25-jdk", fixed_version = "25.0.5.1+2-1~26.04.1", release = "resolute" },
+  { package = "openjdk-25-jdk-headless", fixed_version = "25.0.5.1+2-1~26.04.1", release = "resolute" },
+  { package = "openjdk-25-jre", fixed_version = "25.0.5.1+2-1~26.04.1", release = "resolute" },
+  { package = "openjdk-25-jre-headless", fixed_version = "25.0.5.1+2-1~26.04.1", release = "resolute" },
+  { package = "openjdk-25-jdk", fixed_version = "25.0.5.1+2-1~26.10.1", release = "stonking" },
+  { package = "openjdk-25-jdk-headless", fixed_version = "25.0.5.1+2-1~26.10.1", release = "stonking" },
+  { package = "openjdk-25-jre", fixed_version = "25.0.5.1+2-1~26.10.1", release = "stonking" },
+  { package = "openjdk-25-jre-headless", fixed_version = "25.0.5.1+2-1~26.10.1", release = "stonking" },
+  { package = "openjdk-27-jdk", fixed_version = "27.0.1.1+4-1~26.10.1", release = "stonking" },
+  { package = "openjdk-27-jdk-headless", fixed_version = "27.0.1.1+4-1~26.10.1", release = "stonking" },
+  { package = "openjdk-27-jre", fixed_version = "27.0.1.1+4-1~26.10.1", release = "stonking" },
+  { package = "openjdk-27-jre-headless", fixed_version = "27.0.1.1+4-1~26.10.1", release = "stonking" },
+]
+
+[[references]]
+url = "https://openjdk.org/groups/vulnerability/advisories/2026-11-17"
+kind = "primary"
+title = "OpenJDK Vulnerability Advisory: 2026/11/17（CVE-2026-114938 は hotspot/compiler、17 / 21 / 25 / 27 が対象）"
+quote = "The affected versions are 27.0.1.0.3, 25.0.5.0.3, 21.0.13.0.3, 17.0.21.0.3, 11.0.33, 8u512, and earlier."
+
+[[references]]
+url = "https://cveawg.mitre.org/api/cve/CVE-2026-114938"
+kind = "primary"
+title = "CVE-2026-114938（cve.org、CNA: Oracle）"
+quote = "Successful attacks of this vulnerability can result in takeover of Oracle Java SE, Oracle GraalVM for JDK, Oracle GraalVM Enterprise Edition."
+
+[[references]]
+url = "https://www.cyber.gc.ca/en/alerts-advisories/al26-029-critical-vulnerability-impacting-oracle-java-cve-2026-114938"
+kind = "primary"
+title = "AL26-029 - Critical vulnerability impacting Oracle Java - CVE-2026-114938（Canadian Centre for Cyber Security, 2026-11-17、修正版の一覧と暫定策）"
+quote = "The Cyber Centre is not aware of active exploitation at this time, but that can change quickly."
+
+[[references]]
+url = "https://access.redhat.com/security/vulnerabilities/RHSB-2026-018"
+kind = "primary"
+title = "RHSB-2026-018 Remote Code Execution via memory corruption on x86-64 systems - OpenJDK (CVE-2026-114938) - \"java4shell\"（Red Hat、11-20 更新、RHEL 向け修正は準備中）"
+quote = "Customers running OpenJDK 8 or OpenJDK 11 are also not affected, as these versions do not contain the vulnerable code path."
+
+[[references]]
+url = "https://ubuntu.com/security/notices/USN-9155-1"
+kind = "primary"
+title = "USN-9155-1: OpenJDK 17 vulnerabilities（2026-11-18、21 / 25 / 27 は USN-9156-1 / 9157-1 / 9158-1）"
+quote = "A remote attacker could possibly use this issue to cause a denial of service or execute arbitrary code."
+
+[[references]]
+url = "https://ubuntu.com/security/CVE-2026-114938"
+kind = "primary"
+title = "CVE-2026-114938 (Ubuntu)（openjdk-17 / 21 / 25 / 27 が Fixed、openjdk-8 / openjdk-lts は Not affected）"
+quote = "Fixed in 17.0.21.1+2-1~24.04.1"
+
+[[references]]
+url = "https://explore.alas.aws.amazon.com/CVE-2026-114938.html"
+kind = "primary"
+title = "CVE-2026-114938（Amazon Linux Security Center、Corretto 17 / 21 / 25 / 27 を 11-17 に修正）"
+quote = "ARM64 systems are not affected."
+
+[[references]]
+url = "https://calif.io/java4shell"
+kind = "secondary"
+title = "Java4Shell: Write once, RCE everywhere（Calif、発見者による解説）"
+quote = "To speed up Base64 decoding, OpenJDK uses specialized AVX-512 VBMI instructions on supported x86-64 processors."
+
+[[references]]
+url = "https://thehackernews.com/2026/11/java4shell-cve-2026-114938-enables-pre.html"
+kind = "secondary"
+title = "Java4Shell Flaw CVE-2026-114938 Enables Pre-Auth RCE in Java Apps（The Hacker News, 2026-11-18）"
