@@ -1,22 +1,23 @@
 id = "VWA-2026-1117-apache-axis1-rce"
-revision = 1
+revision = 2
 status = "active"
 published = 2026-11-17
+updated = 2026-11-22
 expires = 2026-12-17
 severity = "critical"
 confidence = "confirmed"
-title = "サポート終了した Java の SOAP ライブラリ Apache Axis 1.x に認証不要の RCE（CVE-2026-90436）、本家の修正版は出ず、Confluence と N-able N-central で悪用の報告"
+title = "サポート終了した Java の SOAP ライブラリ Apache Axis 1.x に認証不要の RCE（CVE-2026-90436）、本家の修正版は出ず、Confluence と N-able N-central で悪用され 11-18 に CISA KEV 入り"
 summary = """
 Apache Axis 1.x（1.4 まで全版）は、受け取った SOAP の Fault に書かれたクラス名をそのまま読み込んで生成してしまい、クラスパス上の適当なクラス次第で認証なしにリモートコード実行に至る（CVE-2026-90436、2026-11-06 公開）。Fault はサービスごとのハンドラより前に処理されるため、サービス側の認証では防げない。
 Axis 1 はサポート終了済みで、Apache Axis プロジェクトは 1.x の修正版を出す予定がないとし、Axis 2/Java など別の SOAP エンジンへの移行か、公開されたパッチを当てたビルドの利用を求めている。Debian の axis パッケージも 11-17 時点で未修正である。
 Axis 1.x は古い Java 製品に組み込まれていることが多く、Atlassian は Confluence Data Center の Remote API（XML-RPC & SOAP）が Axis を使っており、この API を有効にしている場合は認証なしにコマンドを実行されるとして 9.2.28 で修正した（Remote API は 10.0 で削除済み）。
 報道によれば Rapid7 が 11-13 に Confluence での悪用を検知し、同じ Axis の欠陥は Legacy API を有効にした N-able N-central（2026.4 HF2 を当てた版を含む）を root で乗っ取る攻撃チェーン「4EverAble2Shell」でも PoC 公開から数時間で悪用された。
-CISA KEV には 11-17 時点で載っていない。自社開発やベンダー製品に axis-1.4.jar などが含まれていないか確認が必要。"""
+CISA は 11-18 に CVE-2026-90436 を KEV に追加し（dueDate 11-21）、オープンソース部品やライブラリとして様々な製品に影響し得るとしている。11-17 には Confluence を狙う Metasploit モジュールも公開された。自社開発やベンダー製品に axis-1.4.jar などが含まれていないか確認が必要。"""
 cves = ["CVE-2026-90436"]
 actions = [
   "Apache Axis 1.x を使っている自作アプリは Axis 2/Java など別の SOAP エンジンへ移行するか、apache/axis-axis1-java のコミット 41f3b4e のパッチを当てたビルドに差し替える（Apache Axis）",
   "Confluence Data Center は 9.2.28 以降（または 10.0 以降）に更新する。すぐに更新できない場合は General Configuration → Further Configuration で Remote API（XML-RPC & SOAP）を無効にする（Atlassian）",
-  "N-able N-central を自前で運用している場合は N-able の告知に従い、Legacy API を無効にし、侵害の痕跡（XMRig の採掘プログラム、systemd / cron の不審な永続化）を確認する。報道では Hotfix 2 の適用だけでは不十分とされる",
+  "N-able N-central を自前で運用している場合は N-able の告知に従い、Legacy API を無効にし、侵害の痕跡（XMRig の採掘プログラム、systemd / cron の不審な永続化）を確認する。Rapid7 によれば 2026.4 HF3（2026.4.1.39）で Legacy API が無効化される。報道では Hotfix 2 の適用だけでは不十分とされる",
   "（独自提案）手元の Java アプリやベンダー製品に axis.jar / axis-1.x.jar（Maven の axis:axis / org.apache.axis:axis）が含まれていないか検索し、含まれる製品はベンダーの対応を確認する。SOAP エンドポイントをインターネットに公開しない",
 ]
 
@@ -57,6 +58,18 @@ url = "https://security-tracker.debian.org/tracker/CVE-2026-90436"
 kind = "primary"
 title = "CVE-2026-90436（Debian Security Tracker、axis は unfixed）"
 quote = "As Axis 1 has been EOL we recommend you migrate to a different SOAP engine, such as Apache Axis 2/Java."
+
+[[references]]
+url = "https://www.cisa.gov/sites/default/files/feeds/known_exploited_vulnerabilities.json"
+kind = "primary"
+title = "CISA Known Exploited Vulnerabilities Catalog（JSON、CVE-2026-90436 は dateAdded 2026-11-18・dueDate 2026-11-21）"
+quote = "Apache Axis contains an unsafe reflection vulnerability that could allow an unauthenticated remote attacker to execute arbitrary code via a crafted SOAP fault message"
+
+[[references]]
+url = "https://www.rapid7.com/blog/post/etr-rapid7-detected-exploitation-of-cve-2026-90436-against-atlassian-confluence-data-center-n-able-n-central-also-exploited/"
+kind = "secondary"
+title = "Rapid7 Detected Exploitation of CVE-2026-90436 against Atlassian Confluence Data Center, N-able N-central also Exploited（Rapid7, 2026-11-16、11-19 更新）"
+quote = "CVE-2026-90436 is now being actively exploited in the wild against both known affected products."
 
 [[references]]
 url = "https://cybersecuritynews.com/hackers-exploiting-atlassian-confluence-vulnerability/"
