@@ -1,22 +1,26 @@
 id = "VWA-2026-1117-optimizely-web-injection"
-revision = 1
+revision = 2
 status = "active"
 published = 2026-11-17
+updated = 2026-11-25
 expires = 2026-12-17
 severity = "high"
 confidence = "confirmed"
-title = "Optimizely Web の配信スクリプトに不正な JavaScript が混入、BBC・CNN・Zoom など 178 組織のサイト訪問者に暗号資産アドレスすり替え・カード情報窃取・iOS 攻撃キット（2026-11-16）"
+title = "Optimizely Web の配信スクリプトに不正な JavaScript が混入、BBC・CNN・Zoom など 178 組織のサイト訪問者に暗号資産アドレスすり替え・カード情報窃取・iOS 攻撃キット（2026-11-16）、原因はアカウント登録処理の欠陥（CVE-2026-132224）で 11-24 に CISA KEV 入り"
 summary = """
 Optimizely は 11-17、攻撃者が Web Experimentation の脆弱性を突いて一部顧客のプロジェクトに悪意ある JavaScript を追加したと公表し、脆弱性を修正して注入されたコードを削除したとしている（影響範囲は Snippet Delivery）。
 Report URI の調査では、11-16 04:21 UTC ごろから cdn.optimizely.com（および顧客ドメインから配信されるスニペット）の Project JavaScript に読み込みコードが入り、確認できた 1,611 件中 188 件・178 組織（BBC、CNN、Zoom、GitLab、Salesforce、HSBC、IKEA、Ledger など）が感染していた。
 配信されたスクリプトは、ページやクリップボード上の暗号資産アドレスを攻撃者のものにすり替え、サイト自身のフォームに入力されたカード情報や HttpOnly でない Cookie・画面のスクリーンショットを送信し、iPhone / iPad には iOS の攻撃キット（Coruna / DarkSword）を読み込ませた。11-16 21:52 UTC までにほぼすべてが除去されている。
+Optimizely は 11-18 の続報で、原因は Web Experimentation のアカウント登録（signup）処理の欠陥で、攻撃者は標的の顧客アカウントのユーザーになりすまして Project JavaScript を書き換えたと説明した。認証情報の漏えいではなく、影響を受けた顧客は全体の 5% 未満、ほかの Optimizely 製品は影響を受けていないとし、Web Experimentation の全顧客に影響の有無を個別に連絡したとしている。
+この欠陥には CVE-2026-132224（Web Experimentation の 2026-11-17 より前の版、CWE-642）が採番され、CISA は 11-24 に悪用を確認したとして KEV に追加し、ベンダーの指示に従った緩和策とフォレンジックによる確認を求めている（連邦機関の期限は 11-27）。Optimizely 側のサービスなので利用者が適用する修正版はない。
 自分のサイトや CDN が侵害されていなくても第三者スクリプト経由で訪問者が攻撃されたサプライチェーン型の事例で、11-16 に該当サイトを訪れた利用者と、Optimizely Web を使うサイト運営者の双方に確認が必要。"""
-cves = []
+cves = ["CVE-2026-132224"]
 actions = [
   "11-16 に該当サイトを訪れた iPhone / iPad は iOS 18.7.3 以降または iOS 26.3 以降に更新する（Report URI）",
   "11-16 前後に暗号資産を送金した場合は送金先アドレスが意図したものか確認し、該当サイトでカード払いをした場合は明細を確認する（Report URI）",
   "Optimizely Web を使うサイトは、すべてのプロジェクトの Project JavaScript と実験のカスタムコードに 1688360.cc や atob( などの覚えのないコードがないか確認し、Optimizely アカウントのユーザー・API トークン・連携の権限を見直して認証情報を入れ替える（Report URI）",
   "自社フォームでカード情報を扱うサイトは 11-16 に入力されたカード情報を漏えいの可能性ありとして扱い、HttpOnly でない Cookie に入ったセッションや秘密情報を無効化する。CSP で connect-src を制限し、'unsafe-eval' を避ける（Report URI）",
+  "Optimizely Web を使うサイトは、Optimizely から届いた影響の有無の連絡と追加の案内を確認する。11-16 の事象を自サイトのセキュリティインシデントとして扱い、影響を調べる（Optimizely、CISA KEV はフォレンジックによる確認を要求）",
   "（独自提案）1688360.cc・webshell.lol などの攻撃者ドメインを DNS / プロキシで遮断する（Report URI が IoC を公開）",
 ]
 
@@ -31,8 +35,26 @@ keywords = ["ios", "ipados"]
 [[references]]
 url = "https://status.optimizely.com/incidents/ftw0fh9wx43z"
 kind = "primary"
-title = "Web Experimentation Security Incident（Optimizely Status, 2026-11-17 01:02 UTC）"
+title = "Web Experimentation Security Incident（Optimizely Status, 2026-11-17 01:02 UTC、11-18 14:49 UTC に原因を追記）"
 quote = "an unauthorized party exploited a vulnerability in Experimentation and used it to add malicious JavaScript to some customer projects."
+
+[[references]]
+url = "https://status.optimizely.com/incidents/ftw0fh9wx43z"
+kind = "primary"
+title = "同上の 11-18 の続報（アカウント登録処理の欠陥を悪用したなりすまし、影響は顧客の 5% 未満）"
+quote = "an unauthorized third party exploited a flaw in the Optimizely Web Experimentation account signup flow."
+
+[[references]]
+url = "https://www.cisa.gov/sites/default/files/feeds/known_exploited_vulnerabilities.json"
+kind = "primary"
+title = "CISA Known Exploited Vulnerabilities Catalog（JSON、CVE-2026-132224 は dateAdded 2026-11-24・dueDate 2026-11-27）"
+quote = "Optimizely Web Experimentation contains an external control of critical state data vulnerability in its account signup flow that could allow an attacker to impersonate existing customer users and modify Project JavaScript."
+
+[[references]]
+url = "https://cveawg.mitre.org/api/cve/CVE-2026-132224"
+kind = "primary"
+title = "CVE-2026-132224（cve.org の CVE レコード、MITRE 採番、2026-11-18 公開）"
+quote = "Optimizely Web Experimentation before 2026-11-17 mishandles the account signup flow, leading to presence of attacker-controlled code in the projectJS (aka Project JavaScript) field of certain cdn.optimizely.com assets."
 
 [[references]]
 url = "https://blog.report-uri.com/worlds-largest-brands-infected-with-malware-via-optimizely/"
