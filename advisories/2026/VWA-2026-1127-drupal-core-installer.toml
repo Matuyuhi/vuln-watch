@@ -1,0 +1,61 @@
+id = "VWA-2026-1127-drupal-core-installer"
+revision = 1
+status = "active"
+published = 2026-11-27
+expires = 2026-12-27
+severity = "critical"
+confidence = "confirmed"
+title = "Drupal 本体のインストーラ install.php を悪用したサイト乗っ取り・RCE（CVE-2026-132165、SA-CORE-2026-017）が悪用され KEV 入り、11-25 の追加修正（CVE-2026-136716、SA-CORE-2026-019）も悪用中で 10.6.23 / 11.3.23 / 11.4.14 へ更新が必要"
+summary = """
+2026-11-18、Drupal は本体のインストーラ（install.php）を悪用して、認証なしでサイトを再インストールし乗っ取り・コード実行に至る弱点 CVE-2026-132165（SA-CORE-2026-017、Highly critical）を修正した（10.6.22 / 11.3.22 / 11.4.13）。Drupal のセキュリティチームは 2026-11-19 19:00 UTC には実サイトでの悪用の報告を受けており、CISA は 2026-11-24 に KEV カタログへ追加した（期限 2026-11-27）。
+2026-11-25、Drupal は追加の勧告 SA-CORE-2026-019（CVE-2026-136716、Highly critical）を公開した。SA-CORE-2026-017 の適用後も、通常と異なる・不完全なインストール状態のサイト（本番サイトを含む）は乗っ取りが可能なままで、これも実際に悪用されている。該当状態かどうかは管理画面からはわからない。
+インストーラを保護済みのサイトは影響を受けない。それ以外の Drupal 10 / 11 サイトは 10.6.23 / 11.3.23 / 11.4.14 へ更新し、update.php を実行する必要がある。SA-CORE-2026-017 の後もインストーラを外部から到達可能にしていたサイトは、既に侵害されている可能性がある。"""
+cves = ["CVE-2026-132165", "CVE-2026-136716"]
+actions = [
+  "Drupal 11.4.x は 11.4.14、11.3.x は 11.3.23、10.6.x は 10.6.23 に更新し、update.php を実行する（既存の本番サイトを修正する update hook を走らせる必要がある）",
+  "すべての新規・既存サイトで Drupal のドキュメントに従いインストーラを保護する。すぐに更新できない場合は Web サーバーの設定または .htaccess で /core/install.php へのアクセスを遮断する",
+  "サイトのログで不正アクセス、特に user 1 アカウントに対する（または user 1 による）予期しない変更を確認し、user 1 のメールアドレスが自分の管理するものかを確かめ、user 1 のパスワードのリセットを検討する",
+  "侵害の疑いがあれば Drupal の「Your Drupal site got hacked. Now what?」に沿って対応する",
+  "Drupal 11.2.x 以前・10.5.x 以前・8・9 はサポート終了で修正版がないため、サポート中のブランチへ移行する",
+]
+
+[[affects]]
+name = "Drupal core"
+keywords = ["drupal"]
+packages = ["composer:drupal/core"]
+fixed_versions = ["10.6.23", "11.3.23", "11.4.14"]
+
+[[references]]
+url = "https://www.drupal.org/sa-core-2026-019"
+kind = "primary"
+title = "Drupal core - Highly critical - Access bypass - SA-CORE-2026-019（2026-11-25、CVE-2026-136716）"
+quote = "However, certain sites in unusual or incomplete install states remain vulnerable to site takeover following that advisory, including production sites."
+
+[[references]]
+url = "https://www.drupal.org/sa-core-2026-017"
+kind = "primary"
+title = "Drupal core - Highly critical - Remote code execution - SA-CORE-2026-017（2026-11-18、CVE-2026-132165）"
+quote = "has received a report this was exploited on live sites as early as 2026-11-19 19:00 UTC"
+
+[[references]]
+url = "https://cveawg.mitre.org/api/cve/CVE-2026-132165"
+kind = "primary"
+title = "CVE-2026-132165（cve.org、CNA: Drupal）"
+quote = "Drupal core - Highly critical - Remote code execution - SA-CORE-2026-017"
+
+[[references]]
+url = "https://cveawg.mitre.org/api/cve/CVE-2026-136716"
+kind = "primary"
+title = "CVE-2026-136716（cve.org、CNA: Drupal）"
+quote = "Drupal core - Highly critical - Access bypass - SA-CORE-2026-019"
+
+[[references]]
+url = "https://www.cisa.gov/sites/default/files/feeds/known_exploited_vulnerabilities.json"
+kind = "primary"
+title = "CISA Known Exploited Vulnerabilities Catalog（JSON、CVE-2026-132165 は dateAdded 2026-11-24・dueDate 2026-11-27）"
+quote = "CVE-2026-132165"
+
+[[references]]
+url = "https://www.bleepingcomputer.com/news/security/hackers-now-exploit-critical-drupal-rce-flaw-to-hijack-sites/"
+kind = "secondary"
+title = "Hackers now exploit critical Drupal RCE flaw to hijack sites（BleepingComputer, 2026-11-25）"
