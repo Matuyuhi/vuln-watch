@@ -18,7 +18,12 @@ unmaintained = "workspace"
 yanked = "deny"
 # Accepted advisories, with a reason:
 # { id = "RUSTSEC-0000-0000", reason = "affected feature is not used" }
-ignore = []
+ignore = [
+    # chrono is unmaintained and has no fixed version. It is a direct dependency
+    # and also comes in through feed-rs, so it can't be dropped right away.
+    # Remove this once vuln-watch moves to jiff or time.
+    { id = "RUSTSEC-2026-0543", reason = "chrono is unmaintained (no fix); migration to jiff or time pending" },
+]
 
 # Licenses
 [licenses]
